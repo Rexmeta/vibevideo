@@ -1,14 +1,13 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import {
-  generateScript,
-  segmentScriptIntoScenes,
-  generateSceneAudio,
-  generateSceneImage,
-  generateSceneVideo,
-  extractCharacterDescription,
-  decodeBase64,
-  decodeAudioData
+import { 
+  generateScript, 
+  segmentScriptIntoScenes, 
+  generateSceneAudio, 
+  generateSceneImage, 
+  generateSceneVideo, 
+  decodeBase64, 
+  decodeAudioData 
 } from '../services/geminiService';
 import { saveProjectToDB, getProjectFromDB, getAllProjectsFromDB } from '../services/storageService';
 import { Icons } from './Icons';
@@ -32,14 +31,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
   const [scenes, setScenes] = useState<Partial<Scene>[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
-
-  // Character consistency state
-  const [characterDescription, setCharacterDescription] = useState<string>('');
-
-  // Per-scene video generation state
-  const [videoGeneratingScenes, setVideoGeneratingScenes] = useState<{ [key: number]: boolean }>({});
-  const [videoErrorScenes, setVideoErrorScenes] = useState<{ [key: number]: string }>({});
-
+  
   const audioContextRef = useRef<AudioContext | null>(null);
   const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const [playingIdx, setPlayingIdx] = useState<number | null>(null);
@@ -52,14 +44,14 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
 
   // Ref to hold the latest state for saving without dependency cycles
   const projectStateRef = useRef({
-    projectId, step, topic, script, scenes, aspectRatio, videoStyle, duration, characterDescription
+    projectId, step, topic, script, scenes, aspectRatio, videoStyle, duration
   });
 
   useEffect(() => {
     projectStateRef.current = {
-        projectId, step, topic, script, scenes, aspectRatio, videoStyle, duration, characterDescription
+        projectId, step, topic, script, scenes, aspectRatio, videoStyle, duration
     };
-  }, [projectId, step, topic, script, scenes, aspectRatio, videoStyle, duration, characterDescription]);
+  }, [projectId, step, topic, script, scenes, aspectRatio, videoStyle, duration]);
 
   // Load Project from IndexedDB
   useEffect(() => {
@@ -75,7 +67,6 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
             if (project.saved_script) setScript(project.saved_script);
             if (project.saved_scenes) setScenes(project.saved_scenes);
             if (project.saved_duration) setDuration(project.saved_duration);
-            if (project.saved_character_description) setCharacterDescription(project.saved_character_description);
           }
         } catch (e) {
           console.error("Failed to load project from DB", e);
@@ -90,8 +81,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
 
   // Async Save Function using IndexedDB
   const saveProjectToDBAsync = async () => {
-    const { projectId, step, topic, script, scenes, aspectRatio, videoStyle, duration, characterDescription } = projectStateRef.current;
-
+    const { projectId, step, topic, script, scenes, aspectRatio, videoStyle, duration } = projectStateRef.current;
+    
     let createdAt = new Date().toISOString();
     try {
         const existing = await getProjectFromDB(projectId);
@@ -107,13 +98,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
       status: ProjectStatus.DRAFT,
       created_at: createdAt,
       thumbnail: scenes.find(s => s.image_path)?.image_path || undefined,
-
+      
       saved_step: step,
       saved_script: script,
       saved_scenes: scenes as Scene[],
       saved_topic: topic,
-      saved_duration: duration,
-      saved_character_description: characterDescription
+      saved_duration: duration
     };
 
     try {
@@ -130,7 +120,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
         saveProjectToDBAsync();
     }, 1000);
     return () => clearTimeout(timer);
-  }, [step, scenes, script, topic, aspectRatio, videoStyle, duration, characterDescription]);
+  }, [step, scenes, script, topic, aspectRatio, videoStyle, duration]);
 
   // Cleanup on unmount (attempt to save one last time)
   useEffect(() => {
@@ -263,15 +253,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
 
   const handleConfirmScript = async () => {
     setLoading(true);
-    setLoadingMessage("Analyzing characters and converting script to visual scenes...");
+    setLoadingMessage("Converting script to visual motion scenes...");
     try {
       const styleToUse = videoStyle === 'Custom' ? customStyle : videoStyle;
-
-      // Extract character description for consistency
-      const charDesc = await extractCharacterDescription(script, styleToUse);
-      setCharacterDescription(charDesc);
-
-      setLoadingMessage("Converting script to visual motion scenes...");
       const segmented = await segmentScriptIntoScenes(script, styleToUse, aspectRatio);
       const merged = mergeScenes(segmented, scenes);
       setScenes(merged);
@@ -285,15 +269,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
 
   const handleApplyScriptChanges = async () => {
     setLoading(true);
-    setLoadingMessage("Re-analyzing characters and updating scenes...");
+    setLoadingMessage("Updating motion segments...");
     try {
       const styleToUse = videoStyle === 'Custom' ? customStyle : videoStyle;
-
-      // Re-extract character descriptions when script changes
-      const charDesc = await extractCharacterDescription(script, styleToUse);
-      setCharacterDescription(charDesc);
-
-      setLoadingMessage("Updating motion segments...");
       const segmented = await segmentScriptIntoScenes(script, styleToUse, aspectRatio);
       const merged = mergeScenes(segmented, scenes);
       setScenes(merged);
@@ -346,17 +324,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
   const handleGenerateAllImages = async () => {
     setLoading(true);
     try {
-      const styleToUse = videoStyle === 'Custom' ? customStyle : videoStyle;
-
       for (let i = 0; i < scenes.length; i++) {
-        setLoadingMessage(`Generating Keyframe ${i + 1}/${scenes.length}... (with character consistency)`);
+        setLoadingMessage(`Generating Keyframe ${i + 1}/${scenes.length}...`);
         if (scenes[i].visual_prompt) {
-          const base64 = await generateSceneImage(
-            scenes[i].visual_prompt!,
-            styleToUse,
-            aspectRatio,
-            characterDescription || undefined
-          );
+          const styleToUse = videoStyle === 'Custom' ? customStyle : videoStyle;
+          // Note: for image generation, we can pass 1:1, 3:4, etc. directly.
+          // For video, we map them.
+          const base64 = await generateSceneImage(scenes[i].visual_prompt!, styleToUse, aspectRatio);
           if (base64) {
             setScenes(prev => {
               const next = [...prev];
@@ -378,88 +352,79 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
     }
   };
 
-  /**
-   * Generate video for a single scene individually.
-   * Updates state immediately when done so the user can see the result.
-   */
-  const handleGenerateSingleVideo = async (idx: number) => {
-    // Prevent duplicate generation
-    if (videoGeneratingScenes[idx]) return;
-
-    setVideoGeneratingScenes(prev => ({ ...prev, [idx]: true }));
-    setVideoErrorScenes(prev => {
-      const next = { ...prev };
-      delete next[idx];
-      return next;
-    });
+  const handleGenerateAllVideos = async () => {
+    setLoading(true);
+    let errorCount = 0;
+    
+    // Check for empty scenes
+    if (!scenes || scenes.length === 0) {
+        alert("No scenes available to generate video.");
+        setLoading(false);
+        return;
+    }
 
     try {
-      // API Key Check (Best Effort)
-      try {
-        if ((window as any).aistudio && (window as any).aistudio.hasSelectedApiKey) {
-          const hasKey = await (window as any).aistudio.hasSelectedApiKey().catch(() => true);
-          if (!hasKey) {
-            await (window as any).aistudio.openSelectKey();
-          }
-        }
-      } catch (keyError) {
-        console.warn("API Key check skipped:", keyError);
-      }
-
-      const promptToUse = scenes[idx].visual_prompt || scenes[idx].script_segment;
-
-      if (promptToUse) {
-        const videoUrl = await generateSceneVideo(
-          promptToUse,
-          scenes[idx].image_path,
-          aspectRatio,
-          characterDescription || undefined
-        );
-        if (videoUrl) {
-          setScenes(prev => {
-            const next = [...prev];
-            next[idx] = { ...next[idx], video_path: videoUrl };
-            return next;
-          });
-        }
-      }
-    } catch (e: any) {
-      console.error(`Scene ${idx + 1} video generation failed:`, e);
-      if (e.message === "API_KEY_RESELECT_REQUIRED") {
-        alert("Veo Permission Denied. Please ensure your project has billing enabled.");
+        // API Key Check (Best Effort)
         try {
-          if ((window as any).aistudio) await (window as any).aistudio.openSelectKey();
-        } catch (dialogError) { console.error("Failed to open key dialog", dialogError); }
-      }
-      setVideoErrorScenes(prev => ({ ...prev, [idx]: e.message || "Generation failed" }));
+            if ((window as any).aistudio && (window as any).aistudio.hasSelectedApiKey) {
+                const hasKey = await (window as any).aistudio.hasSelectedApiKey().catch(() => true); 
+                if (!hasKey) {
+                    await (window as any).aistudio.openSelectKey();
+                }
+            }
+        } catch (keyError) {
+            console.warn("API Key check skipped:", keyError);
+        }
+
+        // Loop through scenes
+        for (let i = 0; i < scenes.length; i++) {
+            setLoadingMessage(`Generating AI Video Clip for Scene ${i + 1}/${scenes.length} (Veo Processing)...`);
+            
+            // Determine prompt: use visual_prompt, or fallback to script_segment
+            const promptToUse = scenes[i].visual_prompt || scenes[i].script_segment;
+
+            if (promptToUse) {
+                try {
+                    // Pass aspectRatio directly; service will map to supported Veo ratio (16:9 or 9:16)
+                    const videoUrl = await generateSceneVideo(promptToUse, scenes[i].image_path, aspectRatio);
+                    if (videoUrl) {
+                        setScenes(prev => {
+                            const next = [...prev];
+                            next[i] = { ...next[i], video_path: videoUrl };
+                            return next;
+                        });
+                    }
+                } catch (sceneError: any) {
+                    console.error(`Scene ${i+1} generation failed:`, sceneError);
+                    errorCount++;
+                    // If it's a permission error, break immediately to ask for key
+                    if (sceneError.message === "API_KEY_RESELECT_REQUIRED") {
+                         throw sceneError; 
+                    }
+                }
+            } else {
+                console.warn(`Scene ${i+1} has no prompt data, skipping.`);
+            }
+        }
+
+        if (errorCount > 0) {
+            alert(`Generation completed with ${errorCount} errors. Some clips might be missing.`);
+        }
+
+    } catch (e: any) {
+        console.error("Video Generation Critical Failure:", e);
+        if (e.message === "API_KEY_RESELECT_REQUIRED") {
+            alert("Veo Permission Denied. Please ensure your project has billing enabled.");
+            try {
+                if ((window as any).aistudio) await (window as any).aistudio.openSelectKey();
+            } catch(dialogError) { console.error("Failed to open key dialog", dialogError); }
+        } else {
+            alert(`Video Generation Error: ${e.message || "Unknown Error"}`);
+        }
     } finally {
-      setVideoGeneratingScenes(prev => {
-        const next = { ...prev };
-        delete next[idx];
-        return next;
-      });
+        setLoading(false);
     }
   };
-
-  /**
-   * Generate all scene videos sequentially, one at a time.
-   * Each video is shown immediately upon completion.
-   * No full-screen loading overlay - per-scene indicators instead.
-   */
-  const handleGenerateAllVideos = async () => {
-    if (!scenes || scenes.length === 0) {
-      alert("No scenes available to generate video.");
-      return;
-    }
-
-    for (let i = 0; i < scenes.length; i++) {
-      // Skip scenes that already have a video
-      if (scenes[i].video_path) continue;
-      await handleGenerateSingleVideo(i);
-    }
-  };
-
-  const isAnyVideoGenerating = Object.keys(videoGeneratingScenes).length > 0;
 
   const startFullPreview = async () => {
     if (isPlayingFinal) return;
@@ -481,7 +446,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
   const handleFinalRender = async () => {
     setLoading(true);
     setLoadingMessage("Finalizing and consolidating video master...");
-
+    
     // Final save to IndexedDB
     await saveProjectToDBAsync();
 
@@ -505,10 +470,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
         saved_script: script,
         saved_scenes: scenes as Scene[],
         saved_topic: topic,
-        saved_duration: duration,
-        saved_character_description: characterDescription
+        saved_duration: duration
     };
-
+    
     await saveProjectToDB(finalProject);
 
     setLoading(false);
@@ -550,14 +514,14 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
           <div className="flex-1 flex flex-col animate-in fade-in duration-500 max-w-6xl mx-auto w-full">
             <h2 className="text-4xl font-black text-center mb-4">Video Settings</h2>
             <p className="text-center text-gray-500 mb-12">Select your aspect ratio and visual style to begin.</p>
-
+            
             <div className="mb-12">
                <h3 className="text-sm font-black text-gray-400 uppercase tracking-widest mb-6 text-center">Select Aspect Ratio</h3>
                <div className="flex justify-center gap-6 flex-wrap">
                   {aspectRatios.map(opt => (
-                    <button
-                      key={opt.id}
-                      onClick={() => setAspectRatio(opt.id as any)}
+                    <button 
+                      key={opt.id} 
+                      onClick={() => setAspectRatio(opt.id as any)} 
                       className={`group relative w-40 h-40 rounded-[2rem] border-2 transition-all flex flex-col items-center justify-center gap-3 bg-white hover:-translate-y-1 ${aspectRatio === opt.id ? 'border-brand-cyan ring-4 ring-brand-cyan/10 shadow-xl' : 'border-gray-100 shadow-sm hover:shadow-md'}`}
                     >
                       <opt.icon size={32} className={aspectRatio === opt.id ? 'text-brand-cyan' : 'text-gray-300'} />
@@ -579,9 +543,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
               <h3 className="text-sm font-black text-gray-400 uppercase tracking-widest mb-6 text-center">Select Visual Style</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
                 {styles.map(style => (
-                  <div
-                    key={style.id}
-                    onClick={() => setVideoStyle(style.name)}
+                  <div 
+                    key={style.id} 
+                    onClick={() => setVideoStyle(style.name)} 
                     className={`group relative cursor-pointer rounded-[1.5rem] overflow-hidden border-4 transition-all aspect-[4/3] ${videoStyle === style.name ? 'border-brand-cyan ring-4 ring-brand-cyan/10 shadow-xl transform scale-105 z-10' : 'border-transparent hover:scale-105'}`}
                   >
                     {style.img ? (
@@ -593,6 +557,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
                     )}
                     <div className={`absolute inset-0 flex flex-col items-center justify-center p-2 text-center transition-all ${videoStyle === style.name ? 'bg-black/60' : 'bg-black/40 group-hover:bg-black/50'}`}>
                       <span className="text-white font-black text-sm uppercase tracking-wider mb-1 drop-shadow-md">{style.name}</span>
+                      {/* Only show desc if not custom or if custom is not active */}
                       {style.id !== 'custom' && <span className="text-white/80 text-[10px] font-medium">{style.desc}</span>}
                     </div>
                      {videoStyle === style.name && (
@@ -606,8 +571,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
               {videoStyle === 'Custom' && (
                 <div className="mt-8 max-w-lg mx-auto animate-in slide-in-from-bottom-4">
                    <label className="text-xs font-black text-gray-400 uppercase mb-2 block text-center">Describe Your Custom Style</label>
-                   <input
-                      type="text"
+                   <input 
+                      type="text" 
                       value={customStyle}
                       onChange={(e) => setCustomStyle(e.target.value)}
                       placeholder="e.g. 90s Cyberpunk Anime with neon lights..."
@@ -665,16 +630,6 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
                 </button>
               </div>
             </div>
-            {/* Character Description Preview */}
-            {characterDescription && (
-              <div className="mb-4 p-4 bg-brand-cyan/5 border border-brand-cyan/20 rounded-2xl">
-                <div className="flex items-center gap-2 mb-2">
-                  <Icons.User size={14} className="text-brand-cyan" />
-                  <span className="text-[10px] font-black text-brand-cyan uppercase tracking-widest">Character Reference (Auto-extracted)</span>
-                </div>
-                <p className="text-xs text-gray-500 line-clamp-3">{characterDescription}</p>
-              </div>
-            )}
             <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 overflow-hidden">
               <div className="lg:col-span-5 flex flex-col bg-gray-50 rounded-[2.5rem] p-6 overflow-hidden">
                 <textarea value={script} onChange={(e) => setScript(e.target.value)} className="flex-1 w-full p-6 bg-white rounded-3xl outline-none font-serif text-lg shadow-sm" />
@@ -714,16 +669,6 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
                 </button>
               </div>
             </div>
-            {/* Character consistency indicator */}
-            {characterDescription && (
-              <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-2xl flex items-center gap-3">
-                <Icons.Check size={18} className="text-green-500 shrink-0" />
-                <div>
-                  <span className="text-xs font-black text-green-700 uppercase tracking-widest">Character Consistency Active</span>
-                  <p className="text-[10px] text-green-600 mt-1 line-clamp-1">{characterDescription.substring(0, 150)}...</p>
-                </div>
-              </div>
-            )}
             <div className="flex-1 overflow-y-auto pr-4 space-y-10 custom-scrollbar">
                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                   {scenes.map((scene, idx) => (
@@ -752,112 +697,41 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
           <div className="flex-1 flex flex-col animate-in slide-in-from-right-8 duration-500 h-full overflow-hidden">
             <div className="flex justify-between items-center mb-10">
               <h2 className="text-4xl font-black text-brand-dark">AI Motion Generation (Veo)</h2>
-              <div className="flex gap-4 items-center">
-                {isAnyVideoGenerating && (
-                  <div className="flex items-center gap-2 text-brand-pink">
-                    <Icons.Loader2 size={18} className="animate-spin" />
-                    <span className="text-xs font-black uppercase tracking-widest">Processing...</span>
-                  </div>
-                )}
-                <button
-                  onClick={handleGenerateAllVideos}
-                  disabled={isAnyVideoGenerating}
-                  className="bg-brand-pink text-brand-dark px-10 py-4 rounded-full font-black text-xl shadow-lg disabled:opacity-50"
-                >
-                  <Icons.Video size={24} className="inline mr-2" /> Generate All Clips
-                </button>
-              </div>
+              <button onClick={handleGenerateAllVideos} className="bg-brand-pink text-brand-dark px-10 py-4 rounded-full font-black text-xl shadow-lg">
+                <Icons.Video size={24} className="inline mr-2" /> Generate All Clips
+              </button>
             </div>
             <div className="flex-1 overflow-y-auto pr-4 space-y-10 custom-scrollbar">
-              {scenes.map((scene, idx) => {
-                const isGenerating = videoGeneratingScenes[idx] || false;
-                const error = videoErrorScenes[idx];
-
-                return (
-                  <div key={idx} className={`p-10 bg-white border rounded-[3rem] shadow-sm flex flex-col md:flex-row gap-10 group transition-all ${isGenerating ? 'border-brand-pink/50 bg-brand-pink/5' : error ? 'border-red-200 bg-red-50/30' : scene.video_path ? 'border-green-200 bg-green-50/20' : 'border-gray-100'}`}>
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-4">
-                        <h4 className="font-black text-[10px] text-brand-pink uppercase tracking-[0.4em]">Scene {idx+1}</h4>
-                        {scene.video_path && (
-                          <span className="text-[9px] font-black text-green-500 bg-green-100 px-3 py-1 rounded-full uppercase">Complete</span>
-                        )}
-                        {isGenerating && (
-                          <span className="text-[9px] font-black text-brand-pink bg-brand-pink/10 px-3 py-1 rounded-full uppercase flex items-center gap-1">
-                            <Icons.Loader2 size={10} className="animate-spin" /> Generating...
-                          </span>
-                        )}
-                        {error && !isGenerating && (
-                          <span className="text-[9px] font-black text-red-500 bg-red-100 px-3 py-1 rounded-full uppercase">Failed</span>
-                        )}
+              {scenes.map((scene, idx) => (
+                <div key={idx} className="p-10 bg-white border border-gray-100 rounded-[3rem] shadow-sm flex flex-col md:flex-row gap-10 group">
+                  <div className="flex-1">
+                    <h4 className="font-black text-[10px] text-brand-pink mb-4 uppercase tracking-[0.4em]">Scene {idx+1}</h4>
+                    <p className="text-gray-600 mb-8 font-medium italic text-lg leading-relaxed">"{scene.script_segment}"</p>
+                    <div className="bg-brand-light/50 p-6 rounded-2xl text-[10px] text-gray-400 font-mono italic mb-4">Prompt: {scene.visual_prompt}</div>
+                    {scene.image_path && (
+                      <div className="flex items-center gap-2">
+                        <div className="w-12 h-12 rounded-lg overflow-hidden border-2 border-brand-cyan">
+                           <img src={`data:image/jpeg;base64,${scene.image_path}`} className="w-full h-full object-cover" />
+                        </div>
+                        <span className="text-[10px] font-black text-brand-cyan uppercase">Used as Reference</span>
                       </div>
-                      <p className="text-gray-600 mb-8 font-medium italic text-lg leading-relaxed">"{scene.script_segment}"</p>
-                      <div className="bg-brand-light/50 p-6 rounded-2xl text-[10px] text-gray-400 font-mono italic mb-4">Prompt: {scene.visual_prompt}</div>
-                      {scene.image_path && (
-                        <div className="flex items-center gap-2 mb-4">
-                          <div className="w-12 h-12 rounded-lg overflow-hidden border-2 border-brand-cyan">
-                             <img src={`data:image/jpeg;base64,${scene.image_path}`} className="w-full h-full object-cover" />
-                          </div>
-                          <span className="text-[10px] font-black text-brand-cyan uppercase">Used as Reference</span>
-                        </div>
-                      )}
-                      {/* Per-scene generate button */}
-                      {!scene.video_path && !isGenerating && (
-                        <button
-                          onClick={() => handleGenerateSingleVideo(idx)}
-                          className="mt-2 bg-brand-pink/10 text-brand-pink px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-brand-pink/20 transition-all flex items-center gap-2"
-                        >
-                          <Icons.Video size={14} /> Generate This Scene
-                        </button>
-                      )}
-                      {/* Retry button on error */}
-                      {error && !isGenerating && (
-                        <div className="mt-2">
-                          <p className="text-[10px] text-red-400 mb-2">Error: {error}</p>
-                          <button
-                            onClick={() => handleGenerateSingleVideo(idx)}
-                            className="bg-red-100 text-red-600 px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-red-200 transition-all flex items-center gap-2"
-                          >
-                            <Icons.RefreshCw size={14} /> Retry
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <div className={`bg-gray-50 rounded-[2.8rem] overflow-hidden relative shrink-0 shadow-2xl ring-8 ring-white ${aspectRatio === '9:16' ? 'w-48 h-80' : 'w-[380px] h-[214px]'}`}>
-                      {scene.video_path ? (
-                          <video src={scene.video_path} autoPlay loop muted className="w-full h-full object-cover" />
-                      ) : isGenerating ? (
-                          <div className="flex flex-col items-center justify-center h-full text-brand-pink bg-brand-pink/5">
-                              <Icons.Loader2 size={48} className="mb-4 animate-spin" />
-                              <span className="font-black uppercase tracking-widest text-[10px]">Veo Processing...</span>
-                              <span className="text-[9px] text-gray-400 mt-2">Scene {idx + 1} is being generated</span>
-                          </div>
-                      ) : (
-                          <div className="flex flex-col items-center justify-center h-full text-gray-200">
-                              <Icons.Video size={48} className="mb-4 opacity-10" />
-                              <span className="font-black uppercase tracking-widest text-[10px]">Ready to Generate</span>
-                          </div>
-                      )}
-                    </div>
+                    )}
                   </div>
-                );
-              })}
+                  <div className={`bg-gray-50 rounded-[2.8rem] overflow-hidden relative shrink-0 shadow-2xl ring-8 ring-white ${aspectRatio === '9:16' ? 'w-48 h-80' : 'w-[380px] h-[214px]'}`}>
+                    {scene.video_path ? (
+                        <video src={scene.video_path} autoPlay loop muted className="w-full h-full object-cover" />
+                    ) : (
+                        <div className="flex flex-col items-center justify-center h-full text-gray-200">
+                            <Icons.Loader2 size={48} className="mb-4 opacity-10 animate-spin" />
+                            <span className="font-black uppercase tracking-widest text-[10px]">Awaiting Veo Render</span>
+                        </div>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
-            <div className="mt-8 flex justify-between items-center">
-              <button onClick={() => setStep(4)} className="text-gray-400 font-black hover:text-brand-dark uppercase tracking-widest text-xs">Back to Images</button>
-              <div className="flex items-center gap-4">
-                {scenes.some(s => s.video_path) && !scenes.every(s => s.video_path) && (
-                  <span className="text-xs text-gray-400 font-medium">
-                    {scenes.filter(s => s.video_path).length}/{scenes.length} scenes complete
-                  </span>
-                )}
-                <button
-                  onClick={() => setStep(6)}
-                  disabled={!scenes.some(s => s.video_path)}
-                  className="bg-brand-dark text-white px-10 py-4 rounded-full font-black text-xl shadow-xl disabled:opacity-20"
-                >
-                  Assemble Master Video
-                </button>
-              </div>
+            <div className="mt-8 flex justify-end">
+              <button onClick={() => setStep(6)} disabled={!scenes.every(s => s.video_path)} className="bg-brand-dark text-white px-10 py-4 rounded-full font-black text-xl shadow-xl disabled:opacity-20">Assemble Master Video</button>
             </div>
           </div>
         )}
@@ -880,10 +754,10 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ onNavigate, initia
             <div className={`relative rounded-[4rem] border-[20px] border-white shadow-2xl overflow-hidden bg-brand-dark mx-auto mb-14 ${aspectRatio === '9:16' ? 'w-64 h-[28rem]' : 'w-[44rem] h-[25rem]'}`}>
               {scenes[currentPlaybackScene]?.video_path && (
                 <div className="w-full h-full relative">
-                  <video
+                  <video 
                     ref={videoPreviewRef}
-                    src={scenes[currentPlaybackScene].video_path}
-                    className="w-full h-full object-cover"
+                    src={scenes[currentPlaybackScene].video_path} 
+                    className="w-full h-full object-cover" 
                   />
                   <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-12 pt-24">
                     <p className="text-white text-2xl font-black italic">{scenes[currentPlaybackScene].script_segment}</p>
