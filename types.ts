@@ -32,6 +32,7 @@ export interface Project {
   saved_scenes?: Scene[];
   saved_topic?: string;
   saved_duration?: number;
+  saved_character_description?: string;
 }
 
 export interface Script {
