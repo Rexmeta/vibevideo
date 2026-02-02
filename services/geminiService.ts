@@ -1,5 +1,4 @@
-
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { Scene } from "../types";
 
 /**
@@ -101,7 +100,19 @@ export const segmentScriptIntoScenes = async (script: string, style: string, rat
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: prompt,
-      config: { responseMimeType: 'application/json' }
+      config: { 
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              script_segment: { type: Type.STRING },
+              visual_prompt: { type: Type.STRING }
+            }
+          }
+        }
+      }
     });
 
     const data = JSON.parse(response.text || "[]");
@@ -139,7 +150,7 @@ export const generateSceneAudio = async (text: string, style: string, voiceOverr
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text: cleanText }] }],
       config: {
-        responseModalities: ['AUDIO'] as any,
+        responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: { 
             prebuiltVoiceConfig: { voiceName: selectedVoice } 
