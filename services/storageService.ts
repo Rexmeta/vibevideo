@@ -1,63 +1,90 @@
-
-import { db } from "./firebaseConfig";
-import { collection, doc, getDoc, getDocs, setDoc, deleteDoc } from "firebase/firestore";
 import { Project } from "../types";
 
-const COLLECTION_NAME = 'projects';
+// Name of the IndexedDB database
+const DB_NAME = 'VibeVideoDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'projects';
+
+/**
+ * Open (and initialize if needed) the IndexedDB database.
+ */
+const openDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    // Check if indexedDB is supported
+    if (!('indexedDB' in window)) {
+        reject(new Error("This browser doesn't support IndexedDB"));
+        return;
+    }
+
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        // Create object store with 'id' as the key path
+        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+    };
+
+    request.onsuccess = (event) => {
+      resolve((event.target as IDBOpenDBRequest).result);
+    };
+
+    request.onerror = (event) => {
+      reject((event.target as IDBOpenDBRequest).error);
+    };
+  });
+};
 
 export const saveProjectToDB = async (project: Project): Promise<void> => {
-  try {
-    // We use the project.id as the document ID in Firestore for easy retrieval
-    const projectRef = doc(db, COLLECTION_NAME, project.id);
-    await setDoc(projectRef, project, { merge: true });
-    console.log(`Project ${project.id} saved to Firestore.`);
-  } catch (error) {
-    console.error("Error saving project to Firestore:", error);
-    throw error;
-  }
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.put(project);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
 };
 
 export const getAllProjectsFromDB = async (): Promise<Project[]> => {
-  try {
-    const projectsCol = collection(db, COLLECTION_NAME);
-    const projectSnapshot = await getDocs(projectsCol);
-    const projectList = projectSnapshot.docs.map(doc => doc.data() as Project);
-    
-    // Sort by created_at desc (newest first)
-    projectList.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    
-    return projectList;
-  } catch (error) {
-    console.error("Error fetching projects from Firestore:", error);
-    // Return empty array on error to prevent app crash, or rethrow if you want to handle it in UI
-    return [];
-  }
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.getAll();
+
+    request.onsuccess = () => {
+        const projects = request.result as Project[];
+        // Sort by created_at desc (newest first)
+        projects.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        resolve(projects);
+    };
+    request.onerror = () => reject(request.error);
+  });
 };
 
 export const getProjectFromDB = async (id: string): Promise<Project | undefined> => {
-  try {
-    const projectRef = doc(db, COLLECTION_NAME, id);
-    const projectSnap = await getDoc(projectRef);
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.get(id);
 
-    if (projectSnap.exists()) {
-      return projectSnap.data() as Project;
-    } else {
-      console.warn(`No project found with ID: ${id}`);
-      return undefined;
-    }
-  } catch (error) {
-    console.error("Error fetching project from Firestore:", error);
-    return undefined;
-  }
+    request.onsuccess = () => resolve(request.result as Project | undefined);
+    request.onerror = () => reject(request.error);
+  });
 };
 
 export const deleteProjectFromDB = async (id: string): Promise<void> => {
-  try {
-    const projectRef = doc(db, COLLECTION_NAME, id);
-    await deleteDoc(projectRef);
-    console.log(`Project ${id} deleted from Firestore.`);
-  } catch (error) {
-    console.error("Error deleting project from Firestore:", error);
-    throw error;
-  }
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.delete(id);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
 };
