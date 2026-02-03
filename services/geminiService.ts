@@ -193,8 +193,6 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
 
     for (const part of response.candidates[0].content.parts) {
       if (part.inlineData) {
-        // Gemini 2.5 Flash Image defaults to JPEG usually, but we just return the raw bytes here.
-        // The calling function assumes JPEG for Veo input.
         return part.inlineData.data;
       }
     }
@@ -211,16 +209,12 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
 export const generateSceneVideo = async (prompt: string, base64Image?: string, aspectRatio: string = '16:9'): Promise<string | null> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-  // Veo strictly supports 16:9 or 9:16. 
-  // Map other ratios to the closest supported format for the video generation step.
   let validRatio: '16:9' | '9:16' = '16:9';
   if (aspectRatio === '9:16' || aspectRatio === '3:4' || aspectRatio === '1:1') {
     validRatio = '9:16';
   }
 
   try {
-    // Construct the payload dynamically to avoid passing 'undefined' to the image field
-    // which can cause API validation errors.
     const requestPayload: any = {
       model: 'veo-3.1-fast-generate-preview',
       prompt: prompt,
@@ -232,9 +226,10 @@ export const generateSceneVideo = async (prompt: string, base64Image?: string, a
     };
 
     if (base64Image) {
+      // Clean base64 if it has a prefix
+      const cleanBase64 = base64Image.replace(/^data:image\/[a-z]+;base64,/, "");
       requestPayload.image = {
-        imageBytes: base64Image,
-        // Gemini generated images are typically JPEG. Using 'image/jpeg' is safer than 'image/png'.
+        imageBytes: cleanBase64,
         mimeType: 'image/jpeg' 
       };
     }
@@ -242,31 +237,26 @@ export const generateSceneVideo = async (prompt: string, base64Image?: string, a
     let operation = await ai.models.generateVideos(requestPayload);
 
     let retries = 0;
-    const maxRetries = 60; // Max 5 minutes (60 * 5s)
+    const maxRetries = 60; 
     
     while (!operation.done && retries < maxRetries) {
-      // 5 seconds poll interval is better responsiveness than 10s
       await new Promise(resolve => setTimeout(resolve, 5000));
       operation = await ai.operations.getVideosOperation({ operation: operation });
       retries++;
     }
 
     if (!operation.done) {
-        throw new Error("Video generation timed out after 5 minutes.");
+        throw new Error("Video generation timed out.");
     }
 
     const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
     if (!downloadLink) return null;
     
-    return `${downloadLink}&key=${process.env.API_KEY}`;
+    const separator = downloadLink.includes('?') ? '&' : '?';
+    return `${downloadLink}${separator}key=${process.env.API_KEY}`;
   } catch (error: any) {
-    console.error("Video generation error details:", error);
-    if (
-      error.message?.includes("Requested entity was not found") || 
-      error.message?.includes("permission") ||
-      error.status === "PERMISSION_DENIED" ||
-      error.code === 403
-    ) {
+    console.error("Video generation error:", error);
+    if (error.message?.includes("Requested entity was not found") || error.message?.includes("permission")) {
       throw new Error("API_KEY_RESELECT_REQUIRED");
     }
     throw error;

@@ -1,90 +1,132 @@
-import { Project } from "../types";
 
-// Name of the IndexedDB database
-const DB_NAME = 'VibeVideoDB';
-const DB_VERSION = 1;
-const STORE_NAME = 'projects';
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  deleteDoc, 
+  query, 
+  orderBy, 
+  where 
+} from "firebase/firestore";
+import { 
+  ref, 
+  uploadString, 
+  uploadBytes, 
+  getDownloadURL 
+} from "firebase/storage";
+import { db, storage } from "./firebaseConfig";
+import { Project, ProjectStatus } from "../types";
+
+const PROJECTS_COLLECTION = 'projects';
 
 /**
- * Open (and initialize if needed) the IndexedDB database.
+ * Uploads a base64 or blob file to Cloud Storage and returns the permanent URL.
  */
-const openDB = (): Promise<IDBDatabase> => {
-  return new Promise((resolve, reject) => {
-    // Check if indexedDB is supported
-    if (!('indexedDB' in window)) {
-        reject(new Error("This browser doesn't support IndexedDB"));
-        return;
+export const uploadFileToCloud = async (path: string, data: string | Blob, format: 'base64' | 'blob' = 'base64'): Promise<string> => {
+  try {
+    const storageRef = ref(storage, path);
+    if (format === 'base64') {
+      // Remove data:image/jpeg;base64, prefix if present
+      const cleanData = typeof data === 'string' ? data.replace(/^data:.*?;base64,/, "") : "";
+      await uploadString(storageRef, cleanData, 'base64');
+    } else {
+      await uploadBytes(storageRef, data as Blob);
     }
-
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onupgradeneeded = (event) => {
-      const db = (event.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        // Create object store with 'id' as the key path
-        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-      }
-    };
-
-    request.onsuccess = (event) => {
-      resolve((event.target as IDBOpenDBRequest).result);
-    };
-
-    request.onerror = (event) => {
-      reject((event.target as IDBOpenDBRequest).error);
-    };
-  });
+    return await getDownloadURL(storageRef);
+  } catch (error) {
+    console.error("Cloud Storage Upload Failed:", error);
+    throw error;
+  }
 };
 
-export const saveProjectToDB = async (project: Project): Promise<void> => {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.put(project);
-
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+/**
+ * Saves project metadata to Firestore.
+ */
+export const saveProjectToCloud = async (project: Project): Promise<void> => {
+  try {
+    const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
+    await setDoc(projectRef, {
+      ...project,
+      updated_at: new Date().toISOString()
+    }, { merge: true });
+  } catch (error) {
+    console.error("Firestore Save Failed:", error);
+    throw error;
+  }
 };
 
-export const getAllProjectsFromDB = async (): Promise<Project[]> => {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readonly');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.getAll();
+/**
+ * Fetches all projects for a specific user.
+ */
+export const getAllProjectsFromCloud = async (userId: string = 'u1'): Promise<Project[]> => {
+  try {
+    const q = query(
+      collection(db, PROJECTS_COLLECTION), 
+      where("user_id", "==", userId),
+      orderBy("created_at", "desc")
+    );
+    const querySnapshot = await getDocs(q);
+    const projects: Project[] = [];
+    querySnapshot.forEach((doc) => {
+      projects.push(doc.data() as Project);
+    });
+    return projects;
+  } catch (error) {
+    console.error("Firestore Fetch Failed:", error);
+    return [];
+  }
+};
 
-    request.onsuccess = () => {
-        const projects = request.result as Project[];
-        // Sort by created_at desc (newest first)
-        projects.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-        resolve(projects);
+/**
+ * Fetches a single project by ID.
+ */
+export const getProjectFromCloud = async (id: string): Promise<Project | undefined> => {
+  try {
+    const projectRef = doc(db, PROJECTS_COLLECTION, id);
+    const docSnap = await getDoc(projectRef);
+    return docSnap.exists() ? (docSnap.data() as Project) : undefined;
+  } catch (error) {
+    console.error("Firestore Get Project Failed:", error);
+    return undefined;
+  }
+};
+
+/**
+ * Deletes a project from the cloud.
+ */
+export const deleteProjectFromCloud = async (id: string): Promise<void> => {
+  try {
+    await deleteDoc(doc(db, PROJECTS_COLLECTION, id));
+  } catch (error) {
+    console.error("Firestore Delete Failed:", error);
+    throw error;
+  }
+};
+
+/**
+ * Duplicates a project in the cloud (Version Control).
+ */
+export const duplicateProjectInCloud = async (id: string): Promise<Project | null> => {
+  try {
+    const original = await getProjectFromCloud(id);
+    if (!original) return null;
+
+    const newId = `copy-${Date.now()}`;
+    const newProject: Project = {
+      ...original,
+      id: newId,
+      title: `${original.title} (New Version)`,
+      created_at: new Date().toISOString(),
+      status: ProjectStatus.DRAFT,
+      saved_step: original.saved_step // Keep progress
     };
-    request.onerror = () => reject(request.error);
-  });
-};
 
-export const getProjectFromDB = async (id: string): Promise<Project | undefined> => {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readonly');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.get(id);
-
-    request.onsuccess = () => resolve(request.result as Project | undefined);
-    request.onerror = () => reject(request.error);
-  });
-};
-
-export const deleteProjectFromDB = async (id: string): Promise<void> => {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.delete(id);
-
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+    await saveProjectToCloud(newProject);
+    return newProject;
+  } catch (error) {
+    console.error("Cloud Duplicate Failed:", error);
+    throw error;
+  }
 };
