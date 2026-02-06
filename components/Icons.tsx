@@ -11,6 +11,7 @@ import {
   ArrowRight,
   Check,
   Video,
+  VideoOff,
   Mic,
   LayoutTemplate,
   Loader2,
@@ -29,11 +30,12 @@ import {
   Shield,
   Eye,
   EyeOff,
-  Github
+  Github,
+  Cloud
 } from 'lucide-react';
 
 export const Icons = {
-  Play, Wand2, ImageIcon, Type, Languages, Scissors, User, ArrowRight, Check, Video, Mic, LayoutTemplate, Loader2, ChevronRight,
+  Play, Wand2, ImageIcon, Type, Languages, Scissors, User, ArrowRight, Check, Video, VideoOff, Mic, LayoutTemplate, Loader2, ChevronRight,
   Monitor, Smartphone, Square, Layout,
-  Mail, Lock, CreditCard, Bell, Settings, LogOut, FileText, Shield, Eye, EyeOff, Github
+  Mail, Lock, CreditCard, Bell, Settings, LogOut, FileText, Shield, Eye, EyeOff, Github, Cloud
 };

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Project, ProjectStatus, ViewState } from '../types';
+import { Project, ViewState } from '../types';
 import { 
   getAllProjectsFromCloud, 
   deleteProjectFromCloud, 
@@ -9,19 +9,21 @@ import {
 import { Icons } from './Icons';
 
 interface ProjectManagementProps {
+  userId: string;
   onNavigate: (view: ViewState) => void;
   onEditProject?: (id: string) => void;
 }
 
-export const ProjectManagement: React.FC<ProjectManagementProps> = ({ onNavigate, onEditProject }) => {
+export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, onNavigate, onEditProject }) => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    if (!userId) return;
     let isMounted = true;
     const loadProjects = async () => {
       try {
-        const loaded = await getAllProjectsFromCloud('u1');
+        const loaded = await getAllProjectsFromCloud(userId);
         if (isMounted) {
           setProjects(loaded);
           setIsLoading(false);
@@ -33,7 +35,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ onNavigate
     };
     loadProjects();
     return () => { isMounted = false; };
-  }, []);
+  }, [userId]);
 
   const deleteProject = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -101,7 +103,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ onNavigate
             >
               <div className="relative aspect-video bg-gray-50 overflow-hidden">
                 {project.thumbnail ? (
-                  <img src={project.thumbnail} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+                  <img src={project.thumbnail} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" alt={project.title} />
                 ) : (
                    <div className="w-full h-full flex items-center justify-center"><Icons.Video className="text-gray-200" /></div>
                 )}

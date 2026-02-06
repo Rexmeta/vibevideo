@@ -25,6 +25,8 @@ export interface Project {
   style_template: string;
   status: ProjectStatus;
   created_at: string;
+  // Added updated_at property to fix Property 'updated_at' does not exist on type 'Project' errors
+  updated_at?: string;
   thumbnail?: string;
   // Fields for Autosave/Resume functionality
   saved_step?: number;
@@ -50,6 +52,7 @@ export interface Scene {
   end_time?: number;
   image_path?: string; // base64 encoded string or URL
   audio_path?: string; // base64 encoded audio
+  audio_duration?: number; // duration in seconds
   video_path?: string; // URL to generated video clip
 }
 

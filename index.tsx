@@ -1,15 +1,22 @@
+
 import React from 'react';
-import ReactDOM from 'react-dom/client';
+import { createRoot } from 'react-dom/client';
 import App from './App';
 
 const rootElement = document.getElementById('root');
-if (!rootElement) {
-  throw new Error("Could not find root element to mount to");
-}
 
-const root = ReactDOM.createRoot(rootElement);
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+if (!rootElement) {
+  console.error("Critical Error: Root element not found.");
+} else {
+  try {
+    const root = createRoot(rootElement);
+    root.render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>
+    );
+  } catch (error) {
+    console.error("Failed to render React app:", error);
+    rootElement.innerHTML = `<div style="padding: 40px; text-align: center;"><h1>Initialization Error</h1><p>${error instanceof Error ? error.message : String(error)}</p></div>`;
+  }
+}

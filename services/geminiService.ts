@@ -1,264 +1,207 @@
+
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { Scene } from "../types";
 
-/**
- * Clean text for TTS: Remove markdown symbols (*, _, #), 
- * extra whitespace, and emojis that might crash the TTS engine.
- */
+// Helper to safely get the API KEY
+const getApiKey = () => {
+  const key = process.env.API_KEY;
+  if (!key) {
+    console.warn("API_KEY is not defined in process.env. Using fallback/empty string.");
+    return "";
+  }
+  return key;
+};
+
+async function urlToBase64(url: string): Promise<string> {
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (error) {
+    console.error("URL to Base64 conversion failed:", error);
+    throw error;
+  }
+}
+
 function sanitizeTextForTTS(text: string): string {
+  if (!text) return "";
   return text
-    .replace(/\*\*/g, '') // remove bold
-    .replace(/\*/g, '')  // remove italic/bullets
-    .replace(/#/g, '')   // remove headers
-    .replace(/[`_~]/g, '') // remove other markdown
-    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '') // remove emojis
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/#/g, '')
+    .replace(/[`_~]/g, '')
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')
     .trim();
 }
 
-/**
- * Utility for exponential backoff retry logic.
- */
-async function retry<T>(fn: () => Promise<T>, retries = 3, delay = 1500): Promise<T> {
+async function pcmToWav(pcmBase64: string, sampleRate: number = 24000): Promise<{ dataUrl: string, duration: number }> {
   try {
-    return await fn();
-  } catch (error: any) {
-    if (retries <= 0) throw error;
-    console.warn(`API call failed (500 or transient). Retrying in ${delay}ms...`, error);
-    await new Promise(resolve => setTimeout(resolve, delay));
-    return retry(fn, retries - 1, delay * 2);
-  }
-}
-
-export function decodeBase64(base64: string): Uint8Array {
-  const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
-
-export async function decodeAudioData(
-  data: Uint8Array,
-  ctx: AudioContext,
-  sampleRate: number = 24000,
-  numChannels: number = 1
-): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
-  const frameCount = dataInt16.length / numChannels;
-  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-
-  for (let channel = 0; channel < numChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
-    for (let i = 0; i < frameCount; i++) {
-      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    const binaryString = atob(pcmBase64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
     }
+    
+    const duration = len / (sampleRate * 2);
+
+    const wavHeader = new ArrayBuffer(44);
+    const view = new DataView(wavHeader);
+    const writeString = (view: DataView, offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+    
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + len, true);
+    writeString(view, 8, 'WAVE');
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); 
+    view.setUint16(22, 1, true); 
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(view, 36, 'data');
+    view.setUint32(40, len, true);
+    
+    const blob = new Blob([wavHeader, bytes], { type: 'audio/wav' });
+    const dataUrl = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string));
+      reader.readAsDataURL(blob);
+    });
+
+    return { dataUrl, duration };
+  } catch (e) {
+    console.error("PCM to WAV failed", e);
+    return { dataUrl: `data:audio/wav;base64,${pcmBase64}`, duration: 0 };
   }
-  return buffer;
 }
 
 export const generateScript = async (topic: string, style: string, lengthSeconds: number = 60): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  const styleContext = style === 'Cute Stickman' 
-    ? "Write in a very friendly, playful, and energetic casual tone as if a stickman character is talking to the audience."
-    : `Adjust the tone to match the "${style}" aesthetic.`;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Write a compelling video script about "${topic}". 
-      Visual Style Context: ${style}.
-      ${styleContext}
-      Target Length: approximately ${lengthSeconds} seconds.
-      Format: Return ONLY the spoken text. Do not include markdown or stage directions.`,
-    });
-    return response.text || "Failed to generate script.";
-  } catch (error: any) {
-    console.error("Script generation error:", error);
-    throw error;
-  }
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: `Generate a full video script about "${topic}". Style: ${style}. Goal duration: ${lengthSeconds} seconds. Output only the spoken text.`,
+  });
+  return response.text || "Script generation failed.";
 };
 
 export const segmentScriptIntoScenes = async (script: string, style: string, ratio: string): Promise<Partial<Scene>[]> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-  try {
-    const prompt = `
-      Break the following script into visual scenes for a ${ratio} video.
-      Style: ${style}.
-      
-      For each scene, provide:
-      1. 'script_segment': The text spoken in this scene.
-      2. 'visual_prompt': A short, clear visual description for image generation that would be a great keyframe for this scene.
-      
-      Return ONLY a JSON array of objects with these keys.
-      Script: "${script}"
-    `;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-      config: { 
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              script_segment: { type: Type.STRING },
-              visual_prompt: { type: Type.STRING }
-            }
-          }
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const prompt = `Segment this script into exactly 3-5 visual scenes for a ${ratio} video. Style: ${style}. Output JSON array. Script: "${script}"`;
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: prompt,
+    config: { 
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            script_segment: { type: Type.STRING },
+            visual_prompt: { type: Type.STRING }
+          },
+          required: ['script_segment', 'visual_prompt']
         }
       }
-    });
-
-    const data = JSON.parse(response.text || "[]");
-    return data.map((item: any, index: number) => ({
-      id: `scene-${index}`,
-      project_id: 'temp',
-      script_segment: item.script_segment,
-      visual_prompt: item.visual_prompt
-    }));
-  } catch (error: any) {
-    console.error("Segmentation error:", error);
-    throw error;
-  }
+    }
+  });
+  const data = JSON.parse(response.text || "[]");
+  return data.map((item: any, index: number) => ({
+    id: `scene-${index}`,
+    script_segment: item.script_segment,
+    visual_prompt: item.visual_prompt
+  }));
 };
 
-export const generateSceneAudio = async (text: string, style: string, voiceOverride?: string): Promise<string | null> => {
-  const voiceMap: Record<string, string> = {
-    'Cute Stickman': 'Puck',
-    'Japanese Anime': 'Kore',
-    'Minimal Info': 'Charon',
-    '3D Animation': 'Zephyr',
-    'Real Photo': 'Fenrir',
-    'Cinematic': 'Fenrir'
-  };
-
-  const selectedVoice = voiceOverride || voiceMap[style] || 'Kore';
+export const generateSceneAudio = async (text: string, style: string): Promise<{ audio_path: string, duration: number } | null> => {
+  const voiceMap: Record<string, string> = { 'Cute Stickman': 'Puck', 'Japanese Anime': 'Kore' };
+  const selectedVoice = voiceMap[style] || 'Kore';
   const cleanText = sanitizeTextForTTS(text);
-
   if (!cleanText) return null;
 
-  return retry(async () => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    
+  try {
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text: cleanText }] }],
       config: {
         responseModalities: [Modality.AUDIO],
-        speechConfig: {
-          voiceConfig: { 
-            prebuiltVoiceConfig: { voiceName: selectedVoice } 
-          },
-        },
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } },
       },
     });
-
-    const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (!audioData) {
-      console.error("No audio data in response candidate:", response);
-      throw new Error("EMPTY_AUDIO_RESPONSE");
-    }
-    return audioData;
-  }).catch((error: any) => {
-    console.error("TTS Final failure:", error);
-    if (error.message?.includes("Requested entity was not found") || error.message?.includes("permission")) {
-      throw new Error("API_KEY_RESELECT_REQUIRED");
-    }
-    throw error;
-  });
-};
-
-export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '1:1'): Promise<string | null> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: `Create a high-quality visual for a video scene. 
-      Subject: ${prompt}. 
-      Style: ${style}. 
-      Ensure cinematic lighting and professional composition.`,
-      config: {
-        imageConfig: {
-          aspectRatio: aspectRatio as any
-        }
-      }
-    });
-
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        return part.inlineData.data;
-      }
-    }
+    
+    const audioPart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+    if (!audioPart?.inlineData?.data) return null;
+    
+    const { dataUrl, duration } = await pcmToWav(audioPart.inlineData.data);
+    return { audio_path: dataUrl, duration };
+  } catch (e) {
+    console.error("Audio generation failed", e);
     return null;
-  } catch (error: any) {
-    console.error("Image generation error:", error);
-    if (error.message?.includes("Requested entity was not found") || error.message?.includes("permission")) {
-      throw new Error("API_KEY_RESELECT_REQUIRED");
-    }
-    throw error;
   }
 };
 
-export const generateSceneVideo = async (prompt: string, base64Image?: string, aspectRatio: string = '16:9'): Promise<string | null> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9'): Promise<string | null> => {
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-image-preview',
+    contents: {
+      parts: [{ text: `High quality cinematic digital art, 8k, detailed textures. Scene: ${prompt}. Style: ${style}.` }],
+    },
+    config: { 
+      imageConfig: { 
+        aspectRatio: aspectRatio as any, 
+        imageSize: '1K' 
+      } 
+    }
+  });
+  
+  // Find the image part among candidates
+  for (const part of response.candidates?.[0]?.content?.parts || []) {
+    if (part.inlineData) {
+      return part.inlineData.data;
+    }
+  }
+  return null;
+};
 
-  let validRatio: '16:9' | '9:16' = '16:9';
-  if (aspectRatio === '9:16' || aspectRatio === '3:4' || aspectRatio === '1:1') {
-    validRatio = '9:16';
+export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9'): Promise<string | null> => {
+  let validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
+  const aiStart = new GoogleGenAI({ apiKey: getApiKey() });
+  
+  const payload: any = {
+    model: 'veo-3.1-fast-generate-preview',
+    prompt: `Smooth motion, high quality: ${prompt}`,
+    config: { numberOfVideos: 1, resolution: '720p', aspectRatio: validRatio }
+  };
+
+  if (imageSource) {
+    const imageBytes = imageSource.startsWith('http') ? await urlToBase64(imageSource) : imageSource.replace(/^data:image\/[a-z]+;base64,/, "");
+    payload.image = { imageBytes, mimeType: 'image/jpeg' };
   }
 
-  try {
-    const requestPayload: any = {
-      model: 'veo-3.1-fast-generate-preview',
-      prompt: prompt,
-      config: {
-        numberOfVideos: 1,
-        resolution: '720p',
-        aspectRatio: validRatio
-      }
-    };
-
-    if (base64Image) {
-      // Clean base64 if it has a prefix
-      const cleanBase64 = base64Image.replace(/^data:image\/[a-z]+;base64,/, "");
-      requestPayload.image = {
-        imageBytes: cleanBase64,
-        mimeType: 'image/jpeg' 
-      };
-    }
-
-    let operation = await ai.models.generateVideos(requestPayload);
-
-    let retries = 0;
-    const maxRetries = 60; 
-    
-    while (!operation.done && retries < maxRetries) {
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      operation = await ai.operations.getVideosOperation({ operation: operation });
-      retries++;
-    }
-
-    if (!operation.done) {
-        throw new Error("Video generation timed out.");
-    }
-
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    if (!downloadLink) return null;
-    
-    const separator = downloadLink.includes('?') ? '&' : '?';
-    return `${downloadLink}${separator}key=${process.env.API_KEY}`;
-  } catch (error: any) {
-    console.error("Video generation error:", error);
-    if (error.message?.includes("Requested entity was not found") || error.message?.includes("permission")) {
-      throw new Error("API_KEY_RESELECT_REQUIRED");
-    }
-    throw error;
+  let operation = await aiStart.models.generateVideos(payload);
+  let attempts = 0;
+  while (!operation.done && attempts < 30) {
+    await new Promise(r => setTimeout(r, 7000));
+    const aiPoll = new GoogleGenAI({ apiKey: getApiKey() });
+    operation = await aiPoll.operations.getVideosOperation({ operation: operation });
+    attempts++;
   }
+  const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+  return downloadLink ? `${downloadLink}&key=${getApiKey()}` : null;
 }
