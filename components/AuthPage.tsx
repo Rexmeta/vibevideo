@@ -20,8 +20,34 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, initialMode = 'l
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const getFirebaseErrorMessage = (code: string): string => {
+    switch (code) {
+      case 'auth/configuration-not-found':
+        return 'Firebase 프로젝트에서 이메일/비밀번호 로그인이 활성화되지 않았습니다. Firebase Console → Authentication → Sign-in method에서 이메일/비밀번호를 활성화해주세요.';
+      case 'auth/email-already-in-use':
+        return '이미 사용 중인 이메일 주소입니다.';
+      case 'auth/invalid-email':
+        return '유효하지 않은 이메일 주소입니다.';
+      case 'auth/weak-password':
+        return '비밀번호는 최소 6자 이상이어야 합니다.';
+      case 'auth/user-not-found':
+        return '등록되지 않은 이메일 주소입니다.';
+      case 'auth/wrong-password':
+        return '비밀번호가 올바르지 않습니다.';
+      case 'auth/invalid-credential':
+        return '이메일 또는 비밀번호가 올바르지 않습니다.';
+      case 'auth/too-many-requests':
+        return '로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.';
+      case 'auth/network-request-failed':
+        return '네트워크 오류가 발생했습니다. 인터넷 연결을 확인해주세요.';
+      default:
+        return '인증에 실패했습니다. 다시 시도해주세요.';
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,17 +56,35 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, initialMode = 'l
     setLoading(true);
     setError(null);
 
+    if (mode === 'signup') {
+      if (password.length < 6) {
+        setError('비밀번호는 최소 6자 이상이어야 합니다.');
+        setLoading(false);
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError('비밀번호가 일치하지 않습니다.');
+        setLoading(false);
+        return;
+      }
+      if (!fullName.trim()) {
+        setError('이름을 입력해주세요.');
+        setLoading(false);
+        return;
+      }
+    }
+
     try {
       if (mode === 'signup') {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        await updateProfile(userCredential.user, { displayName: fullName });
+        await updateProfile(userCredential.user, { displayName: fullName.trim() });
       } else {
         await signInWithEmailAndPassword(auth, email, password);
       }
       onNavigate('projects');
     } catch (err: any) {
       console.error("Auth Error:", err);
-      setError(err.message || "인증에 실패했습니다. 정보를 확인해주세요.");
+      setError(getFirebaseErrorMessage(err.code || ''));
     } finally {
       setLoading(false);
     }
@@ -133,6 +177,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, initialMode = 'l
                         <input 
                           type={showPassword ? "text" : "password"} 
                           required
+                          minLength={mode === 'signup' ? 6 : undefined}
                           value={password}
                           onChange={e => setPassword(e.target.value)}
                           className="w-full pl-12 pr-12 py-4 bg-gray-50 border-2 border-gray-100 rounded-2xl focus:border-brand-cyan focus:bg-white transition-all outline-none font-medium" 
@@ -142,7 +187,30 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, initialMode = 'l
                             {showPassword ? <Icons.EyeOff size={20} /> : <Icons.Eye size={20} />}
                         </button>
                     </div>
+                    {mode === 'signup' && (
+                      <p className="text-xs text-gray-400 ml-1">최소 6자 이상</p>
+                    )}
                 </div>
+
+                {mode === 'signup' && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-bold ml-1">Confirm Password</label>
+                    <div className="relative">
+                        <Icons.Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                        <input 
+                          type={showPassword ? "text" : "password"} 
+                          required
+                          value={confirmPassword}
+                          onChange={e => setConfirmPassword(e.target.value)}
+                          className={`w-full pl-12 pr-4 py-4 bg-gray-50 border-2 rounded-2xl focus:bg-white transition-all outline-none font-medium ${confirmPassword && password !== confirmPassword ? 'border-red-300 focus:border-red-400' : 'border-gray-100 focus:border-brand-cyan'}`}
+                          placeholder="비밀번호를 다시 입력해주세요" 
+                        />
+                    </div>
+                    {confirmPassword && password !== confirmPassword && (
+                      <p className="text-xs text-red-500 ml-1">비밀번호가 일치하지 않습니다</p>
+                    )}
+                  </div>
+                )}
 
                 {mode === 'login' && (
                     <div className="flex justify-end">
@@ -176,7 +244,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, initialMode = 'l
 
             <p className="mt-8 text-center text-sm font-medium text-gray-500">
                 {mode === 'login' ? "Don't have an account? " : "Already have an account? "}
-                <button onClick={() => setMode(mode === 'login' ? 'signup' : 'login')} className="text-black font-bold hover:underline">
+                <button onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(null); setConfirmPassword(''); }} className="text-black font-bold hover:underline">
                     {mode === 'login' ? 'Sign up' : 'Log in'}
                 </button>
             </p>
