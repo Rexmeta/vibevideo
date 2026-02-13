@@ -38,8 +38,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
-  const [processingIdx, setProcessingIdx] = useState<number | null>(null);
+  const [processingSet, setProcessingSet] = useState<Set<number>>(new Set());
   const [processingType, setProcessingType] = useState<'audio' | 'image' | 'video' | null>(null);
+  const [failedScenes, setFailedScenes] = useState<Map<string, string>>(new Map());
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState(false);
 
@@ -225,182 +226,278 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     }
   };
 
+  const CONCURRENCY = 3;
+
+  const runParallel = async <T,>(
+    tasks: { idx: number; fn: () => Promise<T> }[],
+    concurrency: number,
+    onStart: (idx: number) => void,
+    onDone: (idx: number) => void
+  ): Promise<{ idx: number; result?: T; error?: any }[]> => {
+    const results: { idx: number; result?: T; error?: any }[] = [];
+    let cursor = 0;
+    const run = async (): Promise<void> => {
+      while (cursor < tasks.length) {
+        const task = tasks[cursor++];
+        onStart(task.idx);
+        try {
+          const result = await task.fn();
+          results.push({ idx: task.idx, result });
+        } catch (error) {
+          results.push({ idx: task.idx, error });
+        }
+        onDone(task.idx);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => run()));
+    return results;
+  };
+
+  const updateSceneAt = (idx: number, updates: Partial<Scene>) => {
+    setScenes(prev => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], ...updates };
+      return next;
+    });
+  };
+
+  const handleSingleAudio = async (idx: number) => {
+    setProcessingType('audio');
+    setProcessingSet(new Set([idx]));
+    const fKey = `audio-${idx}`;
+    try {
+      const currentScene = scenes[idx];
+      if (hasMedia(currentScene.audio_path) && !isMediaUploaded(currentScene.audio_path)) {
+        const url = await tryUploadExisting(currentScene.audio_path!, `users/${userId}/projects/${projectId}/audio/s${idx}.wav`, 'base64');
+        updateSceneAt(idx, { audio_path: url });
+        setFailedScenes(prev => { const n = new Map(prev); n.delete(fKey); return n; });
+        setProcessingSet(new Set()); setProcessingType(null);
+        return;
+      }
+      const res = await generateSceneAudio(currentScene.script_segment!, videoStyle);
+      if (res) {
+        updateSceneAt(idx, { audio_path: res.audio_path, audio_duration: res.duration });
+        saveMedia(projectId, idx, 'audio', res.audio_path);
+        const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/audio/s${idx}.wav`, res.audio_path, 'base64');
+        updateSceneAt(idx, { audio_path: url });
+        setFailedScenes(prev => { const n = new Map(prev); n.delete(fKey); return n; });
+        sync();
+      }
+    } catch (e: any) {
+      console.error(`Scene ${idx} audio retry error:`, e);
+      setFailedScenes(prev => new Map(prev).set(fKey, e?.message || '오류'));
+    }
+    setProcessingSet(new Set());
+    setProcessingType(null);
+  };
+
   const handleBatchAudio = async () => {
     setProcessingType('audio');
-    const updatedScenes = [...scenes];
-    const errors: string[] = [];
-    for (let i = 0; i < updatedScenes.length; i++) {
-      if (isMediaUploaded(updatedScenes[i].audio_path)) continue;
-      setProcessingIdx(i);
-      setLoadingMessage(`씬 ${i + 1}/${updatedScenes.length} 오디오 생성 중...`);
-      try {
-        if (hasMedia(updatedScenes[i].audio_path)) {
-          const url = await tryUploadExisting(updatedScenes[i].audio_path!, `users/${userId}/projects/${projectId}/audio/s${i}.wav`, 'base64');
-          updatedScenes[i].audio_path = url;
-          setScenes([...updatedScenes]);
-          sync(undefined, updatedScenes);
-          continue;
+    const sceneSnapshot = [...scenes];
+    const newFailed = new Map(failedScenes);
+    
+    const tasks = sceneSnapshot.map((s, i) => ({ idx: i, s }))
+      .filter(({ s }) => !isMediaUploaded(s.audio_path))
+      .map(({ idx, s }) => ({
+        idx,
+        fn: async () => {
+          if (hasMedia(s.audio_path)) {
+            const url = await tryUploadExisting(s.audio_path!, `users/${userId}/projects/${projectId}/audio/s${idx}.wav`, 'base64');
+            updateSceneAt(idx, { audio_path: url });
+            return;
+          }
+          const res = await generateSceneAudio(s.script_segment!, videoStyle);
+          if (res) {
+            updateSceneAt(idx, { audio_path: res.audio_path, audio_duration: res.duration });
+            saveMedia(projectId, idx, 'audio', res.audio_path);
+            const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/audio/s${idx}.wav`, res.audio_path, 'base64');
+            updateSceneAt(idx, { audio_path: url });
+          }
         }
-        const res = await generateSceneAudio(updatedScenes[i].script_segment!, videoStyle);
-        if (res) {
-          updatedScenes[i].audio_path = res.audio_path;
-          updatedScenes[i].audio_duration = res.duration;
-          setScenes([...updatedScenes]);
-          saveMedia(projectId, i, 'audio', res.audio_path);
-          const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/audio/s${i}.wav`, res.audio_path, 'base64');
-          updatedScenes[i].audio_path = url;
-          setScenes([...updatedScenes]);
-          sync(undefined, updatedScenes);
-        }
-      } catch (e: any) {
-        console.error(`Scene ${i} audio error:`, e);
-        errors.push(`씬 ${i + 1}: ${e?.message || '알 수 없는 오류'}`);
-      }
-    }
-    setProcessingIdx(null); setProcessingType(null); setLoadingMessage('');
-    if (errors.length > 0) alert(`오디오 생성 실패:\n${errors.join('\n')}`);
+      }));
+
+    if (tasks.length === 0) { setProcessingType(null); return; }
+    setLoadingMessage(`오디오 생성 중... (${tasks.length}개 씬, 최대 ${CONCURRENCY}개 동시 처리)`);
+
+    const results = await runParallel(
+      tasks, CONCURRENCY,
+      (idx) => setProcessingSet(prev => new Set(prev).add(idx)),
+      (idx) => setProcessingSet(prev => { const n = new Set(prev); n.delete(idx); return n; })
+    );
+
+    const errors = results.filter(r => r.error);
+    errors.forEach(r => newFailed.set(`audio-${r.idx}`, r.error?.message || '오류'));
+    results.filter(r => !r.error).forEach(r => newFailed.delete(`audio-${r.idx}`));
+    setFailedScenes(newFailed);
+    setProcessingSet(new Set());
+    setProcessingType(null);
+    setLoadingMessage('');
+    sync();
+    if (errors.length > 0) alert(`오디오 생성 실패 (${errors.length}/${tasks.length}개 씬)\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`);
   };
 
   const handleBatchImages = async () => {
     setProcessingType('image');
-    const updatedScenes = [...scenes];
-    let firstImgUrl = thumbnail;
-    const errors: string[] = [];
-    for (let i = 0; i < updatedScenes.length; i++) {
-      if (isMediaUploaded(updatedScenes[i].image_path)) continue;
-      setProcessingIdx(i);
-      setLoadingMessage(`씬 ${i + 1}/${updatedScenes.length} 이미지 생성 중...`);
-      if (hasMedia(updatedScenes[i].image_path)) {
-        try {
-          const url = await tryUploadExisting(updatedScenes[i].image_path!, `users/${userId}/projects/${projectId}/images/s${i}.jpg`, 'base64');
-          updatedScenes[i].image_path = url;
-          if (i === 0 && url.startsWith('http')) { firstImgUrl = url; setThumbnail(url); }
-          setScenes([...updatedScenes]);
-          sync(undefined, updatedScenes, { thumbnail: firstImgUrl });
-        } catch (e: any) {
-          errors.push(`씬 ${i + 1}: ${e?.message || '업로드 실패'}`);
-        }
-        continue;
-      }
-      try {
-        const base64 = await generateSceneImage(updatedScenes[i].visual_prompt!, videoStyle, aspectRatio);
-        if (base64) {
-          const previewUrl = `data:image/jpeg;base64,${base64}`;
-          updatedScenes[i].image_path = previewUrl;
-          setScenes([...updatedScenes]);
-          saveMedia(projectId, i, 'image', previewUrl);
-          
-          const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${i}.jpg`, base64, 'base64');
-          updatedScenes[i].image_path = url;
-          if (i === 0) {
-            firstImgUrl = url;
-            setThumbnail(url);
+    const sceneSnapshot = [...scenes];
+    const newFailed = new Map(failedScenes);
+
+    const tasks = sceneSnapshot.map((s, i) => ({ idx: i, s }))
+      .filter(({ s }) => !isMediaUploaded(s.image_path))
+      .map(({ idx, s }) => ({
+        idx,
+        fn: async () => {
+          if (hasMedia(s.image_path)) {
+            const url = await tryUploadExisting(s.image_path!, `users/${userId}/projects/${projectId}/images/s${idx}.jpg`, 'base64');
+            updateSceneAt(idx, { image_path: url });
+            if (idx === 0 && url.startsWith('http')) setThumbnail(url);
+            return;
           }
-          setScenes([...updatedScenes]);
-          sync(undefined, updatedScenes, { thumbnail: firstImgUrl });
+          const base64 = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio);
+          if (base64) {
+            const previewUrl = `data:image/jpeg;base64,${base64}`;
+            updateSceneAt(idx, { image_path: previewUrl });
+            saveMedia(projectId, idx, 'image', previewUrl);
+            const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.jpg`, base64, 'base64');
+            updateSceneAt(idx, { image_path: url });
+            if (idx === 0) setThumbnail(url);
+          }
         }
-      } catch (e: any) {
-        console.error(`Scene ${i} image error:`, e);
-        errors.push(`씬 ${i + 1}: ${e?.message || '알 수 없는 오류'}`);
-      }
-    }
-    setProcessingIdx(null); setProcessingType(null); setLoadingMessage('');
-    if (errors.length > 0) alert(`이미지 생성 실패:\n${errors.join('\n')}`);
+      }));
+
+    if (tasks.length === 0) { setProcessingType(null); return; }
+    setLoadingMessage(`이미지 생성 중... (${tasks.length}개 씬, 최대 ${CONCURRENCY}개 동시 처리)`);
+
+    const results = await runParallel(
+      tasks, CONCURRENCY,
+      (idx) => setProcessingSet(prev => new Set(prev).add(idx)),
+      (idx) => setProcessingSet(prev => { const n = new Set(prev); n.delete(idx); return n; })
+    );
+
+    const errors = results.filter(r => r.error);
+    errors.forEach(r => newFailed.set(`image-${r.idx}`, r.error?.message || '오류'));
+    results.filter(r => !r.error).forEach(r => newFailed.delete(`image-${r.idx}`));
+    setFailedScenes(newFailed);
+    setProcessingSet(new Set());
+    setProcessingType(null);
+    setLoadingMessage('');
+    sync();
+    if (errors.length > 0) alert(`이미지 생성 실패 (${errors.length}/${tasks.length}개 씬)\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`);
   };
 
   const handleSingleImage = async (idx: number) => {
-    setProcessingType('image'); setProcessingIdx(idx);
-    const updatedScenes = [...scenes];
+    setProcessingType('image');
+    setProcessingSet(new Set([idx]));
+    const currentScene = scenes[idx];
+    const fKey = `image-${idx}`;
     try {
-      const base64 = await generateSceneImage(updatedScenes[idx].visual_prompt!, videoStyle, aspectRatio);
+      if (hasMedia(currentScene.image_path) && !isMediaUploaded(currentScene.image_path)) {
+        const url = await tryUploadExisting(currentScene.image_path!, `users/${userId}/projects/${projectId}/images/s${idx}.jpg`, 'base64');
+        updateSceneAt(idx, { image_path: url });
+        if (idx === 0) setThumbnail(url);
+        setFailedScenes(prev => { const n = new Map(prev); n.delete(fKey); return n; });
+        setProcessingSet(new Set()); setProcessingType(null);
+        return;
+      }
+      const base64 = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio);
       if (base64) {
         const previewUrl = `data:image/jpeg;base64,${base64}`;
-        updatedScenes[idx].image_path = previewUrl;
-        setScenes([...updatedScenes]);
+        updateSceneAt(idx, { image_path: previewUrl });
         saveMedia(projectId, idx, 'image', previewUrl);
-        
         const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.jpg`, base64, 'base64');
-        updatedScenes[idx].image_path = url;
-        let newThumbnail = thumbnail;
-        if (idx === 0) {
-          newThumbnail = url;
-          setThumbnail(url);
-        }
-        setScenes([...updatedScenes]);
-        await sync(undefined, updatedScenes, { thumbnail: newThumbnail });
+        updateSceneAt(idx, { image_path: url });
+        if (idx === 0) setThumbnail(url);
+        setFailedScenes(prev => { const n = new Map(prev); n.delete(fKey); return n; });
+        sync();
       }
-    } catch (e) { console.error(e); }
-    setProcessingIdx(null); setProcessingType(null);
+    } catch (e: any) {
+      console.error(e);
+      setFailedScenes(prev => new Map(prev).set(fKey, e?.message || '오류'));
+    }
+    setProcessingSet(new Set());
+    setProcessingType(null);
   };
 
   const handleBatchVideos = async () => {
     setProcessingType('video');
-    const updatedScenes = [...scenes];
-    const errors: string[] = [];
-    for (let i = 0; i < updatedScenes.length; i++) {
-      if (isMediaUploaded(updatedScenes[i].video_path)) continue;
-      setProcessingIdx(i);
-      setLoadingMessage(`씬 ${i + 1}/${updatedScenes.length} 비디오 생성 중...`);
-      if (hasMedia(updatedScenes[i].video_path) && !isMediaUploaded(updatedScenes[i].video_path)) {
-        try {
-          const blob = await fetch(updatedScenes[i].video_path!).then(r => r.blob());
-          const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${i}.mp4`, blob, 'blob');
-          updatedScenes[i].video_path = url;
-          setScenes([...updatedScenes]);
-          sync(undefined, updatedScenes);
-        } catch (e: any) {
-          errors.push(`씬 ${i + 1}: ${e?.message || '업로드 실패'}`);
-        }
-        continue;
-      }
-      try {
-        const videoUrl = await generateSceneVideo(updatedScenes[i].visual_prompt!, updatedScenes[i].image_path, aspectRatio);
-        if (videoUrl) {
-          updatedScenes[i].video_path = videoUrl;
-          setScenes([...updatedScenes]);
-          try {
-            const blob = await fetch(videoUrl).then(r => r.blob());
-            const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${i}.mp4`, blob, 'blob');
-            updatedScenes[i].video_path = url;
-            setScenes([...updatedScenes]);
-          } catch (uploadErr) {
-            console.warn(`[Video Upload] Scene ${i} upload failed, keeping direct URL`, uploadErr);
+    const sceneSnapshot = [...scenes];
+    const newFailed = new Map(failedScenes);
+
+    const tasks = sceneSnapshot.map((s, i) => ({ idx: i, s }))
+      .filter(({ s }) => !isMediaUploaded(s.video_path))
+      .map(({ idx, s }) => ({
+        idx,
+        fn: async () => {
+          if (hasMedia(s.video_path) && !isMediaUploaded(s.video_path)) {
+            const blob = await fetch(s.video_path!).then(r => r.blob());
+            const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
+            updateSceneAt(idx, { video_path: url });
+            return;
           }
-          sync(undefined, updatedScenes);
+          const videoUrl = await generateSceneVideo(s.visual_prompt!, s.image_path, aspectRatio);
+          if (videoUrl) {
+            updateSceneAt(idx, { video_path: videoUrl });
+            try {
+              const blob = await fetch(videoUrl).then(r => r.blob());
+              const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
+              updateSceneAt(idx, { video_path: url });
+            } catch (uploadErr) {
+              console.warn(`[Video Upload] Scene ${idx} upload failed, keeping direct URL`, uploadErr);
+            }
+          }
         }
-      } catch (e: any) {
-        console.error(`[Video Gen] Scene ${i} failed:`, e);
-        errors.push(`씬 ${i + 1}: ${e?.message || '알 수 없는 오류'}`);
-      }
-    }
-    setProcessingIdx(null); setProcessingType(null); setLoadingMessage('');
-    if (errors.length > 0) alert(`비디오 생성 실패:\n${errors.join('\n')}`);
+      }));
+
+    if (tasks.length === 0) { setProcessingType(null); return; }
+    setLoadingMessage(`비디오 생성 중... (${tasks.length}개 씬)`);
+
+    const results = await runParallel(
+      tasks, 2,
+      (idx) => setProcessingSet(prev => new Set(prev).add(idx)),
+      (idx) => setProcessingSet(prev => { const n = new Set(prev); n.delete(idx); return n; })
+    );
+
+    const errors = results.filter(r => r.error);
+    errors.forEach(r => newFailed.set(`video-${r.idx}`, r.error?.message || '오류'));
+    results.filter(r => !r.error).forEach(r => newFailed.delete(`video-${r.idx}`));
+    setFailedScenes(newFailed);
+    setProcessingSet(new Set());
+    setProcessingType(null);
+    setLoadingMessage('');
+    sync();
+    if (errors.length > 0) alert(`비디오 생성 실패 (${errors.length}/${tasks.length}개 씬)\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`);
   };
 
   const handleSingleVideo = async (idx: number) => {
-    setProcessingType('video'); setProcessingIdx(idx);
-    const updatedScenes = [...scenes];
+    setProcessingType('video');
+    setProcessingSet(new Set([idx]));
+    const currentScene = scenes[idx];
+    const fKey = `video-${idx}`;
     try {
-      const videoUrl = await generateSceneVideo(updatedScenes[idx].visual_prompt!, updatedScenes[idx].image_path, aspectRatio);
+      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, currentScene.image_path, aspectRatio);
       if (videoUrl) {
-        updatedScenes[idx].video_path = videoUrl;
-        setScenes([...updatedScenes]);
+        updateSceneAt(idx, { video_path: videoUrl });
         try {
           const blob = await fetch(videoUrl).then(r => r.blob());
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
-          updatedScenes[idx].video_path = url;
-          setScenes([...updatedScenes]);
+          updateSceneAt(idx, { video_path: url });
         } catch (uploadErr) {
           console.warn(`[Video Upload] Scene ${idx} upload failed, keeping direct URL`, uploadErr);
         }
-        await sync(undefined, updatedScenes);
+        setFailedScenes(prev => { const n = new Map(prev); n.delete(fKey); return n; });
+        sync();
       }
-    } catch (e) { console.error(e); }
-    setProcessingIdx(null); setProcessingType(null);
+    } catch (e: any) {
+      console.error(e);
+      setFailedScenes(prev => new Map(prev).set(fKey, e?.message || '오류'));
+    }
+    setProcessingSet(new Set());
+    setProcessingType(null);
   };
 
+  const isProcessing = processingSet.size > 0;
   const isImagesReady = scenes.length > 0 && scenes.every(s => !!s.image_path);
   const isVideosReady = scenes.length > 0 && scenes.every(s => !!s.video_path);
+  const failedCount = (type: string) => Array.from(failedScenes.keys()).filter(k => k.startsWith(type)).length;
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 relative">
@@ -419,7 +516,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       {/* Stepper */}
       <div className="flex justify-between mb-16 relative max-w-5xl mx-auto">
         {['Vibe', 'Script', 'Audio', 'Storyboard', 'Motion', 'Preview', 'Export'].map((l, i) => (
-          <div key={l} onClick={() => i+1 <= maxStep && !syncing && !loading && processingIdx === null && setStep((i+1) as any)} className={`flex flex-col items-center z-10 transition-all ${i+1 <= maxStep ? 'cursor-pointer' : 'cursor-not-allowed'} ${i+1 <= maxStep ? 'opacity-100' : 'opacity-20'}`}>
+          <div key={l} onClick={() => i+1 <= maxStep && !syncing && !loading && !isProcessing && setStep((i+1) as any)} className={`flex flex-col items-center z-10 transition-all ${i+1 <= maxStep ? 'cursor-pointer' : 'cursor-not-allowed'} ${i+1 <= maxStep ? 'opacity-100' : 'opacity-20'}`}>
             <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black border-4 transition-all ${step === i+1 ? 'bg-brand-cyan border-white shadow-2xl scale-110' : i+1 <= maxStep ? 'bg-white border-brand-cyan/30' : 'bg-white border-gray-100'}`}>
               {i+1 < maxStep ? <Icons.Check size={20} /> : i+1}
             </div>
@@ -525,42 +622,77 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                 <p className="text-gray-400 font-medium italic">
                   {step === 4 ? '모든 이미지가 생성되어야 다음 단계로 진행할 수 있습니다.' : '오토 제너레이트 버튼을 클릭하여 모든 씬을 한 번에 완성하세요.'}
                 </p>
+                {failedCount(step === 3 ? 'audio' : step === 4 ? 'image' : 'video') > 0 && !isProcessing && (
+                  <p className="text-red-500 text-sm font-bold mt-1">
+                    {failedCount(step === 3 ? 'audio' : step === 4 ? 'image' : 'video')}개 씬 실패 - 개별 재시도하거나 전체 재생성을 눌러주세요
+                  </p>
+                )}
               </div>
               <button 
-                disabled={processingIdx !== null}
+                disabled={isProcessing}
                 onClick={step === 3 ? handleBatchAudio : step === 4 ? handleBatchImages : handleBatchVideos} 
-                className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all ${processingIdx !== null ? 'bg-gray-100 text-gray-300' : 'bg-brand-cyan text-black hover:scale-105 active:scale-95'}`}
+                className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all ${isProcessing ? 'bg-gray-100 text-gray-300' : 'bg-brand-cyan text-black hover:scale-105 active:scale-95'}`}
               >
-                {processingIdx !== null ? (
+                {isProcessing ? (
                   <span className="flex items-center gap-3">
                     <Icons.Loader2 className="animate-spin" size={20} />
-                    {loadingMessage || '처리 중...'}
+                    {loadingMessage || `처리 중... (${processingSet.size}개 동시)`}
                   </span>
                 ) : `Auto-Generate All`}
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto pr-4 space-y-6 hide-scrollbar">
-              {scenes.map((s, i) => (
-                <div key={i} className={`p-8 rounded-[3.5rem] flex flex-col md:flex-row gap-8 items-center border transition-all duration-500 relative ${processingIdx === i ? 'bg-brand-cyan/10 border-brand-cyan scale-[1.01] shadow-2xl' : 'bg-gray-50 border-gray-100 shadow-sm'}`}>
+              {scenes.map((s, i) => {
+                const mediaType = step === 3 ? 'audio' : step === 4 ? 'image' : 'video';
+                const isFailed = failedScenes.has(`${mediaType}-${i}`);
+                const failMsg = failedScenes.get(`${mediaType}-${i}`);
+                const isActive = processingSet.has(i);
+                return (
+                <div key={i} className={`p-8 rounded-[3.5rem] flex flex-col md:flex-row gap-8 items-center border transition-all duration-500 relative ${isActive ? 'bg-brand-cyan/10 border-brand-cyan scale-[1.01] shadow-2xl' : isFailed ? 'bg-red-50 border-red-300 shadow-md' : 'bg-gray-50 border-gray-100 shadow-sm'}`}>
                   <div className="flex-1">
-                    <span className="bg-brand-dark/5 text-brand-dark/40 px-4 py-1.5 rounded-full text-[10px] font-black uppercase mb-3 inline-block tracking-widest">Scene {i+1}</span>
-                    <p className="text-brand-dark text-lg font-medium leading-relaxed italic mb-5 line-clamp-2">"{s.script_segment}"</p>
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="bg-brand-dark/5 text-brand-dark/40 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest">Scene {i+1}</span>
+                      {isFailed && <span className="bg-red-100 text-red-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">Failed</span>}
+                      {isActive && <span className="bg-brand-cyan/20 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-black uppercase animate-pulse">Processing</span>}
+                    </div>
+                    <p className="text-brand-dark text-lg font-medium leading-relaxed italic mb-3 line-clamp-2">"{s.script_segment}"</p>
+                    {isFailed && <p className="text-red-500 text-xs mb-3 font-medium">{failMsg}</p>}
                     
-                    <div className="flex flex-wrap gap-4">
-                      {processingIdx === null && (
+                    <div className="flex flex-wrap gap-3">
+                      {!isProcessing && (
                         <>
                           {s.audio_path && (
                             <button onClick={() => handlePlayAudio(s.audio_path!, i)} className="flex items-center gap-2 px-6 py-2.5 bg-brand-dark text-white rounded-full text-[11px] font-black uppercase hover:scale-105 transition-all shadow-md">
                               {playingAudioIdx === i ? <Icons.Loader2 className="animate-spin" size={12} /> : <Icons.Play size={12} />} Preview Audio
                             </button>
                           )}
-                          {step === 4 && (
+                          {step === 3 && (isFailed || !s.audio_path) && (
+                            <button onClick={() => handleSingleAudio(i)} className="flex items-center gap-2 px-6 py-2.5 bg-red-500 text-white rounded-full text-[11px] font-black uppercase hover:scale-105 transition-all shadow-md">
+                              <Icons.RefreshCw size={12} /> {isFailed ? '재시도' : '오디오 생성'}
+                            </button>
+                          )}
+                          {step === 3 && s.audio_path && !isFailed && (
+                            <button onClick={() => handleSingleAudio(i)} className="flex items-center gap-2 px-6 py-2.5 bg-white border-2 border-brand-dark text-black rounded-full text-[11px] font-black uppercase hover:bg-brand-dark hover:text-white transition-all shadow-sm">
+                              <Icons.Wand2 size={12} /> Regenerate Audio
+                            </button>
+                          )}
+                          {step === 4 && (isFailed || !s.image_path) && (
+                            <button onClick={() => handleSingleImage(i)} className="flex items-center gap-2 px-6 py-2.5 bg-red-500 text-white rounded-full text-[11px] font-black uppercase hover:scale-105 transition-all shadow-md">
+                              <Icons.RefreshCw size={12} /> {isFailed ? '재시도' : '이미지 생성'}
+                            </button>
+                          )}
+                          {step === 4 && s.image_path && !isFailed && (
                             <button onClick={() => handleSingleImage(i)} className="flex items-center gap-2 px-6 py-2.5 bg-white border-2 border-brand-dark text-black rounded-full text-[11px] font-black uppercase hover:bg-brand-dark hover:text-white transition-all shadow-sm">
                               <Icons.Wand2 size={12} /> Regenerate Image
                             </button>
                           )}
-                          {step === 5 && (
+                          {step === 5 && (isFailed || !s.video_path) && (
+                            <button onClick={() => handleSingleVideo(i)} className="flex items-center gap-2 px-6 py-2.5 bg-red-500 text-white rounded-full text-[11px] font-black uppercase hover:scale-105 transition-all shadow-md">
+                              <Icons.RefreshCw size={12} /> {isFailed ? '재시도' : '비디오 생성'}
+                            </button>
+                          )}
+                          {step === 5 && s.video_path && !isFailed && (
                             <button onClick={() => handleSingleVideo(i)} className="flex items-center gap-2 px-6 py-2.5 bg-white border-2 border-brand-dark text-black rounded-full text-[11px] font-black uppercase hover:bg-brand-dark hover:text-white transition-all shadow-sm">
                                <Icons.Video size={12} /> Re-Motion Scene
                             </button>
@@ -570,11 +702,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                     </div>
                   </div>
                   
-                  <div className={`shrink-0 bg-brand-dark rounded-[2.5rem] overflow-hidden shadow-2xl flex items-center justify-center border-4 relative transition-all duration-700 ${aspectRatio === '9:16' ? 'w-40 h-72' : 'w-72 h-40'} ${processingIdx === i ? 'border-brand-cyan scale-105' : 'border-white'}`}>
+                  <div className={`shrink-0 bg-brand-dark rounded-[2.5rem] overflow-hidden shadow-2xl flex items-center justify-center border-4 relative transition-all duration-700 ${aspectRatio === '9:16' ? 'w-40 h-72' : 'w-72 h-40'} ${isActive ? 'border-brand-cyan scale-105' : isFailed ? 'border-red-400' : 'border-white'}`}>
                     {step === 3 ? (
                        <div className="flex flex-col items-center gap-4">
-                          {processingIdx === i ? (
+                          {isActive ? (
                              <Icons.Loader2 className="animate-spin text-brand-cyan" size={40} />
+                          ) : isFailed ? (
+                             <Icons.AlertCircle className="text-red-400" size={40} />
                           ) : s.audio_path ? (
                              <Icons.Check className="text-brand-cyan" size={40} strokeWidth={4} />
                           ) : (
@@ -587,10 +721,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                           <video src={s.video_path} autoPlay loop muted playsInline className="w-full h-full object-cover" />
                         ) : s.image_path ? (
                           <img src={s.image_path} className="w-full h-full object-cover animate-in fade-in zoom-in-95 duration-700" key={s.image_path} alt="Scene Visual" />
+                        ) : isFailed ? (
+                          <Icons.AlertCircle className="text-red-400" size={40} />
                         ) : (
                           <Icons.ImageIcon className="text-white/10" size={40} />
                         )}
-                        {processingIdx === i && (
+                        {isActive && (
                           <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center backdrop-blur-md z-10">
                             <Icons.Loader2 className="animate-spin text-brand-cyan mb-2" size={40} />
                             <span className="text-[10px] font-black text-brand-cyan uppercase tracking-widest animate-pulse">Rendering...</span>
@@ -600,15 +736,16 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                     ) : null}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="flex gap-4 mt-10">
-               <button disabled={processingIdx !== null} onClick={() => setStep((step - 1) as any)} className="px-10 py-6 rounded-full font-black text-gray-400 hover:text-black disabled:opacity-0 transition-all">Back</button>
+               <button disabled={isProcessing} onClick={() => setStep((step - 1) as any)} className="px-10 py-6 rounded-full font-black text-gray-400 hover:text-black disabled:opacity-0 transition-all">Back</button>
                <button 
-                  disabled={processingIdx !== null || (step === 4 && !isImagesReady) || (step === 5 && !isVideosReady)} 
+                  disabled={isProcessing || (step === 4 && !isImagesReady) || (step === 5 && !isVideosReady)} 
                   onClick={() => { const ns = (step + 1) as any; setStep(ns); setMaxStep(prev => Math.max(prev, ns)); sync(ns); }} 
-                  className={`flex-1 py-6 rounded-full font-black text-2xl shadow-2xl transition-all ${processingIdx !== null || (step === 4 && !isImagesReady) || (step === 5 && !isVideosReady) ? 'bg-gray-100 text-gray-300 cursor-not-allowed scale-95' : 'bg-brand-dark text-white hover:scale-[1.02] shadow-brand-cyan/20'}`}
+                  className={`flex-1 py-6 rounded-full font-black text-2xl shadow-2xl transition-all ${isProcessing || (step === 4 && !isImagesReady) || (step === 5 && !isVideosReady) ? 'bg-gray-100 text-gray-300 cursor-not-allowed scale-95' : 'bg-brand-dark text-white hover:scale-[1.02] shadow-brand-cyan/20'}`}
                >
                 {step === 4 && !isImagesReady ? '이미지를 모두 생성하세요' : 
                  step === 5 && !isVideosReady ? '비디오를 모두 생성하세요' : 

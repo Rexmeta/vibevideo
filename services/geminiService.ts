@@ -22,6 +22,31 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 1, label: string = ''): Promise<T> {
+  let lastError: any;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      lastError = e;
+      const isRetryable = e?.message?.includes('시간 초과') || 
+                          e?.message?.includes('timeout') ||
+                          e?.message?.includes('DEADLINE_EXCEEDED') ||
+                          e?.message?.includes('503') ||
+                          e?.message?.includes('429') ||
+                          e?.message?.includes('RESOURCE_EXHAUSTED');
+      if (attempt < maxRetries && isRetryable) {
+        const delay = Math.min(2000 * Math.pow(2, attempt), 8000);
+        console.log(`[Retry] ${label} attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        break;
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function urlToBase64(url: string): Promise<string> {
   try {
     const response = await fetch(url);
@@ -158,7 +183,7 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
 
   console.log(`[TTS] 오디오 생성 시작 - voice: ${selectedVoice}, text length: ${cleanText.length}`);
 
-  try {
+  return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey });
     const response = await withTimeout(
       ai.models.generateContent({
@@ -173,21 +198,14 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
       '오디오 생성'
     );
     
-    console.log("[TTS] API 응답 수신 완료");
     const audioPart = response.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
     if (!audioPart?.inlineData?.data) {
-      console.error("[TTS] 응답에 오디오 데이터 없음:", JSON.stringify(response.candidates?.[0]?.content?.parts?.map((p: any) => Object.keys(p))));
       throw new Error('오디오 데이터가 생성되지 않았습니다.');
     }
     
-    console.log(`[TTS] 오디오 데이터 수신 - size: ${audioPart.inlineData.data.length}`);
     const { dataUrl, duration } = await pcmToWav(audioPart.inlineData.data);
-    console.log(`[TTS] WAV 변환 완료 - duration: ${duration}s`);
     return { audio_path: dataUrl, duration };
-  } catch (e: any) {
-    console.error("[TTS] 오디오 생성 실패:", e?.message || e);
-    throw e;
-  }
+  }, 1, '오디오 생성');
 };
 
 export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9'): Promise<string | null> => {
@@ -198,7 +216,7 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
 
   console.log(`[Image] 이미지 생성 시작 - prompt length: ${prompt.length}, style: ${style}, ratio: ${aspectRatio}`);
 
-  try {
+  return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey });
     const response = await withTimeout(
       ai.models.generateContent({
@@ -212,19 +230,13 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
       '이미지 생성'
     );
 
-    console.log("[Image] API 응답 수신 완료");
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
-        console.log(`[Image] 이미지 데이터 수신 - size: ${part.inlineData.data?.length || 0}`);
         return part.inlineData.data || null;
       }
     }
-    console.error("[Image] 응답에 이미지 데이터 없음");
     throw new Error('이미지 데이터가 생성되지 않았습니다.');
-  } catch (e: any) {
-    console.error("[Image] 이미지 생성 실패:", e?.message || e);
-    throw e;
-  }
+  }, 1, '이미지 생성');
 };
 
 export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9'): Promise<string | null> => {

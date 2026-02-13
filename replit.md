@@ -103,6 +103,13 @@ service firebase.storage {
 ```
 
 ## Recent Changes
+- 2026-02-13: Parallel processing & retry system:
+  - Audio/Image/Video batch generation now runs in parallel (3 concurrent for audio/image, 2 for video)
+  - Per-scene error tracking with visual Failed/Processing badges and retry buttons
+  - Individual scene retry: `handleSingleAudio`, `handleSingleImage`, `handleSingleVideo`
+  - Auto-retry with exponential backoff in geminiService for timeout/429/503 errors (1 retry)
+  - Failed scenes show error message, red border, and dedicated retry button
+  - Processing status shows concurrent count in real-time
 - 2026-02-13: Production-level DB/Storage architecture upgrade:
   - Firestore offline persistence via `persistentLocalCache` + multi-tab support
   - Paginated project queries: `orderBy("updated_at", "desc")` + `limit(20)` + cursor-based pagination
