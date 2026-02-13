@@ -9,7 +9,7 @@ import { PricingPage } from './components/PricingPage';
 import { AuthPage } from './components/AuthPage';
 import { ViewState } from './types';
 import { Icons } from './components/Icons';
-import { auth } from './services/firebaseConfig';
+import { auth, isFirebaseConfigured } from './services/firebaseConfig';
 import { onAuthStateChanged, User } from 'firebase/auth';
 
 const App: React.FC = () => {
@@ -39,11 +39,13 @@ const App: React.FC = () => {
 
   // 2. Track Authentication State
   useEffect(() => {
-    if (!auth) return;
+    if (!auth) {
+      setAuthLoading(false);
+      return;
+    }
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
       setAuthLoading(false);
-      // If user logs out while in a protected area, go home
       if (!user && (currentView === 'projects' || currentView === 'create' || currentView === 'profile')) {
         setCurrentView('landing');
       }
@@ -122,6 +124,19 @@ const App: React.FC = () => {
         onNavigate={handleNavigate} 
         isLoggedIn={!!currentUser}
       />
+
+      {!isFirebaseConfigured() && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
+          <div className="container mx-auto flex items-center gap-3 text-sm">
+            <Icons.VideoOff size={16} className="text-amber-600 flex-shrink-0" />
+            <p className="text-amber-800">
+              <span className="font-bold">Firebase 설정이 필요합니다.</span>{' '}
+              로그인, 프로젝트 저장 등의 기능을 사용하려면 Firebase 환경 변수를 설정해주세요.
+              (FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID, FIREBASE_APP_ID)
+            </p>
+          </div>
+        </div>
+      )}
       
       <main>
         {currentView === 'landing' && (

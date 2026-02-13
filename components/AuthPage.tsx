@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { ViewState } from '../types';
 import { Icons } from './Icons';
-import { auth } from '../services/firebaseConfig';
+import { auth, isFirebaseConfigured } from '../services/firebaseConfig';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
@@ -130,6 +130,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, initialMode = 'l
             <p className="text-gray-500 mb-8">
                 {mode === 'login' ? 'Enter your details to access your workspace.' : 'Start your 14-day free trial today.'}
             </p>
+
+            {!isFirebaseConfigured() && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-700 px-4 py-4 rounded-xl text-sm mb-6">
+                <p className="font-bold mb-1">Firebase 설정이 필요합니다</p>
+                <p>회원가입과 로그인 기능을 사용하려면 Firebase 환경 변수를 먼저 설정해주세요.</p>
+              </div>
+            )}
 
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm mb-6 flex items-center gap-2">

@@ -4,29 +4,36 @@ import { getStorage, FirebaseStorage } from 'firebase/storage';
 import { getAuth, Auth } from 'firebase/auth';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyAHYPoDJyVd7xV1IGb8tVKLLddPjxZi1RU",
-  authDomain: "gen-lang-client-0706056777.firebaseapp.com",
-  projectId: "gen-lang-client-0706056777",
-  storageBucket: "gen-lang-client-0706056777.firebasestorage.app",
-  messagingSenderId: "155555459795",
-  appId: "1:155555459795:web:a7e4c35a89fb1d3eb99a26",
-  measurementId: "G-YWLW1701CS"
+  apiKey: process.env.FIREBASE_API_KEY || '',
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN || '',
+  projectId: process.env.FIREBASE_PROJECT_ID || '',
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || '',
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || '',
+  appId: process.env.FIREBASE_APP_ID || '',
+  measurementId: process.env.FIREBASE_MEASUREMENT_ID || '',
 };
 
-// Initialize Firebase singleton carefully
-let app: FirebaseApp;
-try {
-  app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-} catch (e) {
-  console.error("[Firebase] App initialization failed:", e);
-  throw e;
+const isFirebaseConfigured = (): boolean => {
+  return !!(firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId && firebaseConfig.appId);
+};
+
+let app: FirebaseApp | null = null;
+let db: Firestore | null = null;
+let storage: FirebaseStorage | null = null;
+let auth: Auth | null = null;
+
+if (isFirebaseConfigured()) {
+  try {
+    app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+    db = getFirestore(app);
+    storage = getStorage(app);
+    auth = getAuth(app);
+    console.log("[Firebase] 서비스가 정상적으로 초기화되었습니다.");
+  } catch (e) {
+    console.error("[Firebase] 초기화 실패:", e);
+  }
+} else {
+  console.warn("[Firebase] 환경 변수가 설정되지 않았습니다. Firebase Console에서 프로젝트를 생성하고 환경 변수를 설정해주세요.");
 }
 
-// Initialize and export services with explicit instances
-const db: Firestore = getFirestore(app);
-const storage: FirebaseStorage = getStorage(app);
-const auth: Auth = getAuth(app);
-
-console.log("[Firebase] All services (Firestore, Storage, Auth) linked to version 11.1.0 correctly.");
-
-export { db, storage, auth };
+export { db, storage, auth, isFirebaseConfigured };

@@ -42,8 +42,16 @@ VibeVideo AI is a React + TypeScript frontend application for AI-powered video g
 
 ## Environment Variables
 - `API_KEY` - Google Gemini API key (mapped via Vite's define config)
+- `FIREBASE_API_KEY` - Firebase 프로젝트 API Key (필수)
+- `FIREBASE_AUTH_DOMAIN` - Firebase Auth Domain (필수)
+- `FIREBASE_PROJECT_ID` - Firebase Project ID (필수)
+- `FIREBASE_STORAGE_BUCKET` - Firebase Storage Bucket
+- `FIREBASE_MESSAGING_SENDER_ID` - Firebase Messaging Sender ID
+- `FIREBASE_APP_ID` - Firebase App ID (필수)
+- `FIREBASE_MEASUREMENT_ID` - Firebase Measurement ID (선택)
 
 ## Recent Changes
+- 2026-02-13: Firebase 설정을 하드코딩에서 환경 변수로 분리. 설정 누락 시 앱에 안내 배너 표시.
 - 2026-02-13: Fixed data persistence, step navigation, project restore, and video generation:
   - Firestore save now sanitizes scenes (strips base64/data URLs) to avoid 1MB doc limit
   - Added saved_max_step to Project type for proper step navigation persistence
