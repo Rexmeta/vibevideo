@@ -13,7 +13,9 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
     },
     server: {
-      port: 8080
+      port: 5000,
+      host: '0.0.0.0',
+      allowedHosts: true
     }
   };
 });
