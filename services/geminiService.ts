@@ -181,7 +181,8 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
 
 export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9'): Promise<string | null> => {
   let validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
-  const aiStart = new GoogleGenAI({ apiKey: getApiKey() });
+  const apiKey = getApiKey();
+  const aiStart = new GoogleGenAI({ apiKey });
   
   const payload: any = {
     model: 'veo-3.1-fast-generate-preview',
@@ -190,18 +191,46 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
   };
 
   if (imageSource) {
-    const imageBytes = imageSource.startsWith('http') ? await urlToBase64(imageSource) : imageSource.replace(/^data:image\/[a-z]+;base64,/, "");
-    payload.image = { imageBytes, mimeType: 'image/jpeg' };
+    try {
+      let imageBytes: string;
+      if (imageSource.startsWith('data:')) {
+        imageBytes = imageSource.replace(/^data:image\/[a-z+]+;base64,/, "");
+      } else if (imageSource.startsWith('http')) {
+        imageBytes = await urlToBase64(imageSource);
+      } else {
+        imageBytes = imageSource;
+      }
+      payload.image = { imageBytes, mimeType: 'image/jpeg' };
+    } catch (imgErr) {
+      console.warn("[Video Gen] Could not load reference image, generating without it:", imgErr);
+    }
   }
 
-  let operation = await aiStart.models.generateVideos(payload);
-  let attempts = 0;
-  while (!operation.done && attempts < 30) {
-    await new Promise(r => setTimeout(r, 7000));
-    const aiPoll = new GoogleGenAI({ apiKey: getApiKey() });
-    operation = await aiPoll.operations.getVideosOperation({ operation: operation });
-    attempts++;
+  try {
+    let operation = await aiStart.models.generateVideos(payload);
+    let attempts = 0;
+    while (!operation.done && attempts < 40) {
+      await new Promise(r => setTimeout(r, 7000));
+      const aiPoll = new GoogleGenAI({ apiKey });
+      operation = await aiPoll.operations.getVideosOperation({ operation: operation });
+      attempts++;
+    }
+
+    if (!operation.done) {
+      console.error("[Video Gen] Timed out after polling");
+      return null;
+    }
+
+    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+    if (!downloadLink) {
+      console.error("[Video Gen] No video URI in response");
+      return null;
+    }
+
+    const separator = downloadLink.includes('?') ? '&' : '?';
+    return `${downloadLink}${separator}key=${apiKey}`;
+  } catch (e) {
+    console.error("[Video Gen] Generation failed:", e);
+    return null;
   }
-  const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-  return downloadLink ? `${downloadLink}&key=${getApiKey()}` : null;
 }

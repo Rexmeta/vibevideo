@@ -45,18 +45,21 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [playingAudioIdx, setPlayingAudioIdx] = useState<number | null>(null);
   const [activePreviewIdx, setActivePreviewIdx] = useState(0);
 
-  // Restore project on mount
+  const restoredRef = useRef(false);
+
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || restoredRef.current) return;
+    restoredRef.current = true;
     const load = async () => {
       setLoading(true);
       setLoadingMessage("Cloud Workspace 로딩 중...");
       try {
         let p: Project | undefined;
+        const idToLoad = initialProjectId || projectId;
         if (initialProjectId) p = await getProjectFromCloud(initialProjectId);
         
         if (!p) {
-          const localData = localStorage.getItem(`vibe_video_backup_${initialProjectId || projectId}`);
+          const localData = localStorage.getItem(`vibe_video_backup_${idToLoad}`);
           if (localData) p = JSON.parse(localData);
         }
 
@@ -66,8 +69,10 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           setTopic(p.saved_topic || '');
           setAspectRatio(p.aspect_ratio as any);
           setVideoStyle(p.style_template);
-          setStep((p.saved_step || 1) as any);
-          setMaxStep(p.saved_step || 1);
+          const restoredStep = (p.saved_step || 1) as 1 | 2 | 3 | 4 | 5 | 6 | 7;
+          const restoredMaxStep = p.saved_max_step || p.saved_step || 1;
+          setStep(restoredStep);
+          setMaxStep(restoredMaxStep);
           setScript(p.saved_script || '');
           setScenes(p.saved_scenes || []);
           setDuration(p.saved_duration || 30);
@@ -80,27 +85,34 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       }
     };
     load();
-  }, [initialProjectId, userId, projectId]);
+  }, [initialProjectId, userId]);
 
-  const sync = async (targetStep?: number, scenesOverride?: Partial<Scene>[], extraData: Partial<Project> = {}) => {
+  const sync = async (
+    targetStep?: number, 
+    scenesOverride?: Partial<Scene>[], 
+    extraData: Partial<Project> = {},
+    overrides: { script?: string; topic?: string; duration?: number; maxStep?: number } = {}
+  ) => {
     if (!userId) return;
     const currentStep = targetStep || step;
     const currentScenes = (scenesOverride || scenes) as Scene[];
+    const currentMaxStep = overrides.maxStep ?? Math.max(maxStep, currentStep);
     
     const proj: Project = {
       id: projectId,
       user_id: userId,
-      title: topic || '새 비디오 프로젝트',
+      title: overrides.topic || topic || '새 비디오 프로젝트',
       aspect_ratio: aspectRatio,
       style_template: videoStyle,
       status: ProjectStatus.DRAFT,
       created_at: createdAt,
       updated_at: new Date().toISOString(),
       saved_step: currentStep,
-      saved_script: script,
+      saved_max_step: currentMaxStep,
+      saved_script: overrides.script ?? script,
       saved_scenes: currentScenes,
-      saved_topic: topic,
-      saved_duration: duration,
+      saved_topic: overrides.topic || topic,
+      saved_duration: overrides.duration ?? duration,
       thumbnail: extraData.thumbnail || thumbnail,
       ...extraData
     };
@@ -132,19 +144,43 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     }
   };
 
+  const isMediaUploaded = (path?: string): boolean => {
+    return !!path && path.startsWith('http');
+  };
+
+  const hasMedia = (path?: string): boolean => {
+    return !!path && (path.startsWith('http') || path.startsWith('data:') || path.startsWith('blob:'));
+  };
+
+  const tryUploadExisting = async (path: string, storagePath: string, format: 'base64' | 'blob'): Promise<string> => {
+    if (path.startsWith('http')) return path;
+    try {
+      const url = await uploadFileToCloud(storagePath, path, format);
+      return url;
+    } catch {
+      return path;
+    }
+  };
+
   const handleBatchAudio = async () => {
     setProcessingType('audio');
     const updatedScenes = [...scenes];
     for (let i = 0; i < updatedScenes.length; i++) {
-      if (updatedScenes[i].audio_path && !updatedScenes[i].audio_path.startsWith('data:')) continue;
+      if (isMediaUploaded(updatedScenes[i].audio_path)) continue;
       setProcessingIdx(i);
       try {
+        if (hasMedia(updatedScenes[i].audio_path)) {
+          const url = await tryUploadExisting(updatedScenes[i].audio_path!, `users/${userId}/projects/${projectId}/audio/s${i}.wav`, 'base64');
+          updatedScenes[i].audio_path = url;
+          setScenes([...updatedScenes]);
+          await sync(undefined, updatedScenes);
+          continue;
+        }
         const res = await generateSceneAudio(updatedScenes[i].script_segment!, videoStyle);
         if (res) {
           updatedScenes[i].audio_path = res.audio_path;
           updatedScenes[i].audio_duration = res.duration;
           setScenes([...updatedScenes]);
-          // Include userId in path for security/organization
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/audio/s${i}.wav`, res.audio_path, 'base64');
           updatedScenes[i].audio_path = url;
           setScenes([...updatedScenes]);
@@ -160,7 +196,16 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     const updatedScenes = [...scenes];
     let firstImgUrl = thumbnail;
     for (let i = 0; i < updatedScenes.length; i++) {
-      if (updatedScenes[i].image_path && !updatedScenes[i].image_path.startsWith('data:')) continue;
+      if (isMediaUploaded(updatedScenes[i].image_path)) continue;
+      if (hasMedia(updatedScenes[i].image_path)) {
+        setProcessingIdx(i);
+        const url = await tryUploadExisting(updatedScenes[i].image_path!, `users/${userId}/projects/${projectId}/images/s${i}.jpg`, 'base64');
+        updatedScenes[i].image_path = url;
+        if (i === 0 && url.startsWith('http')) { firstImgUrl = url; setThumbnail(url); }
+        setScenes([...updatedScenes]);
+        await sync(undefined, updatedScenes, { thumbnail: firstImgUrl });
+        continue;
+      }
       setProcessingIdx(i);
       try {
         const base64 = await generateSceneImage(updatedScenes[i].visual_prompt!, videoStyle, aspectRatio);
@@ -211,20 +256,34 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     setProcessingType('video');
     const updatedScenes = [...scenes];
     for (let i = 0; i < updatedScenes.length; i++) {
-      if (updatedScenes[i].video_path && !updatedScenes[i].video_path.startsWith('blob:')) continue;
+      if (isMediaUploaded(updatedScenes[i].video_path)) continue;
       setProcessingIdx(i);
+      if (hasMedia(updatedScenes[i].video_path) && !isMediaUploaded(updatedScenes[i].video_path)) {
+        try {
+          const blob = await fetch(updatedScenes[i].video_path!).then(r => r.blob());
+          const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${i}.mp4`, blob, 'blob');
+          updatedScenes[i].video_path = url;
+          setScenes([...updatedScenes]);
+          await sync(undefined, updatedScenes);
+        } catch { }
+        continue;
+      }
       try {
         const videoUrl = await generateSceneVideo(updatedScenes[i].visual_prompt!, updatedScenes[i].image_path, aspectRatio);
         if (videoUrl) {
           updatedScenes[i].video_path = videoUrl;
           setScenes([...updatedScenes]);
-          const blob = await fetch(videoUrl).then(r => r.blob());
-          const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${i}.mp4`, blob, 'blob');
-          updatedScenes[i].video_path = url;
-          setScenes([...updatedScenes]);
+          try {
+            const blob = await fetch(videoUrl).then(r => r.blob());
+            const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${i}.mp4`, blob, 'blob');
+            updatedScenes[i].video_path = url;
+            setScenes([...updatedScenes]);
+          } catch (uploadErr) {
+            console.warn(`[Video Upload] Scene ${i} upload failed, keeping direct URL`, uploadErr);
+          }
           await sync(undefined, updatedScenes);
         }
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error(`[Video Gen] Scene ${i} failed:`, e); }
     }
     setProcessingIdx(null); setProcessingType(null);
   };
@@ -237,10 +296,14 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       if (videoUrl) {
         updatedScenes[idx].video_path = videoUrl;
         setScenes([...updatedScenes]);
-        const blob = await fetch(videoUrl).then(r => r.blob());
-        const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
-        updatedScenes[idx].video_path = url;
-        setScenes([...updatedScenes]);
+        try {
+          const blob = await fetch(videoUrl).then(r => r.blob());
+          const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
+          updatedScenes[idx].video_path = url;
+          setScenes([...updatedScenes]);
+        } catch (uploadErr) {
+          console.warn(`[Video Upload] Scene ${idx} upload failed, keeping direct URL`, uploadErr);
+        }
         await sync(undefined, updatedScenes);
       }
     } catch (e) { console.error(e); }
@@ -267,9 +330,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       {/* Stepper */}
       <div className="flex justify-between mb-16 relative max-w-5xl mx-auto">
         {['Vibe', 'Script', 'Audio', 'Storyboard', 'Motion', 'Preview', 'Export'].map((l, i) => (
-          <div key={l} onClick={() => i+1 <= maxStep && !syncing && setStep((i+1) as any)} className={`flex flex-col items-center z-10 cursor-pointer transition-all ${step >= i+1 ? 'opacity-100' : 'opacity-20'}`}>
-            <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black border-4 transition-all ${step === i+1 ? 'bg-brand-cyan border-white shadow-2xl scale-110' : 'bg-white border-gray-100'}`}>
-              {step > i+1 ? <Icons.Check size={20} /> : i+1}
+          <div key={l} onClick={() => i+1 <= maxStep && !syncing && !loading && processingIdx === null && setStep((i+1) as any)} className={`flex flex-col items-center z-10 transition-all ${i+1 <= maxStep ? 'cursor-pointer' : 'cursor-not-allowed'} ${i+1 <= maxStep ? 'opacity-100' : 'opacity-20'}`}>
+            <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black border-4 transition-all ${step === i+1 ? 'bg-brand-cyan border-white shadow-2xl scale-110' : i+1 <= maxStep ? 'bg-white border-brand-cyan/30' : 'bg-white border-gray-100'}`}>
+              {i+1 < maxStep ? <Icons.Check size={20} /> : i+1}
             </div>
             <span className="mt-2 text-[10px] font-black uppercase tracking-tight">{l}</span>
           </div>
@@ -318,7 +381,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                 </div>
               </section>
             </div>
-            <button onClick={() => { setStep(2); sync(2); }} className="mt-20 bg-brand-dark text-white py-8 rounded-full font-black text-2xl shadow-2xl hover:brightness-110 transition-all">
+            <button onClick={() => { const ns = 2; setStep(ns); setMaxStep(prev => Math.max(prev, ns)); sync(ns); }} className="mt-20 bg-brand-dark text-white py-8 rounded-full font-black text-2xl shadow-2xl hover:brightness-110 transition-all">
               Initialize Vibe Script <Icons.ChevronRight className="inline" size={28} />
             </button>
           </div>
@@ -339,9 +402,14 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                <button onClick={() => setStep(1)} className="px-10 py-6 rounded-full font-black text-gray-400 hover:text-black transition-colors">Back</button>
                <button onClick={async () => {
                   setLoading(true); setLoadingMessage("스크립트를 씬 단위로 분석하고 있습니다...");
-                  const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio);
-                  setScenes(s); setStep(3); setMaxStep(Math.max(maxStep, 3)); setLoading(false);
-                  await sync(3, s);
+                  try {
+                    const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio);
+                    setScenes(s); setStep(3); setMaxStep(prev => Math.max(prev, 3)); setLoading(false);
+                    await sync(3, s, {}, { script, topic, maxStep: Math.max(maxStep, 3) });
+                  } catch (e) {
+                    console.error("Scene segmentation failed:", e);
+                    setLoading(false);
+                  }
                 }} className="flex-1 bg-brand-dark text-white py-6 rounded-full font-black text-2xl shadow-2xl hover:scale-[1.01] transition-all">
                 Construct Storyboard
               </button>
@@ -436,7 +504,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                <button disabled={processingIdx !== null} onClick={() => setStep((step - 1) as any)} className="px-10 py-6 rounded-full font-black text-gray-400 hover:text-black disabled:opacity-0 transition-all">Back</button>
                <button 
                   disabled={processingIdx !== null || (step === 4 && !isImagesReady) || (step === 5 && !isVideosReady)} 
-                  onClick={() => { setStep((step + 1) as any); sync(step+1); }} 
+                  onClick={() => { const ns = (step + 1) as any; setStep(ns); setMaxStep(prev => Math.max(prev, ns)); sync(ns); }} 
                   className={`flex-1 py-6 rounded-full font-black text-2xl shadow-2xl transition-all ${processingIdx !== null || (step === 4 && !isImagesReady) || (step === 5 && !isVideosReady) ? 'bg-gray-100 text-gray-300 cursor-not-allowed scale-95' : 'bg-brand-dark text-white hover:scale-[1.02] shadow-brand-cyan/20'}`}
                >
                 {step === 4 && !isImagesReady ? '이미지를 모두 생성하세요' : 
@@ -533,7 +601,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
 
               <div className="flex gap-4 mt-12">
                  <button onClick={() => setStep(5)} className="px-12 py-6 rounded-full font-black text-gray-400 hover:text-black transition-all">Back</button>
-                 <button onClick={() => { setStep(7); sync(7); }} className="flex-1 bg-brand-dark text-white py-6 rounded-full font-black text-2xl shadow-2xl hover:scale-[1.02] shadow-brand-cyan/10 transition-all">Export Mastery</button>
+                 <button onClick={() => { setStep(7); setMaxStep(prev => Math.max(prev, 7)); sync(7, undefined, { status: ProjectStatus.COMPLETED }); }} className="flex-1 bg-brand-dark text-white py-6 rounded-full font-black text-2xl shadow-2xl hover:scale-[1.02] shadow-brand-cyan/10 transition-all">Export Mastery</button>
               </div>
            </div>
         )}

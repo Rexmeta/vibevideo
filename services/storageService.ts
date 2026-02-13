@@ -18,9 +18,23 @@ import {
   deleteDoc,
   serverTimestamp
 } from "firebase/firestore";
-import { Project, ProjectStatus } from "../types";
+import { Project, ProjectStatus, Scene } from "../types";
 
 const PROJECTS_COLLECTION = 'projects';
+
+const isDataUrl = (s?: string): boolean => !!s && s.startsWith('data:');
+const isBase64Only = (s?: string): boolean => !!s && !s.startsWith('data:') && !s.startsWith('http') && !s.startsWith('blob:') && s.length > 200;
+
+const isBlobUrl = (s?: string): boolean => !!s && s.startsWith('blob:');
+
+const sanitizeScenesForFirestore = (scenes: Partial<Scene>[]): Partial<Scene>[] => {
+  return scenes.map(s => ({
+    ...s,
+    audio_path: (isDataUrl(s.audio_path) || isBase64Only(s.audio_path)) ? undefined : s.audio_path,
+    image_path: (isDataUrl(s.image_path) || isBase64Only(s.image_path)) ? undefined : s.image_path,
+    video_path: (isDataUrl(s.video_path) || isBlobUrl(s.video_path)) ? undefined : s.video_path,
+  }));
+};
 
 /**
  * Permanently stores AI-generated media using Firebase Modular Storage.
@@ -75,8 +89,12 @@ export const saveProjectToCloud = async (project: Project): Promise<void> => {
   
   try {
     const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
+    const sanitizedScenes = project.saved_scenes 
+      ? sanitizeScenesForFirestore(project.saved_scenes)
+      : undefined;
     const dataToSave = {
       ...project,
+      saved_scenes: sanitizedScenes,
       updated_at: new Date().toISOString(),
       server_updated_at: serverTimestamp() 
     };

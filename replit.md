@@ -44,4 +44,12 @@ VibeVideo AI is a React + TypeScript frontend application for AI-powered video g
 - `API_KEY` - Google Gemini API key (mapped via Vite's define config)
 
 ## Recent Changes
+- 2026-02-13: Fixed data persistence, step navigation, project restore, and video generation:
+  - Firestore save now sanitizes scenes (strips base64/data URLs) to avoid 1MB doc limit
+  - Added saved_max_step to Project type for proper step navigation persistence
+  - Fixed useEffect restore to prevent reload loops (removed projectId from deps, added ref guard)
+  - Fixed media skip conditions: already-generated media (data:/blob: URLs) won't be re-generated, only re-uploaded
+  - Fixed video generation: better image source handling, increased poll timeout, proper error handling
+  - Fixed stepper UI to show accessible steps based on maxStep
+  - All step transitions now properly update maxStep
 - 2026-02-13: Initial Replit setup - configured Vite for port 5000, host 0.0.0.0, allowedHosts. Fixed corrupted Firebase source map.
