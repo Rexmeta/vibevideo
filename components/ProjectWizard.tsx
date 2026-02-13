@@ -131,7 +131,22 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       ...extraData
     };
 
-    localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(proj));
+    const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
+      const c = { ...s };
+      if (c.audio_path && c.audio_path.startsWith('data:')) c.audio_path = '[local-audio]';
+      if (c.image_path && c.image_path.startsWith('data:')) c.image_path = '[local-image]';
+      if (c.video_path && (c.video_path.startsWith('data:') || c.video_path.startsWith('blob:'))) c.video_path = '[local-video]';
+      return c;
+    }) };
+    try {
+      localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(localProj));
+    } catch (e: any) {
+      console.warn("[Sync] localStorage 저장 실패 (용량 초과), 메타데이터만 저장:", e?.message);
+      try {
+        const metaOnly = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => ({ scene_number: s.scene_number, narration: s.narration, visual_prompt: s.visual_prompt, duration_seconds: s.duration_seconds })) };
+        localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(metaOnly));
+      } catch (e2) { console.error("[Sync] localStorage 완전 실패:", e2); }
+    }
 
     const doCloudSave = async () => {
       try {

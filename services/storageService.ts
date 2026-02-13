@@ -97,22 +97,34 @@ export const uploadFileToCloud = async (path: string, data: string | Blob, forma
 
   const storageRef = ref(storage, path);
   
-  try {
+  const doUpload = async () => {
     if (format === 'base64') {
       const cleanData = typeof data === 'string' ? data.replace(/^data:.*?;base64,/, "") : "";
-      await withTimeout(uploadString(storageRef, cleanData, 'base64', { contentType }), 15000, '파일 업로드');
+      await withTimeout(uploadString(storageRef, cleanData, 'base64', { contentType }), 30000, '파일 업로드');
     } else {
-      await withTimeout(uploadBytes(storageRef, data as Blob, { contentType }), 15000, '파일 업로드');
+      await withTimeout(uploadBytes(storageRef, data as Blob, { contentType }), 30000, '파일 업로드');
     }
-    const url = await withTimeout(getDownloadURL(storageRef), 8000, '다운로드 URL 조회');
+    return await withTimeout(getDownloadURL(storageRef), 10000, '다운로드 URL 조회');
+  };
+
+  try {
+    const url = await doUpload();
     console.log(`[Storage] Success: ${path}`);
     return url;
-  } catch (error: any) {
-    console.warn(`[Storage] 업로드 실패 (${path}):`, error?.message);
-    if (typeof data === 'string') {
-       return data.startsWith('data:') ? data : `data:${contentType};base64,${data}`;
+  } catch (firstError: any) {
+    console.warn(`[Storage] 1차 업로드 실패 (${path}):`, firstError?.message, '- 재시도 중...');
+    try {
+      await new Promise(r => setTimeout(r, 1000));
+      const url = await doUpload();
+      console.log(`[Storage] 재시도 성공: ${path}`);
+      return url;
+    } catch (retryError: any) {
+      console.warn(`[Storage] 재시도 실패 (${path}):`, retryError?.message);
+      if (typeof data === 'string') {
+        return data.startsWith('data:') ? data : `data:${contentType};base64,${data}`;
+      }
+      throw retryError;
     }
-    throw error;
   }
 };
 
@@ -122,7 +134,11 @@ export const uploadFileToCloud = async (path: string, data: string | Blob, forma
 export const saveProjectToCloud = async (project: Project): Promise<void> => {
   if (!project.id) return;
   
-  localStorage.setItem(`vibe_video_backup_${project.id}`, JSON.stringify(project));
+  try {
+    localStorage.setItem(`vibe_video_backup_${project.id}`, JSON.stringify(project));
+  } catch (e) {
+    console.warn("[Database Save] localStorage 저장 실패 (용량 초과)");
+  }
 
   if (!db) {
     console.warn("[Database] Cloud service unavailable, saved to Local Storage only.");
@@ -144,7 +160,7 @@ export const saveProjectToCloud = async (project: Project): Promise<void> => {
     console.log(`[Database] Project Saved Successfully: ${project.id}`);
   } catch (error: any) {
     console.warn("[Database Save] 클라우드 저장 실패, 로컬에 백업됨:", error?.message);
-    localStorage.setItem(`vibe_video_backup_emergency_${project.id}`, JSON.stringify(project));
+    try { localStorage.setItem(`vibe_video_backup_emergency_${project.id}`, JSON.stringify(project)); } catch(e) {}
   }
 };
 
@@ -161,7 +177,7 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
       const docSnap = await withTimeout(getDoc(projectRef), 8000, '프로젝트 조회');
       if (docSnap.exists()) {
         const project = docSnap.data() as Project;
-        localStorage.setItem(`vibe_video_backup_${id}`, JSON.stringify(project));
+        try { localStorage.setItem(`vibe_video_backup_${id}`, JSON.stringify(project)); } catch(e) {}
         return project;
       }
     } catch (error: any) {
