@@ -191,31 +191,40 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
 };
 
 export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9'): Promise<string | null> => {
-  const ai = new GoogleGenAI({ apiKey: getApiKey() });
-  const response = await withTimeout(
-    ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview',
-      contents: {
-        parts: [{ text: `High quality cinematic digital art, 8k, detailed textures. Scene: ${prompt}. Style: ${style}.` }],
-      },
-      config: { 
-        imageConfig: { 
-          aspectRatio: aspectRatio as any, 
-          imageSize: '1K' 
-        } 
-      }
-    }),
-    120000,
-    '이미지 생성'
-  );
-  
-  // Find the image part among candidates
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData) {
-      return part.inlineData.data;
-    }
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error('API 키가 설정되지 않았습니다.');
   }
-  return null;
+
+  console.log(`[Image] 이미지 생성 시작 - prompt length: ${prompt.length}, style: ${style}, ratio: ${aspectRatio}`);
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await withTimeout(
+      ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: [{ parts: [{ text: `Generate an image. High quality cinematic digital art, 8k, detailed textures. Scene: ${prompt}. Style: ${style}. Aspect ratio: ${aspectRatio}.` }] }],
+        config: {
+          responseModalities: [Modality.IMAGE, Modality.TEXT],
+        }
+      }),
+      60000,
+      '이미지 생성'
+    );
+
+    console.log("[Image] API 응답 수신 완료");
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        console.log(`[Image] 이미지 데이터 수신 - size: ${part.inlineData.data?.length || 0}`);
+        return part.inlineData.data || null;
+      }
+    }
+    console.error("[Image] 응답에 이미지 데이터 없음");
+    throw new Error('이미지 데이터가 생성되지 않았습니다.');
+  } catch (e: any) {
+    console.error("[Image] 이미지 생성 실패:", e?.message || e);
+    throw e;
+  }
 };
 
 export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9'): Promise<string | null> => {

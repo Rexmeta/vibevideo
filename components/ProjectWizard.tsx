@@ -46,6 +46,20 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [activePreviewIdx, setActivePreviewIdx] = useState(0);
 
   const restoredRef = useRef(false);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSyncRef = useRef<(() => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+        const fn = pendingSyncRef.current;
+        pendingSyncRef.current = null;
+        syncTimerRef.current = null;
+        if (fn) fn();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!userId || restoredRef.current) return;
@@ -87,7 +101,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     load();
   }, [initialProjectId, userId]);
 
-  const sync = async (
+  const sync = (
     targetStep?: number, 
     scenesOverride?: Partial<Scene>[], 
     extraData: Partial<Project> = {},
@@ -119,16 +133,27 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
 
     localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(proj));
 
-    try {
-      setSyncing(true);
-      setSyncError(false);
-      await saveProjectToCloud(proj);
-    } catch (e) {
-      console.error("Sync error:", e);
-      setSyncError(true);
-    } finally {
-      setSyncing(false);
-    }
+    const doCloudSave = async () => {
+      try {
+        setSyncing(true);
+        setSyncError(false);
+        await saveProjectToCloud(proj);
+      } catch (e) {
+        console.error("Sync error:", e);
+        setSyncError(true);
+      } finally {
+        setSyncing(false);
+      }
+    };
+
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    pendingSyncRef.current = doCloudSave;
+    syncTimerRef.current = setTimeout(() => {
+      const fn = pendingSyncRef.current;
+      pendingSyncRef.current = null;
+      syncTimerRef.current = null;
+      if (fn) fn();
+    }, 1500);
   };
 
   const handlePlayAudio = (url: string, idx: number) => {
@@ -175,7 +200,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           const url = await tryUploadExisting(updatedScenes[i].audio_path!, `users/${userId}/projects/${projectId}/audio/s${i}.wav`, 'base64');
           updatedScenes[i].audio_path = url;
           setScenes([...updatedScenes]);
-          await sync(undefined, updatedScenes);
+          sync(undefined, updatedScenes);
           continue;
         }
         const res = await generateSceneAudio(updatedScenes[i].script_segment!, videoStyle);
@@ -186,7 +211,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/audio/s${i}.wav`, res.audio_path, 'base64');
           updatedScenes[i].audio_path = url;
           setScenes([...updatedScenes]);
-          await sync(undefined, updatedScenes);
+          sync(undefined, updatedScenes);
         }
       } catch (e: any) {
         console.error(`Scene ${i} audio error:`, e);
@@ -201,18 +226,23 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     setProcessingType('image');
     const updatedScenes = [...scenes];
     let firstImgUrl = thumbnail;
+    const errors: string[] = [];
     for (let i = 0; i < updatedScenes.length; i++) {
       if (isMediaUploaded(updatedScenes[i].image_path)) continue;
+      setProcessingIdx(i);
+      setLoadingMessage(`씬 ${i + 1}/${updatedScenes.length} 이미지 생성 중...`);
       if (hasMedia(updatedScenes[i].image_path)) {
-        setProcessingIdx(i);
-        const url = await tryUploadExisting(updatedScenes[i].image_path!, `users/${userId}/projects/${projectId}/images/s${i}.jpg`, 'base64');
-        updatedScenes[i].image_path = url;
-        if (i === 0 && url.startsWith('http')) { firstImgUrl = url; setThumbnail(url); }
-        setScenes([...updatedScenes]);
-        await sync(undefined, updatedScenes, { thumbnail: firstImgUrl });
+        try {
+          const url = await tryUploadExisting(updatedScenes[i].image_path!, `users/${userId}/projects/${projectId}/images/s${i}.jpg`, 'base64');
+          updatedScenes[i].image_path = url;
+          if (i === 0 && url.startsWith('http')) { firstImgUrl = url; setThumbnail(url); }
+          setScenes([...updatedScenes]);
+          sync(undefined, updatedScenes, { thumbnail: firstImgUrl });
+        } catch (e: any) {
+          errors.push(`씬 ${i + 1}: ${e?.message || '업로드 실패'}`);
+        }
         continue;
       }
-      setProcessingIdx(i);
       try {
         const base64 = await generateSceneImage(updatedScenes[i].visual_prompt!, videoStyle, aspectRatio);
         if (base64) {
@@ -227,11 +257,15 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             setThumbnail(url);
           }
           setScenes([...updatedScenes]);
-          await sync(undefined, updatedScenes, { thumbnail: firstImgUrl });
+          sync(undefined, updatedScenes, { thumbnail: firstImgUrl });
         }
-      } catch (e) { console.error(e); }
+      } catch (e: any) {
+        console.error(`Scene ${i} image error:`, e);
+        errors.push(`씬 ${i + 1}: ${e?.message || '알 수 없는 오류'}`);
+      }
     }
-    setProcessingIdx(null); setProcessingType(null);
+    setProcessingIdx(null); setProcessingType(null); setLoadingMessage('');
+    if (errors.length > 0) alert(`이미지 생성 실패:\n${errors.join('\n')}`);
   };
 
   const handleSingleImage = async (idx: number) => {
@@ -261,17 +295,21 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const handleBatchVideos = async () => {
     setProcessingType('video');
     const updatedScenes = [...scenes];
+    const errors: string[] = [];
     for (let i = 0; i < updatedScenes.length; i++) {
       if (isMediaUploaded(updatedScenes[i].video_path)) continue;
       setProcessingIdx(i);
+      setLoadingMessage(`씬 ${i + 1}/${updatedScenes.length} 비디오 생성 중...`);
       if (hasMedia(updatedScenes[i].video_path) && !isMediaUploaded(updatedScenes[i].video_path)) {
         try {
           const blob = await fetch(updatedScenes[i].video_path!).then(r => r.blob());
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${i}.mp4`, blob, 'blob');
           updatedScenes[i].video_path = url;
           setScenes([...updatedScenes]);
-          await sync(undefined, updatedScenes);
-        } catch { }
+          sync(undefined, updatedScenes);
+        } catch (e: any) {
+          errors.push(`씬 ${i + 1}: ${e?.message || '업로드 실패'}`);
+        }
         continue;
       }
       try {
@@ -287,11 +325,15 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           } catch (uploadErr) {
             console.warn(`[Video Upload] Scene ${i} upload failed, keeping direct URL`, uploadErr);
           }
-          await sync(undefined, updatedScenes);
+          sync(undefined, updatedScenes);
         }
-      } catch (e) { console.error(`[Video Gen] Scene ${i} failed:`, e); }
+      } catch (e: any) {
+        console.error(`[Video Gen] Scene ${i} failed:`, e);
+        errors.push(`씬 ${i + 1}: ${e?.message || '알 수 없는 오류'}`);
+      }
     }
-    setProcessingIdx(null); setProcessingType(null);
+    setProcessingIdx(null); setProcessingType(null); setLoadingMessage('');
+    if (errors.length > 0) alert(`비디오 생성 실패:\n${errors.join('\n')}`);
   };
 
   const handleSingleVideo = async (idx: number) => {
@@ -448,7 +490,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                 onClick={step === 3 ? handleBatchAudio : step === 4 ? handleBatchImages : handleBatchVideos} 
                 className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all ${processingIdx !== null ? 'bg-gray-100 text-gray-300' : 'bg-brand-cyan text-black hover:scale-105 active:scale-95'}`}
               >
-                {processingIdx !== null ? <Icons.Loader2 className="animate-spin" size={20} /> : `Auto-Generate All`}
+                {processingIdx !== null ? (
+                  <span className="flex items-center gap-3">
+                    <Icons.Loader2 className="animate-spin" size={20} />
+                    {loadingMessage || '처리 중...'}
+                  </span>
+                ) : `Auto-Generate All`}
               </button>
             </div>
 

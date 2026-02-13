@@ -100,15 +100,15 @@ export const uploadFileToCloud = async (path: string, data: string | Blob, forma
   try {
     if (format === 'base64') {
       const cleanData = typeof data === 'string' ? data.replace(/^data:.*?;base64,/, "") : "";
-      await uploadString(storageRef, cleanData, 'base64', { contentType });
+      await withTimeout(uploadString(storageRef, cleanData, 'base64', { contentType }), 15000, '파일 업로드');
     } else {
-      await uploadBytes(storageRef, data as Blob, { contentType });
+      await withTimeout(uploadBytes(storageRef, data as Blob, { contentType }), 15000, '파일 업로드');
     }
-    const url = await getDownloadURL(storageRef);
+    const url = await withTimeout(getDownloadURL(storageRef), 8000, '다운로드 URL 조회');
     console.log(`[Storage] Success: ${path}`);
     return url;
   } catch (error: any) {
-    console.error(`[Storage Error] Path: ${path}`, error.code || error.message);
+    console.warn(`[Storage] 업로드 실패 (${path}):`, error?.message);
     if (typeof data === 'string') {
        return data.startsWith('data:') ? data : `data:${contentType};base64,${data}`;
     }

@@ -50,14 +50,21 @@ VibeVideo AI is a React + TypeScript frontend application for AI-powered video g
 - `FIREBASE_APP_ID` - Firebase App ID (필수)
 - `FIREBASE_MEASUREMENT_ID` - Firebase Measurement ID (선택)
 
+## AI Models Used
+- **TTS**: `gemini-2.5-flash-preview-tts` (Puck/Kore voices, 45s timeout)
+- **Image**: `gemini-2.5-flash-image` (Nano Banana, responseModalities: IMAGE+TEXT, 60s timeout)
+- **Video**: `veo-3.1-fast-generate-preview` (polling-based, 40 attempts x 7s)
+
 ## Recent Changes
+- 2026-02-13: Performance & reliability improvements:
+  - Local-first project loading (instant display from localStorage, cloud sync in background)
+  - Firestore timeouts: 8s for reads, 10s for saves (prevents infinite hanging)
+  - Storage upload timeout: 15s with graceful fallback to local data URLs
+  - Sync debouncing: 1.5s debounce prevents overlapping cloud saves during batch operations
+  - Image model changed from gemini-3-pro-image-preview to gemini-2.5-flash-image
+  - All batch handlers (audio/image/video) now collect errors per-scene and display detailed alerts
+  - Per-scene progress messages shown during batch generation
+  - ProjectManagement shows sync status indicator and offline warning
 - 2026-02-13: Firebase 설정을 하드코딩에서 환경 변수로 분리. 설정 누락 시 앱에 안내 배너 표시.
-- 2026-02-13: Fixed data persistence, step navigation, project restore, and video generation:
-  - Firestore save now sanitizes scenes (strips base64/data URLs) to avoid 1MB doc limit
-  - Added saved_max_step to Project type for proper step navigation persistence
-  - Fixed useEffect restore to prevent reload loops (removed projectId from deps, added ref guard)
-  - Fixed media skip conditions: already-generated media (data:/blob: URLs) won't be re-generated, only re-uploaded
-  - Fixed video generation: better image source handling, increased poll timeout, proper error handling
-  - Fixed stepper UI to show accessible steps based on maxStep
-  - All step transitions now properly update maxStep
-- 2026-02-13: Initial Replit setup - configured Vite for port 5000, host 0.0.0.0, allowedHosts. Fixed corrupted Firebase source map.
+- 2026-02-13: Fixed data persistence, step navigation, project restore, and video generation
+- 2026-02-13: Initial Replit setup - configured Vite for port 5000, host 0.0.0.0, allowedHosts.
