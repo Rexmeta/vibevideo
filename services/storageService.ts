@@ -27,13 +27,31 @@ const isBase64Only = (s?: string): boolean => !!s && !s.startsWith('data:') && !
 
 const isBlobUrl = (s?: string): boolean => !!s && s.startsWith('blob:');
 
-const sanitizeScenesForFirestore = (scenes: Partial<Scene>[]): Partial<Scene>[] => {
-  return scenes.map(s => ({
-    ...s,
-    audio_path: (isDataUrl(s.audio_path) || isBase64Only(s.audio_path)) ? undefined : s.audio_path,
-    image_path: (isDataUrl(s.image_path) || isBase64Only(s.image_path)) ? undefined : s.image_path,
-    video_path: (isDataUrl(s.video_path) || isBlobUrl(s.video_path)) ? undefined : s.video_path,
-  }));
+const removeUndefined = (obj: Record<string, any>): Record<string, any> => {
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined) continue;
+    if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+      cleaned[key] = removeUndefined(value);
+    } else if (Array.isArray(value)) {
+      cleaned[key] = value.map(item =>
+        item !== null && typeof item === 'object' && !Array.isArray(item) ? removeUndefined(item) : item
+      );
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
+};
+
+const sanitizeScenesForFirestore = (scenes: Partial<Scene>[]): Record<string, any>[] => {
+  return scenes.map(s => {
+    const cleaned: Record<string, any> = { ...s };
+    if (isDataUrl(s.audio_path) || isBase64Only(s.audio_path)) delete cleaned.audio_path;
+    if (isDataUrl(s.image_path) || isBase64Only(s.image_path)) delete cleaned.image_path;
+    if (isDataUrl(s.video_path) || isBlobUrl(s.video_path)) delete cleaned.video_path;
+    return removeUndefined(cleaned);
+  });
 };
 
 /**
@@ -92,12 +110,12 @@ export const saveProjectToCloud = async (project: Project): Promise<void> => {
     const sanitizedScenes = project.saved_scenes 
       ? sanitizeScenesForFirestore(project.saved_scenes)
       : undefined;
-    const dataToSave = {
+    const dataToSave = removeUndefined({
       ...project,
       saved_scenes: sanitizedScenes,
       updated_at: new Date().toISOString(),
       server_updated_at: serverTimestamp() 
-    };
+    });
     await setDoc(projectRef, dataToSave, { merge: true });
     console.log(`[Database] Project Saved Successfully: ${project.id}`);
   } catch (error: any) {
