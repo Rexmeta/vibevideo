@@ -32,6 +32,7 @@ VibeVideo AI is a React + TypeScript frontend application for AI-powered video g
 └── services/            # Service layer
     ├── firebaseConfig.ts
     ├── geminiService.ts
+    ├── mediaCache.ts     # IndexedDB-based media cache for large base64 data
     └── storageService.ts
 ```
 
@@ -56,10 +57,16 @@ VibeVideo AI is a React + TypeScript frontend application for AI-powered video g
 - **Video**: `veo-3.1-fast-generate-preview` (polling-based, 40 attempts x 7s)
 
 ## Recent Changes
+- 2026-02-13: Media persistence & crash fix:
+  - Added IndexedDB-based media cache (services/mediaCache.ts) for large base64 audio/image data
+  - Fixed localStorage QuotaExceededError crash: base64 data stripped before localStorage save, stored in IndexedDB instead
+  - Project restore now recovers media from IndexedDB when '[local-*]' placeholders detected
+  - Existing base64 data URLs migrated to IndexedDB on project load
+  - Storage upload timeout increased to 30s with 1 automatic retry
+  - Unmount cleanup flushes pending debounced sync to prevent data loss
 - 2026-02-13: Performance & reliability improvements:
   - Local-first project loading (instant display from localStorage, cloud sync in background)
   - Firestore timeouts: 8s for reads, 10s for saves (prevents infinite hanging)
-  - Storage upload timeout: 15s with graceful fallback to local data URLs
   - Sync debouncing: 1.5s debounce prevents overlapping cloud saves during batch operations
   - Image model changed from gemini-3-pro-image-preview to gemini-2.5-flash-image
   - All batch handlers (audio/image/video) now collect errors per-scene and display detailed alerts

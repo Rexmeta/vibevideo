@@ -12,6 +12,7 @@ import {
   getProjectFromCloud, 
   uploadFileToCloud 
 } from '../services/storageService';
+import { saveMedia, getMedia } from '../services/mediaCache';
 import { Icons } from './Icons';
 import { Scene, Project, ProjectStatus, ViewState } from '../types';
 
@@ -88,9 +89,30 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           setStep(restoredStep);
           setMaxStep(restoredMaxStep);
           setScript(p.saved_script || '');
-          setScenes(p.saved_scenes || []);
           setDuration(p.saved_duration || 30);
           setThumbnail(p.thumbnail);
+
+          const restoredScenes = p.saved_scenes || [];
+          const recoveredScenes = await Promise.all(restoredScenes.map(async (s, i) => {
+            const sc = { ...s };
+            if (sc.audio_path && (sc.audio_path.startsWith('data:') || (sc.audio_path.length > 200 && !sc.audio_path.startsWith('http')))) {
+              saveMedia(p.id, i, 'audio', sc.audio_path);
+            } else if (sc.audio_path === '[local-audio]' || (!sc.audio_path && restoredStep > 3)) {
+              const cached = await getMedia(p.id, i, 'audio');
+              if (cached) sc.audio_path = cached;
+            }
+            if (sc.image_path && sc.image_path.startsWith('data:')) {
+              saveMedia(p.id, i, 'image', sc.image_path);
+            } else if (sc.image_path === '[local-image]' || (!sc.image_path && restoredStep > 4)) {
+              const cached = await getMedia(p.id, i, 'image');
+              if (cached) sc.image_path = cached;
+            }
+            if (sc.video_path === '[local-video]') {
+              sc.video_path = undefined;
+            }
+            return sc;
+          }));
+          setScenes(recoveredScenes);
         }
       } catch (err) {
         console.error("Restore failed:", err);
@@ -223,6 +245,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           updatedScenes[i].audio_path = res.audio_path;
           updatedScenes[i].audio_duration = res.duration;
           setScenes([...updatedScenes]);
+          saveMedia(projectId, i, 'audio', res.audio_path);
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/audio/s${i}.wav`, res.audio_path, 'base64');
           updatedScenes[i].audio_path = url;
           setScenes([...updatedScenes]);
@@ -264,6 +287,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           const previewUrl = `data:image/jpeg;base64,${base64}`;
           updatedScenes[i].image_path = previewUrl;
           setScenes([...updatedScenes]);
+          saveMedia(projectId, i, 'image', previewUrl);
           
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${i}.jpg`, base64, 'base64');
           updatedScenes[i].image_path = url;
@@ -292,6 +316,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         const previewUrl = `data:image/jpeg;base64,${base64}`;
         updatedScenes[idx].image_path = previewUrl;
         setScenes([...updatedScenes]);
+        saveMedia(projectId, idx, 'image', previewUrl);
         
         const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.jpg`, base64, 'base64');
         updatedScenes[idx].image_path = url;
