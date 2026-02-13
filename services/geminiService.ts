@@ -151,8 +151,15 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
   const cleanText = sanitizeTextForTTS(text);
   if (!cleanText) return null;
 
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error('API 키가 설정되지 않았습니다.');
+  }
+
+  console.log(`[TTS] 오디오 생성 시작 - voice: ${selectedVoice}, text length: ${cleanText.length}`);
+
   try {
-    const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    const ai = new GoogleGenAI({ apiKey });
     const response = await withTimeout(
       ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
@@ -162,20 +169,23 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } },
         },
       }),
-      90000,
+      45000,
       '오디오 생성'
     );
     
-    const audioPart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+    console.log("[TTS] API 응답 수신 완료");
+    const audioPart = response.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
     if (!audioPart?.inlineData?.data) {
-      console.error("Audio generation returned no audio data");
+      console.error("[TTS] 응답에 오디오 데이터 없음:", JSON.stringify(response.candidates?.[0]?.content?.parts?.map((p: any) => Object.keys(p))));
       throw new Error('오디오 데이터가 생성되지 않았습니다.');
     }
     
+    console.log(`[TTS] 오디오 데이터 수신 - size: ${audioPart.inlineData.data.length}`);
     const { dataUrl, duration } = await pcmToWav(audioPart.inlineData.data);
+    console.log(`[TTS] WAV 변환 완료 - duration: ${duration}s`);
     return { audio_path: dataUrl, duration };
   } catch (e: any) {
-    console.error("Audio generation failed:", e?.message || e);
+    console.error("[TTS] 오디오 생성 실패:", e?.message || e);
     throw e;
   }
 };

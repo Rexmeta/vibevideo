@@ -165,10 +165,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const handleBatchAudio = async () => {
     setProcessingType('audio');
     const updatedScenes = [...scenes];
-    let hasError = false;
+    const errors: string[] = [];
     for (let i = 0; i < updatedScenes.length; i++) {
       if (isMediaUploaded(updatedScenes[i].audio_path)) continue;
       setProcessingIdx(i);
+      setLoadingMessage(`씬 ${i + 1}/${updatedScenes.length} 오디오 생성 중...`);
       try {
         if (hasMedia(updatedScenes[i].audio_path)) {
           const url = await tryUploadExisting(updatedScenes[i].audio_path!, `users/${userId}/projects/${projectId}/audio/s${i}.wav`, 'base64');
@@ -189,11 +190,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         }
       } catch (e: any) {
         console.error(`Scene ${i} audio error:`, e);
-        hasError = true;
+        errors.push(`씬 ${i + 1}: ${e?.message || '알 수 없는 오류'}`);
       }
     }
-    setProcessingIdx(null); setProcessingType(null);
-    if (hasError) alert('일부 오디오 생성에 실패했습니다. 실패한 씬을 다시 시도해주세요.');
+    setProcessingIdx(null); setProcessingType(null); setLoadingMessage('');
+    if (errors.length > 0) alert(`오디오 생성 실패:\n${errors.join('\n')}`);
   };
 
   const handleBatchImages = async () => {
