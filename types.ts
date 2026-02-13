@@ -25,16 +25,17 @@ export interface Project {
   style_template: string;
   status: ProjectStatus;
   created_at: string;
-  // Added updated_at property to fix Property 'updated_at' does not exist on type 'Project' errors
   updated_at?: string;
   thumbnail?: string;
-  // Fields for Autosave/Resume functionality
   saved_step?: number;
   saved_max_step?: number;
   saved_script?: string;
   saved_scenes?: Scene[];
   saved_topic?: string;
   saved_duration?: number;
+  version?: number;
+  scene_count?: number;
+  total_duration?: number;
 }
 
 export interface Script {

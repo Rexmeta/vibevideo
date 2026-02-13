@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
-import { getFirestore, Firestore } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, Firestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
 import { getAuth, Auth } from 'firebase/auth';
 
@@ -21,11 +21,21 @@ let app: FirebaseApp | null = null;
 let db: Firestore | null = null;
 let storage: FirebaseStorage | null = null;
 let auth: Auth | null = null;
-
 if (isFirebaseConfigured()) {
   try {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-    db = getFirestore(app);
+    try {
+      db = initializeFirestore(app, {
+        localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+      });
+    } catch (firestoreErr: any) {
+      if (firestoreErr.code === 'failed-precondition') {
+        db = getFirestore(app);
+        console.warn("[Firebase] 오프라인 캐시: 이미 초기화됨, 기본 모드 사용");
+      } else {
+        throw firestoreErr;
+      }
+    }
     storage = getStorage(app);
     auth = getAuth(app);
     console.log("[Firebase] 서비스가 정상적으로 초기화되었습니다.");

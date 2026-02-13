@@ -10,7 +10,8 @@ import {
 import { 
   saveProjectToCloud, 
   getProjectFromCloud, 
-  uploadFileToCloud 
+  uploadFileToCloud,
+  generateProjectId 
 } from '../services/storageService';
 import { saveMedia, getMedia } from '../services/mediaCache';
 import { Icons } from './Icons';
@@ -23,7 +24,7 @@ interface ProjectWizardProps {
 }
 
 export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate, initialProjectId }) => {
-  const [projectId, setProjectId] = useState<string>(initialProjectId || `proj-${Date.now()}`);
+  const [projectId, setProjectId] = useState<string>(initialProjectId || generateProjectId());
   const [createdAt, setCreatedAt] = useState<string>(new Date().toISOString());
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7>(1);
   const [maxStep, setMaxStep] = useState<number>(1);

@@ -1,12 +1,14 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Project, ViewState } from '../types';
 import { 
   getLocalProjectsList,
-  syncProjectsFromCloud,
+  getProjectsPage,
   deleteProjectFromCloud, 
-  duplicateProjectInCloud 
+  duplicateProjectInCloud,
+  PaginatedResult
 } from '../services/storageService';
+import { QueryDocumentSnapshot } from 'firebase/firestore';
 import { Icons } from './Icons';
 
 interface ProjectManagementProps {
@@ -19,6 +21,9 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
   const [projects, setProjects] = useState<Project[]>([]);
   const [isSyncing, setIsSyncing] = useState(true);
   const [syncFailed, setSyncFailed] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const lastDocRef = useRef<QueryDocumentSnapshot | null>(null);
   const initialLoadDone = useRef(false);
 
   useEffect(() => {
@@ -29,9 +34,23 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
     setProjects(localData);
 
     setIsSyncing(true);
-    syncProjectsFromCloud(userId, localData).then(({ projects: merged, fromCloud }) => {
-      setProjects(merged);
-      setSyncFailed(!fromCloud);
+    getProjectsPage(userId).then((result: PaginatedResult) => {
+      if (result.fromCloud) {
+        const mergedMap = new Map<string, Project>();
+        localData.forEach(p => mergedMap.set(p.id, p));
+        result.projects.forEach(p => mergedMap.set(p.id, p));
+        const merged = Array.from(mergedMap.values()).sort((a, b) => {
+          const dateA = new Date(a.updated_at || a.created_at).getTime();
+          const dateB = new Date(b.updated_at || b.created_at).getTime();
+          return dateB - dateA;
+        });
+        setProjects(merged);
+      } else {
+        setProjects(result.projects.length > 0 ? result.projects : localData);
+      }
+      lastDocRef.current = result.lastDoc;
+      setHasMore(result.hasMore);
+      setSyncFailed(!result.fromCloud);
       setIsSyncing(false);
     }).catch(() => {
       setIsSyncing(false);
@@ -39,11 +58,30 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
     });
   }, [userId]);
 
+  const loadMore = useCallback(async () => {
+    if (!hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const result = await getProjectsPage(userId, lastDocRef.current);
+      setProjects(prev => {
+        const existingIds = new Set(prev.map(p => p.id));
+        const newProjects = result.projects.filter(p => !existingIds.has(p.id));
+        return [...prev, ...newProjects];
+      });
+      lastDocRef.current = result.lastDoc;
+      setHasMore(result.hasMore);
+    } catch (err) {
+      console.error("Load more failed:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [userId, hasMore, loadingMore]);
+
   const deleteProject = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (confirm('이 프로젝트를 영구 삭제하시겠습니까?')) {
+    if (confirm('이 프로젝트를 영구 삭제하시겠습니까?\n프로젝트와 관련된 모든 파일(이미지, 오디오, 비디오)이 함께 삭제됩니다.')) {
       try {
-        await deleteProjectFromCloud(id);
+        await deleteProjectFromCloud(id, userId);
         setProjects(prev => prev.filter(p => p.id !== id));
       } catch (err) { alert("삭제에 실패했습니다."); }
     }
@@ -103,40 +141,61 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
           <button onClick={() => onNavigate('create')} className="bg-brand-cyan px-10 py-3 rounded-full font-bold">Start First Project</button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
-          {projects.map(project => (
-            <div 
-              key={project.id} 
-              onClick={() => handleProjectClick(project)}
-              className="group bg-white rounded-[2.5rem] border border-gray-100 overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-500 cursor-pointer"
-            >
-              <div className="relative aspect-video bg-gray-50 overflow-hidden">
-                {project.thumbnail ? (
-                  <img src={project.thumbnail} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" alt={project.title} />
-                ) : (
-                   <div className="w-full h-full flex items-center justify-center"><Icons.Video className="text-gray-200" /></div>
-                )}
-                <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md text-white text-[10px] font-black px-3 py-1.5 rounded-full uppercase">{project.aspect_ratio}</div>
-              </div>
-              <div className="p-6">
-                <div className="flex justify-between items-start mb-4">
-                  <h3 className="font-black text-lg line-clamp-1">{project.title}</h3>
-                  <div className="relative group/menu" onClick={e => e.stopPropagation()}>
-                    <button className="p-2 text-gray-300 hover:text-black transition-colors"><Icons.Settings size={16} /></button>
-                    <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-gray-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all z-20 p-2">
-                        <button onClick={(e) => duplicateProject(e, project.id)} className="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2">Duplicate</button>
-                        <button onClick={(e) => deleteProject(e, project.id)} className="w-full text-left px-4 py-3 text-sm font-bold text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-2">Delete Permanently</button>
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+            {projects.map(project => (
+              <div 
+                key={project.id} 
+                onClick={() => handleProjectClick(project)}
+                className="group bg-white rounded-[2.5rem] border border-gray-100 overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-500 cursor-pointer"
+              >
+                <div className="relative aspect-video bg-gray-50 overflow-hidden">
+                  {project.thumbnail ? (
+                    <img src={project.thumbnail} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" alt={project.title} loading="lazy" />
+                  ) : (
+                     <div className="w-full h-full flex items-center justify-center"><Icons.Video className="text-gray-200" /></div>
+                  )}
+                  <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md text-white text-[10px] font-black px-3 py-1.5 rounded-full uppercase">{project.aspect_ratio}</div>
+                </div>
+                <div className="p-6">
+                  <div className="flex justify-between items-start mb-4">
+                    <h3 className="font-black text-lg line-clamp-1">{project.title}</h3>
+                    <div className="relative group/menu" onClick={e => e.stopPropagation()}>
+                      <button className="p-2 text-gray-300 hover:text-black transition-colors"><Icons.Settings size={16} /></button>
+                      <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-gray-50 opacity-0 group-hover/menu:opacity-100 pointer-events-none group-hover/menu:pointer-events-auto transition-all z-20 p-2">
+                          <button onClick={(e) => duplicateProject(e, project.id)} className="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2">Duplicate</button>
+                          <button onClick={(e) => deleteProject(e, project.id)} className="w-full text-left px-4 py-3 text-sm font-bold text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-2">Delete Permanently</button>
+                      </div>
                     </div>
                   </div>
-                </div>
-                <div className="flex justify-between items-center text-[10px] font-black text-gray-400 uppercase tracking-widest">
-                  <span>{new Date(project.created_at).toLocaleDateString()}</span>
-                  <span className="text-brand-cyan">Step {project.saved_step}/7</span>
+                  <div className="flex justify-between items-center text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                    <span>{new Date(project.updated_at || project.created_at).toLocaleDateString()}</span>
+                    <span className="text-brand-cyan">Step {project.saved_step || 1}/7</span>
+                  </div>
                 </div>
               </div>
+            ))}
+          </div>
+          
+          {hasMore && (
+            <div className="mt-12 text-center">
+              <button
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="px-10 py-4 bg-white border border-gray-200 rounded-full font-bold text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-all disabled:opacity-50"
+              >
+                {loadingMore ? (
+                  <span className="flex items-center gap-2 justify-center">
+                    <Icons.Loader2 className="animate-spin w-4 h-4" />
+                    로딩 중...
+                  </span>
+                ) : (
+                  '더 보기'
+                )}
+              </button>
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
     </div>
   );
