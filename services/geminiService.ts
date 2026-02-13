@@ -12,6 +12,16 @@ const getApiKey = () => {
   return key;
 };
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} 시간 초과 (${ms / 1000}초)`)), ms);
+    promise.then(
+      val => { clearTimeout(timer); resolve(val); },
+      err => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 async function urlToBase64(url: string): Promise<string> {
   try {
     const response = await fetch(url);
@@ -91,34 +101,42 @@ async function pcmToWav(pcmBase64: string, sampleRate: number = 24000): Promise<
 
 export const generateScript = async (topic: string, style: string, lengthSeconds: number = 60): Promise<string> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
-    contents: `Generate a full video script about "${topic}". Style: ${style}. Goal duration: ${lengthSeconds} seconds. Output only the spoken text.`,
-  });
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Generate a full video script about "${topic}". Style: ${style}. Goal duration: ${lengthSeconds} seconds. Output only the spoken text.`,
+    }),
+    60000,
+    '스크립트 생성'
+  );
   return response.text || "Script generation failed.";
 };
 
 export const segmentScriptIntoScenes = async (script: string, style: string, ratio: string): Promise<Partial<Scene>[]> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
   const prompt = `Segment this script into exactly 3-5 visual scenes for a ${ratio} video. Style: ${style}. Output JSON array. Script: "${script}"`;
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
-    contents: prompt,
-    config: { 
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            script_segment: { type: Type.STRING },
-            visual_prompt: { type: Type.STRING }
-          },
-          required: ['script_segment', 'visual_prompt']
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: { 
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              script_segment: { type: Type.STRING },
+              visual_prompt: { type: Type.STRING }
+            },
+            required: ['script_segment', 'visual_prompt']
+          }
         }
       }
-    }
-  });
+    }),
+    60000,
+    '씬 분석'
+  );
   const data = JSON.parse(response.text || "[]");
   return data.map((item: any, index: number) => ({
     id: `scene-${index}`,
@@ -135,40 +153,51 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
 
   try {
     const ai = new GoogleGenAI({ apiKey: getApiKey() });
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: cleanText }] }],
-      config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } },
-      },
-    });
+    const response = await withTimeout(
+      ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text: cleanText }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } },
+        },
+      }),
+      90000,
+      '오디오 생성'
+    );
     
     const audioPart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-    if (!audioPart?.inlineData?.data) return null;
+    if (!audioPart?.inlineData?.data) {
+      console.error("Audio generation returned no audio data");
+      throw new Error('오디오 데이터가 생성되지 않았습니다.');
+    }
     
     const { dataUrl, duration } = await pcmToWav(audioPart.inlineData.data);
     return { audio_path: dataUrl, duration };
-  } catch (e) {
-    console.error("Audio generation failed", e);
-    return null;
+  } catch (e: any) {
+    console.error("Audio generation failed:", e?.message || e);
+    throw e;
   }
 };
 
 export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9'): Promise<string | null> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-image-preview',
-    contents: {
-      parts: [{ text: `High quality cinematic digital art, 8k, detailed textures. Scene: ${prompt}. Style: ${style}.` }],
-    },
-    config: { 
-      imageConfig: { 
-        aspectRatio: aspectRatio as any, 
-        imageSize: '1K' 
-      } 
-    }
-  });
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model: 'gemini-3-pro-image-preview',
+      contents: {
+        parts: [{ text: `High quality cinematic digital art, 8k, detailed textures. Scene: ${prompt}. Style: ${style}.` }],
+      },
+      config: { 
+        imageConfig: { 
+          aspectRatio: aspectRatio as any, 
+          imageSize: '1K' 
+        } 
+      }
+    }),
+    120000,
+    '이미지 생성'
+  );
   
   // Find the image part among candidates
   for (const part of response.candidates?.[0]?.content?.parts || []) {

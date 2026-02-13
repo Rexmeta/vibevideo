@@ -165,6 +165,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const handleBatchAudio = async () => {
     setProcessingType('audio');
     const updatedScenes = [...scenes];
+    let hasError = false;
     for (let i = 0; i < updatedScenes.length; i++) {
       if (isMediaUploaded(updatedScenes[i].audio_path)) continue;
       setProcessingIdx(i);
@@ -186,9 +187,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           setScenes([...updatedScenes]);
           await sync(undefined, updatedScenes);
         }
-      } catch (e) { console.error(e); }
+      } catch (e: any) {
+        console.error(`Scene ${i} audio error:`, e);
+        hasError = true;
+      }
     }
     setProcessingIdx(null); setProcessingType(null);
+    if (hasError) alert('일부 오디오 생성에 실패했습니다. 실패한 씬을 다시 시도해주세요.');
   };
 
   const handleBatchImages = async () => {
