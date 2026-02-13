@@ -1,8 +1,9 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Project, ViewState } from '../types';
 import { 
-  getAllProjectsFromCloud, 
+  getLocalProjectsList,
+  syncProjectsFromCloud,
   deleteProjectFromCloud, 
   duplicateProjectInCloud 
 } from '../services/storageService';
@@ -16,34 +17,35 @@ interface ProjectManagementProps {
 
 export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, onNavigate, onEditProject }) => {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(true);
+  const [syncFailed, setSyncFailed] = useState(false);
+  const initialLoadDone = useRef(false);
 
   useEffect(() => {
-    if (!userId) return;
-    let isMounted = true;
-    const loadProjects = async () => {
-      try {
-        const loaded = await getAllProjectsFromCloud(userId);
-        if (isMounted) {
-          setProjects(loaded);
-          setIsLoading(false);
-        }
-      } catch (e) {
-        console.error("Failed to load projects from cloud", e);
-        if (isMounted) setIsLoading(false);
-      }
-    };
-    loadProjects();
-    return () => { isMounted = false; };
+    if (!userId || initialLoadDone.current) return;
+    initialLoadDone.current = true;
+
+    const localData = getLocalProjectsList(userId);
+    setProjects(localData);
+
+    setIsSyncing(true);
+    syncProjectsFromCloud(userId, localData).then(({ projects: merged, fromCloud }) => {
+      setProjects(merged);
+      setSyncFailed(!fromCloud);
+      setIsSyncing(false);
+    }).catch(() => {
+      setIsSyncing(false);
+      setSyncFailed(true);
+    });
   }, [userId]);
 
   const deleteProject = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (confirm('Delete this project from Google Cloud permanently?')) {
+    if (confirm('이 프로젝트를 영구 삭제하시겠습니까?')) {
       try {
         await deleteProjectFromCloud(id);
         setProjects(prev => prev.filter(p => p.id !== id));
-      } catch (err) { alert("Delete failed"); }
+      } catch (err) { alert("삭제에 실패했습니다."); }
     }
   };
 
@@ -53,30 +55,31 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
       const newProject = await duplicateProjectInCloud(id);
       if (newProject) {
         setProjects(prev => [newProject, ...prev]);
-        alert("New version created in cloud!");
       }
-    } catch (err) { alert("Duplicate failed"); }
+    } catch (err) { alert("복제에 실패했습니다."); }
   };
 
   const handleProjectClick = (project: Project) => {
     if (onEditProject) onEditProject(project.id);
   };
 
-  if (isLoading) {
-    return (
-        <div className="max-w-7xl mx-auto px-4 py-12 flex flex-col justify-center items-center min-h-[50vh]">
-            <Icons.Loader2 className="animate-spin w-10 h-10 text-brand-cyan mb-4" />
-            <p className="text-gray-400 font-medium">Connecting to Google Cloud Studio...</p>
-        </div>
-    );
-  }
-
   return (
     <div className="max-w-7xl mx-auto px-4 py-12">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-4">
         <div>
           <h1 className="text-4xl font-black tracking-tight">Cloud Workspace</h1>
-          <p className="text-gray-500 mt-1">Real-time synced AI video projects on Google Cloud.</p>
+          <p className="text-gray-500 mt-1">
+            {isSyncing ? (
+              <span className="flex items-center gap-2">
+                <Icons.Loader2 className="animate-spin w-4 h-4" />
+                클라우드와 동기화 중...
+              </span>
+            ) : syncFailed ? (
+              '오프라인 모드 - 로컬 프로젝트만 표시됩니다.'
+            ) : (
+              'Real-time synced AI video projects on Google Cloud.'
+            )}
+          </p>
         </div>
         <button 
           onClick={() => onNavigate('create')}
@@ -85,6 +88,12 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
           <Icons.Wand2 size={20} /> Create New Video
         </button>
       </div>
+
+      {syncFailed && !isSyncing && (
+        <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800">
+          클라우드 연결에 실패했습니다. 로컬에 저장된 프로젝트만 표시됩니다.
+        </div>
+      )}
 
       {projects.length === 0 ? (
         <div className="bg-white rounded-[3rem] border-2 border-dashed border-gray-200 p-20 text-center">

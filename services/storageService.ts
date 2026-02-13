@@ -22,6 +22,30 @@ import { Project, ProjectStatus, Scene } from "../types";
 
 const PROJECTS_COLLECTION = 'projects';
 
+const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} 시간 초과 (${ms / 1000}초)`)), ms);
+    promise.then(
+      val => { clearTimeout(timer); resolve(val); },
+      err => { clearTimeout(timer); reject(err); }
+    );
+  });
+};
+
+const getLocalProjects = (userId: string): Project[] => {
+  const projects: Project[] = [];
+  try {
+    const localKeys = Object.keys(localStorage).filter(k => k.startsWith('vibe_video_backup_') && !k.includes('emergency'));
+    for (const key of localKeys) {
+      const val = localStorage.getItem(key);
+      if (!val) continue;
+      const p = JSON.parse(val);
+      if (p && p.user_id === userId) projects.push(p);
+    }
+  } catch (e) {}
+  return projects;
+};
+
 const isDataUrl = (s?: string): boolean => !!s && s.startsWith('data:');
 const isBase64Only = (s?: string): boolean => !!s && !s.startsWith('data:') && !s.startsWith('http') && !s.startsWith('blob:') && s.length > 200;
 
@@ -116,17 +140,17 @@ export const saveProjectToCloud = async (project: Project): Promise<void> => {
       updated_at: new Date().toISOString(),
       server_updated_at: serverTimestamp() 
     });
-    await setDoc(projectRef, dataToSave, { merge: true });
+    await withTimeout(setDoc(projectRef, dataToSave, { merge: true }), 10000, '프로젝트 저장');
     console.log(`[Database] Project Saved Successfully: ${project.id}`);
   } catch (error: any) {
-    console.error("[Database Save Error]", error.code || error.message);
+    console.warn("[Database Save] 클라우드 저장 실패, 로컬에 백업됨:", error?.message);
     localStorage.setItem(`vibe_video_backup_emergency_${project.id}`, JSON.stringify(project));
-    throw error;
   }
 };
 
 /**
  * Retrieves a single project from Firestore or Local Storage.
+ * Firestore call has 8s timeout; falls back to localStorage on failure.
  */
 export const getProjectFromCloud = async (id: string): Promise<Project | undefined> => {
   if (!id) return undefined;
@@ -134,57 +158,78 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
   if (db) {
     try {
       const projectRef = doc(db, PROJECTS_COLLECTION, id);
-      const docSnap = await getDoc(projectRef);
+      const docSnap = await withTimeout(getDoc(projectRef), 8000, '프로젝트 조회');
       if (docSnap.exists()) {
-        return docSnap.data() as Project;
+        const project = docSnap.data() as Project;
+        localStorage.setItem(`vibe_video_backup_${id}`, JSON.stringify(project));
+        return project;
       }
-    } catch (error) {
-      console.error("Firestore Get Project Failed:", error);
+    } catch (error: any) {
+      console.warn("[Database] 클라우드 조회 실패, 로컬 데이터 사용:", error?.message);
     }
   }
 
   const local = localStorage.getItem(`vibe_video_backup_${id}`);
-  if (local) return JSON.parse(local);
+  if (local) {
+    console.log("[Database] 로컬 백업에서 프로젝트 복원:", id);
+    return JSON.parse(local);
+  }
   
   return undefined;
 };
 
-/**
- * Lists all projects for a user, combining cloud and local storage.
- */
-export const getAllProjectsFromCloud = async (userId: string): Promise<Project[]> => {
-  if (!userId) return [];
-  const projects: Project[] = [];
-
-  if (db) {
-    try {
-      const q = query(collection(db, PROJECTS_COLLECTION), where("user_id", "==", userId));
-      const querySnapshot = await getDocs(q);
-      querySnapshot.forEach((doc) => {
-        projects.push(doc.data() as Project);
-      });
-    } catch (error: any) {
-      console.error("Firestore Fetch Failed:", error.message);
-    }
-  }
-    
-  const localKeys = Object.keys(localStorage).filter(k => k.startsWith('vibe_video_backup_'));
-  localKeys.forEach(key => {
-    try {
-      const val = localStorage.getItem(key);
-      if (!val) return;
-      const localProj = JSON.parse(val);
-      if (localProj && localProj.user_id === userId && !projects.find(p => p.id === localProj.id)) {
-        projects.push(localProj);
-      }
-    } catch (e) {}
-  });
-
+const sortProjects = (projects: Project[]): Project[] => {
   return projects.sort((a, b) => {
     const dateA = new Date(a.updated_at || a.created_at).getTime();
     const dateB = new Date(b.updated_at || b.created_at).getTime();
     return dateB - dateA;
   });
+};
+
+export const getLocalProjectsList = (userId: string): Project[] => {
+  if (!userId) return [];
+  return sortProjects(getLocalProjects(userId));
+};
+
+export const syncProjectsFromCloud = async (userId: string, localProjects: Project[]): Promise<{ projects: Project[], fromCloud: boolean }> => {
+  if (!userId || !db) return { projects: localProjects, fromCloud: false };
+
+  const projectMap = new Map<string, Project>();
+  localProjects.forEach(p => projectMap.set(p.id, p));
+
+  try {
+    const q = query(collection(db, PROJECTS_COLLECTION), where("user_id", "==", userId));
+    const querySnapshot = await withTimeout(getDocs(q), 8000, '프로젝트 목록 조회');
+    querySnapshot.forEach((docSnap) => {
+      const cloudProject = docSnap.data() as Project;
+      const localVersion = projectMap.get(cloudProject.id);
+      if (localVersion) {
+        const cloudDate = new Date(cloudProject.updated_at || cloudProject.created_at).getTime();
+        const localDate = new Date(localVersion.updated_at || localVersion.created_at).getTime();
+        if (cloudDate >= localDate) {
+          projectMap.set(cloudProject.id, cloudProject);
+        }
+      } else {
+        projectMap.set(cloudProject.id, cloudProject);
+      }
+    });
+    const merged = sortProjects(Array.from(projectMap.values()));
+    merged.forEach(p => {
+      try { localStorage.setItem(`vibe_video_backup_${p.id}`, JSON.stringify(p)); } catch(e) {}
+    });
+    console.log(`[Database] 클라우드에서 ${querySnapshot.size}개 프로젝트 동기화 완료`);
+    return { projects: merged, fromCloud: true };
+  } catch (error: any) {
+    console.warn("[Database] 클라우드 동기화 실패:", error?.message);
+    return { projects: localProjects, fromCloud: false };
+  }
+};
+
+export const getAllProjectsFromCloud = async (userId: string): Promise<Project[]> => {
+  if (!userId) return [];
+  const local = getLocalProjectsList(userId);
+  const { projects } = await syncProjectsFromCloud(userId, local);
+  return projects;
 };
 
 /**
