@@ -393,8 +393,17 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               <input value={topic} onChange={e => setTopic(e.target.value)} placeholder="비디오 주제를 입력하세요 (예: 2024년 파리 올림픽 요약)..." className="flex-1 p-8 bg-gray-50 rounded-[2.5rem] outline-none text-2xl font-bold shadow-inner" />
               <button onClick={async () => {
                 setLoading(true); setLoadingMessage("AI가 창의적인 스크립트를 빌드 중입니다...");
-                const result = await generateScript(topic, videoStyle);
-                setScript(result); setLoading(false);
+                try {
+                  const result = await generateScript(topic, videoStyle);
+                  setScript(result);
+                } catch (e: any) {
+                  console.error("Script generation failed:", e);
+                  alert(e?.message?.includes('API key') 
+                    ? 'API 키가 설정되지 않았습니다. Gemini API 키(API_KEY)를 환경 변수에 설정해주세요.'
+                    : `스크립트 생성 실패: ${e?.message || '알 수 없는 오류'}`);
+                } finally {
+                  setLoading(false);
+                }
               }} className="bg-brand-cyan text-black px-10 rounded-[2.5rem] shadow-xl hover:scale-105 transition-all"><Icons.Wand2 size={28} /></button>
             </div>
             <textarea value={script} onChange={e => setScript(e.target.value)} className="flex-1 p-10 bg-gray-50 rounded-[3rem] outline-none font-serif text-xl leading-relaxed shadow-inner" placeholder="AI가 작성한 스크립트..." />
