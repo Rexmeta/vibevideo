@@ -591,17 +591,20 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     const results: { idx: number; error?: any }[] = [];
     for (let ti = 0; ti < tasks.length; ti++) {
       const task = tasks[ti];
-      setLoadingMessage(`비디오 생성 중... (${ti + 1}/${tasks.length}개 씬)`);
       setProcessingSet(new Set([task.idx]));
       if (ti > 0) {
-        setLoadingMessage(`비디오 생성 대기 중... (${ti + 1}/${tasks.length}개 씬, 속도 제한 방지)`);
-        await new Promise(r => setTimeout(r, 5000));
-        setLoadingMessage(`비디오 생성 중... (${ti + 1}/${tasks.length}개 씬)`);
+        const waitSec = 60;
+        for (let w = waitSec; w > 0; w--) {
+          setLoadingMessage(`다음 씬 대기 중... ${w}초 (${ti + 1}/${tasks.length}개 씬, API 속도 제한 방지)`);
+          await new Promise(r => setTimeout(r, 1000));
+        }
       }
+      setLoadingMessage(`비디오 생성 중... (${ti + 1}/${tasks.length}개 씬) — 최대 5분 소요`);
       try {
         await task.fn();
         results.push({ idx: task.idx });
         newFailed.delete(`video-${task.idx}`);
+        sync();
       } catch (error: any) {
         results.push({ idx: task.idx, error });
         newFailed.set(`video-${task.idx}`, error?.message || '오류');
@@ -825,32 +828,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               </button>
             </div>
 
-            {step === 5 && selectedVideoIdx !== null && scenes[selectedVideoIdx]?.video_path && (
-              <div className="mb-8 bg-brand-dark rounded-[2.5rem] overflow-hidden shadow-2xl border-4 border-white relative">
-                <div className="flex items-center justify-between px-8 py-4 bg-black/30">
-                  <span className="text-white text-sm font-black uppercase tracking-widest">Scene {selectedVideoIdx + 1} Preview</span>
-                  <button onClick={() => setSelectedVideoIdx(null)} className="text-white/60 hover:text-white transition-colors">
-                    <Icons.X size={20} />
-                  </button>
-                </div>
-                <div className={`${aspectRatio === '9:16' ? 'aspect-[9/16] max-h-[400px] mx-auto' : 'aspect-video max-h-[360px]'}`}>
-                  <video
-                    key={`preview-panel-${selectedVideoIdx}-${scenes[selectedVideoIdx]?.video_path}`}
-                    src={scenes[selectedVideoIdx]?.video_path}
-                    poster={scenes[selectedVideoIdx]?.image_path}
-                    autoPlay
-                    controls
-                    playsInline
-                    className="w-full h-full object-contain"
-                  />
-                </div>
-                <div className="px-8 py-4 bg-black/20">
-                  <p className="text-white/60 text-xs italic line-clamp-2">{scenes[selectedVideoIdx]?.script_segment}</p>
-                </div>
-              </div>
-            )}
 
-            <div className={`flex-1 overflow-y-auto pr-4 space-y-6 hide-scrollbar ${step === 5 && selectedVideoIdx !== null ? 'max-h-[300px]' : ''}`}>
+            <div className="flex-1 overflow-y-auto pr-4 space-y-6 hide-scrollbar">
               {scenes.map((s, i) => {
                 const mediaType = step === 3 ? 'audio' : step === 4 ? 'image' : 'video';
                 const isFailed = failedScenes.has(`${mediaType}-${i}`);
@@ -873,6 +852,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                           {s.audio_path && (
                             <button onClick={() => handlePlayAudio(s.audio_path!, i)} className="flex items-center gap-2 px-6 py-2.5 bg-brand-dark text-white rounded-full text-[11px] font-black uppercase hover:scale-105 transition-all shadow-md">
                               {playingAudioIdx === i ? <Icons.Loader2 className="animate-spin" size={12} /> : <Icons.Play size={12} />} Preview Audio
+                            </button>
+                          )}
+                          {step === 5 && s.video_path && (
+                            <button onClick={() => setSelectedVideoIdx(selectedVideoIdx === i ? null : i)} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-purple-600 to-pink-500 text-white rounded-full text-[11px] font-black uppercase hover:scale-105 transition-all shadow-md">
+                              <Icons.Play size={12} /> Preview Video
                             </button>
                           )}
                           {step === 3 && (isFailed || !s.audio_path) && (
@@ -908,6 +892,19 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                         </>
                       )}
                     </div>
+                    {step === 5 && selectedVideoIdx === i && s.video_path && (
+                      <div className="mt-4 rounded-2xl overflow-hidden bg-black shadow-lg border-2 border-purple-400/30">
+                        <video
+                          key={`inline-preview-${i}-${s.video_path}`}
+                          src={s.video_path}
+                          poster={s.image_path}
+                          autoPlay
+                          controls
+                          playsInline
+                          className={`w-full ${aspectRatio === '9:16' ? 'max-h-[300px] mx-auto' : 'max-h-[240px]'} object-contain`}
+                        />
+                      </div>
+                    )}
                   </div>
                   
                   <div className={`shrink-0 bg-brand-dark rounded-[2.5rem] overflow-hidden shadow-2xl flex items-center justify-center border-4 relative transition-all duration-700 ${aspectRatio === '9:16' ? 'w-40 h-72' : 'w-72 h-40'} ${isActive ? 'border-brand-cyan scale-105' : isFailed ? 'border-red-400' : 'border-white'}`}>

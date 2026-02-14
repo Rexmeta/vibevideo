@@ -105,9 +105,19 @@ service firebase.storage {
 ## AI Models Used
 - **TTS**: `gemini-2.5-flash-preview-tts` (Puck/Kore voices, 45s timeout)
 - **Image**: `gemini-2.5-flash-image` (responseModalities: IMAGE+TEXT, 60s timeout)
-- **Video**: `veo-3.1-fast-generate-preview` (sequential processing, 5s inter-scene delay, 2 retries with 15s backoff for 429, polling 60 attempts x 5s)
+- **Video**: `veo-3.1-fast-generate-preview` (sequential processing, 60s inter-scene delay, 3 retries with 60s base backoff for 429, polling 30 attempts x 15s, seed image resized to 768px JPEG 85%)
 
 ## Recent Changes
+- 2026-02-14: Video generation reliability overhaul:
+  - Root cause: 429 rate limit from parallel video generation + oversized seed images (1.5MB+ base64)
+  - Seed image resizing: Canvas-based resize to max 768px, JPEG 85% quality (~200-400KB vs 1.5MB+)
+  - Sequential processing with 60s inter-scene delay (countdown timer shown to user)
+  - Retry: 3 retries with 60s base backoff for 429 (exponential, max 180s), Retry-After header support
+  - Polling: 15s interval (per Veo API docs), consecutive error tracking (fails after 5)
+  - Video duration: explicit 5s config
+  - Inline video preview: "Preview Video" button (purple gradient) toggles inline player in scene card
+  - Removed old expanded preview panel in favor of inline previews
+  - Each successful scene synced immediately (not just at batch end)
 - 2026-02-14: Sync timing & project restore fix + Export features:
   - Sync timing: `sync()` now builds project data inside timer callback using refs (scenesRef, stepRef, etc.) instead of at call time, preventing stale closure data
   - Restore: maxStep computed from actual scene data (video_path, image_path, audio_path presence) so steps 5-7 are accessible after re-entry

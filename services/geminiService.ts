@@ -38,8 +38,12 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 1, label:
                           errStr.includes('503') ||
                           errStr.includes('500');
       if (attempt < maxRetries && isRetryable) {
-        const baseDelay = is429 ? 15000 : 3000;
-        const delay = Math.min(baseDelay * Math.pow(2, attempt), 60000);
+        let retryAfter = 0;
+        if (e?.headers?.get) {
+          try { retryAfter = parseInt(e.headers.get('retry-after') || '0', 10) * 1000; } catch {}
+        }
+        const baseDelay = is429 ? 60000 : 5000;
+        const delay = retryAfter || Math.min(baseDelay * Math.pow(2, attempt), 180000);
         console.log(`[Retry] ${label} attempt ${attempt + 1} failed (${is429 ? '429 rate limit' : errStr.slice(0, 50)}), retrying in ${delay / 1000}s...`);
         await new Promise(r => setTimeout(r, delay));
       } else {
@@ -243,6 +247,36 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
   }, 1, '이미지 생성');
 };
 
+async function resizeImageForVideo(imageSource: string, maxDim: number = 768): Promise<{ imageBytes: string; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const scale = maxDim / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas context failed')); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      const base64 = dataUrl.split(',')[1];
+      resolve({ imageBytes: base64, mimeType: 'image/jpeg' });
+    };
+    img.onerror = () => reject(new Error('Image load failed for resize'));
+    img.crossOrigin = 'anonymous';
+    if (imageSource.startsWith('data:') || imageSource.startsWith('http')) {
+      img.src = imageSource;
+    } else {
+      img.src = `data:image/png;base64,${imageSource}`;
+    }
+  });
+}
+
 export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9'): Promise<string | null> => {
   let validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
   const apiKey = getApiKey();
@@ -250,32 +284,36 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
   const buildPayload = async () => {
     const payload: any = {
       model: 'veo-3.1-fast-generate-preview',
-      prompt: `Smooth motion, high quality: ${prompt}`,
-      config: { numberOfVideos: 1, resolution: '720p', aspectRatio: validRatio }
+      prompt: `Cinematic smooth motion, high quality: ${prompt}`,
+      config: { numberOfVideos: 1, resolution: '720p', aspectRatio: validRatio, durationSeconds: 5 }
     };
 
     if (imageSource) {
       try {
-        let imageBytes: string;
-        let mimeType = 'image/png';
-        if (imageSource.startsWith('data:')) {
-          const mimeMatch = imageSource.match(/^data:(image\/[a-z+]+);base64,/);
-          if (mimeMatch) mimeType = mimeMatch[1];
-          imageBytes = imageSource.replace(/^data:image\/[a-z+]+;base64,/, "");
-        } else if (imageSource.startsWith('http')) {
-          if (imageSource.includes('.jpg') || imageSource.includes('.jpeg')) mimeType = 'image/jpeg';
-          else if (imageSource.includes('.png')) mimeType = 'image/png';
-          imageBytes = await urlToBase64(imageSource);
-        } else {
-          imageBytes = imageSource;
-        }
+        const { imageBytes, mimeType } = await resizeImageForVideo(imageSource, 768);
         payload.image = { imageBytes, mimeType };
-        console.log(`[Video Gen] Using seed image (${mimeType}, ${Math.round(imageBytes.length / 1024)}KB base64)`);
+        console.log(`[Video Gen] Resized seed image → ${mimeType}, ${Math.round(imageBytes.length / 1024)}KB`);
       } catch (imgErr) {
-        console.warn("[Video Gen] Could not load reference image, generating without it:", imgErr);
+        console.warn("[Video Gen] Image resize failed, trying raw:", imgErr);
+        try {
+          let imageBytes: string;
+          let mimeType = 'image/png';
+          if (imageSource.startsWith('data:')) {
+            const mimeMatch = imageSource.match(/^data:(image\/[a-z+]+);base64,/);
+            if (mimeMatch) mimeType = mimeMatch[1];
+            imageBytes = imageSource.replace(/^data:image\/[a-z+]+;base64,/, "");
+          } else if (imageSource.startsWith('http')) {
+            imageBytes = await urlToBase64(imageSource);
+          } else {
+            imageBytes = imageSource;
+          }
+          payload.image = { imageBytes, mimeType };
+        } catch (rawErr) {
+          console.warn("[Video Gen] Could not load reference image at all:", rawErr);
+        }
       }
     } else {
-      console.log("[Video Gen] No seed image provided, generating from text only");
+      console.log("[Video Gen] No seed image, generating from text only");
     }
     return payload;
   };
@@ -284,27 +322,36 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
     const payload = await buildPayload();
     const aiStart = new GoogleGenAI({ apiKey });
 
+    console.log(`[Video Gen] Submitting generation request...`);
     let operation = await aiStart.models.generateVideos(payload);
     let attempts = 0;
-    const maxAttempts = 60;
-    const pollInterval = 5000;
+    const maxAttempts = 30;
+    const pollInterval = 15000;
+    let consecutivePollErrors = 0;
+
     while (!operation.done && attempts < maxAttempts) {
       await new Promise(r => setTimeout(r, pollInterval));
       const aiPoll = new GoogleGenAI({ apiKey });
       try {
         operation = await aiPoll.operations.getVideosOperation({ operation: operation });
+        consecutivePollErrors = 0;
+        if (attempts % 5 === 0) console.log(`[Video Gen] Polling... attempt ${attempts}/${maxAttempts}`);
       } catch (pollErr: any) {
-        console.warn(`[Video Gen] Poll attempt ${attempts} error:`, pollErr?.message);
-        if (pollErr?.message?.includes('429') || pollErr?.message?.includes('RESOURCE_EXHAUSTED')) {
-          await new Promise(r => setTimeout(r, 10000));
+        consecutivePollErrors++;
+        const errMsg = pollErr?.message || String(pollErr);
+        console.warn(`[Video Gen] Poll error #${consecutivePollErrors}:`, errMsg);
+        if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+          await new Promise(r => setTimeout(r, 15000));
+        }
+        if (consecutivePollErrors >= 5) {
+          throw new Error('폴링 중 연속 오류 발생, 재시도합니다.');
         }
       }
       attempts++;
     }
 
     if (!operation.done) {
-      console.error("[Video Gen] Timed out after polling");
-      throw new Error('비디오 생성 시간 초과 (약 5분 대기 후 실패)');
+      throw new Error('비디오 생성 시간 초과 (약 7분 대기 후 실패)');
     }
 
     const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
@@ -315,6 +362,7 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
     }
 
     const separator = downloadLink.includes('?') ? '&' : '?';
+    console.log(`[Video Gen] Success! Video ready for download.`);
     return `${downloadLink}${separator}key=${apiKey}`;
-  }, 2, '비디오 생성');
+  }, 3, '비디오 생성');
 }
