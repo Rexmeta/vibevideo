@@ -51,15 +51,57 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const restoredRef = useRef(false);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSyncRef = useRef<(() => Promise<void>) | null>(null);
+  const syncParamsRef = useRef<any>(null);
+
+  const scenesRef = useRef(scenes);
+  const stepRef = useRef(step);
+  const maxStepRef = useRef(maxStep);
+  const topicRef = useRef(topic);
+  const scriptRef = useRef(script);
+  const thumbnailRef = useRef(thumbnail);
+
+  useEffect(() => { scenesRef.current = scenes; }, [scenes]);
+  useEffect(() => { stepRef.current = step; }, [step]);
+  useEffect(() => { maxStepRef.current = maxStep; }, [maxStep]);
+  useEffect(() => { topicRef.current = topic; }, [topic]);
+  useEffect(() => { scriptRef.current = script; }, [script]);
+  useEffect(() => { thumbnailRef.current = thumbnail; }, [thumbnail]);
 
   useEffect(() => {
     return () => {
       if (syncTimerRef.current) {
         clearTimeout(syncTimerRef.current);
-        const fn = pendingSyncRef.current;
-        pendingSyncRef.current = null;
         syncTimerRef.current = null;
-        if (fn) fn();
+      }
+      const fn = pendingSyncRef.current;
+      pendingSyncRef.current = null;
+      if (fn) {
+        fn();
+      } else if (syncParamsRef.current) {
+        const params = syncParamsRef.current;
+        syncParamsRef.current = null;
+        const currentStep = params.targetStep || stepRef.current;
+        const currentScenes = (params.scenesOverride || scenesRef.current) as Scene[];
+        const currentMaxStep = params.overrides?.maxStep ?? Math.max(maxStepRef.current, currentStep);
+        const proj: Project = {
+          id: projectId,
+          user_id: userId,
+          title: params.overrides?.topic || topicRef.current || '새 비디오 프로젝트',
+          aspect_ratio: aspectRatio,
+          style_template: videoStyle,
+          status: ProjectStatus.DRAFT,
+          created_at: createdAt,
+          updated_at: new Date().toISOString(),
+          saved_step: currentStep,
+          saved_max_step: currentMaxStep,
+          saved_script: params.overrides?.script ?? scriptRef.current,
+          saved_scenes: currentScenes,
+          saved_topic: params.overrides?.topic || topicRef.current,
+          saved_duration: params.overrides?.duration ?? duration,
+          thumbnail: params.extraData?.thumbnail || thumbnailRef.current,
+          ...params.extraData
+        };
+        saveProjectToCloud(proj).catch(e => console.error("Unmount sync error:", e));
       }
     };
   }, []);
@@ -115,6 +157,15 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             return sc;
           }));
           setScenes(recoveredScenes);
+          let computedMax = restoredMaxStep;
+          if (recoveredScenes.length > 0) {
+            if (recoveredScenes.some(s => s.video_path)) computedMax = Math.max(computedMax, 6);
+            if (recoveredScenes.every(s => s.video_path)) computedMax = Math.max(computedMax, 7);
+            if (recoveredScenes.some(s => s.image_path)) computedMax = Math.max(computedMax, 5);
+            if (recoveredScenes.every(s => s.image_path)) computedMax = Math.max(computedMax, 5);
+            if (recoveredScenes.some(s => s.audio_path)) computedMax = Math.max(computedMax, 4);
+          }
+          setMaxStep(computedMax);
         }
       } catch (err) {
         console.error("Restore failed:", err);
@@ -132,47 +183,56 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     overrides: { script?: string; topic?: string; duration?: number; maxStep?: number } = {}
   ) => {
     if (!userId) return;
-    const currentStep = targetStep || step;
-    const currentScenes = (scenesOverride || scenes) as Scene[];
-    const currentMaxStep = overrides.maxStep ?? Math.max(maxStep, currentStep);
-    
-    const proj: Project = {
-      id: projectId,
-      user_id: userId,
-      title: overrides.topic || topic || '새 비디오 프로젝트',
-      aspect_ratio: aspectRatio,
-      style_template: videoStyle,
-      status: ProjectStatus.DRAFT,
-      created_at: createdAt,
-      updated_at: new Date().toISOString(),
-      saved_step: currentStep,
-      saved_max_step: currentMaxStep,
-      saved_script: overrides.script ?? script,
-      saved_scenes: currentScenes,
-      saved_topic: overrides.topic || topic,
-      saved_duration: overrides.duration ?? duration,
-      thumbnail: extraData.thumbnail || thumbnail,
-      ...extraData
-    };
+    syncParamsRef.current = { targetStep, scenesOverride, extraData, overrides };
 
-    const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
-      const c = { ...s };
-      if (c.audio_path && c.audio_path.startsWith('data:')) c.audio_path = '[local-audio]';
-      if (c.image_path && c.image_path.startsWith('data:')) c.image_path = '[local-image]';
-      if (c.video_path && (c.video_path.startsWith('data:') || c.video_path.startsWith('blob:'))) c.video_path = '[local-video]';
-      return c;
-    }) };
-    try {
-      localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(localProj));
-    } catch (e: any) {
-      console.warn("[Sync] localStorage 저장 실패 (용량 초과), 메타데이터만 저장:", e?.message);
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    pendingSyncRef.current = null;
+    syncTimerRef.current = setTimeout(async () => {
+      syncTimerRef.current = null;
+      const params = syncParamsRef.current;
+      if (!params) return;
+      syncParamsRef.current = null;
+
+      const currentStep = params.targetStep || stepRef.current;
+      const currentScenes = (params.scenesOverride || scenesRef.current) as Scene[];
+      const currentMaxStep = params.overrides.maxStep ?? Math.max(maxStepRef.current, currentStep);
+      
+      const proj: Project = {
+        id: projectId,
+        user_id: userId,
+        title: params.overrides.topic || topicRef.current || '새 비디오 프로젝트',
+        aspect_ratio: aspectRatio,
+        style_template: videoStyle,
+        status: ProjectStatus.DRAFT,
+        created_at: createdAt,
+        updated_at: new Date().toISOString(),
+        saved_step: currentStep,
+        saved_max_step: currentMaxStep,
+        saved_script: params.overrides.script ?? scriptRef.current,
+        saved_scenes: currentScenes,
+        saved_topic: params.overrides.topic || topicRef.current,
+        saved_duration: params.overrides.duration ?? duration,
+        thumbnail: params.extraData.thumbnail || thumbnailRef.current,
+        ...params.extraData
+      };
+
+      const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
+        const c = { ...s };
+        if (c.audio_path && c.audio_path.startsWith('data:')) c.audio_path = '[local-audio]';
+        if (c.image_path && c.image_path.startsWith('data:')) c.image_path = '[local-image]';
+        if (c.video_path && (c.video_path.startsWith('data:') || c.video_path.startsWith('blob:'))) c.video_path = '[local-video]';
+        return c;
+      }) };
       try {
-        const metaOnly = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => ({ scene_number: s.scene_number, narration: s.narration, visual_prompt: s.visual_prompt, duration_seconds: s.duration_seconds })) };
-        localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(metaOnly));
-      } catch (e2) { console.error("[Sync] localStorage 완전 실패:", e2); }
-    }
+        localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(localProj));
+      } catch (e: any) {
+        console.warn("[Sync] localStorage 저장 실패:", e?.message);
+        try {
+          const metaOnly = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => ({ scene_number: s.scene_number, narration: s.narration, visual_prompt: s.visual_prompt, duration_seconds: s.duration_seconds })) };
+          localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(metaOnly));
+        } catch (e2) {}
+      }
 
-    const doCloudSave = async () => {
       try {
         setSyncing(true);
         setSyncError(false);
@@ -183,15 +243,6 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       } finally {
         setSyncing(false);
       }
-    };
-
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    pendingSyncRef.current = doCloudSave;
-    syncTimerRef.current = setTimeout(() => {
-      const fn = pendingSyncRef.current;
-      pendingSyncRef.current = null;
-      syncTimerRef.current = null;
-      if (fn) fn();
     }, 1500);
   };
 
@@ -496,6 +547,38 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     setProcessingType(null);
   };
 
+  const [downloadingAll, setDownloadingAll] = useState(false);
+
+  const downloadVideo = async (url: string, filename: string) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      console.error('Download failed:', e);
+      window.open(url, '_blank');
+    }
+  };
+
+  const handleDownloadAll = async () => {
+    setDownloadingAll(true);
+    for (let i = 0; i < scenes.length; i++) {
+      const s = scenes[i];
+      if (s.video_path) {
+        await downloadVideo(s.video_path, `scene_${i + 1}.mp4`);
+        if (i < scenes.length - 1) await new Promise(r => setTimeout(r, 500));
+      }
+    }
+    setDownloadingAll(false);
+  };
+
   const isProcessing = processingSet.size > 0;
   const isImagesReady = scenes.length > 0 && scenes.every(s => !!s.image_path);
   const isVideosReady = scenes.length > 0 && scenes.every(s => !!s.video_path);
@@ -720,7 +803,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                     ) : (step === 4 || step === 5) ? (
                       <div className="relative w-full h-full group">
                         {s.video_path ? (
-                          <video src={s.video_path} autoPlay loop muted playsInline className="w-full h-full object-cover" />
+                          <video src={s.video_path} autoPlay={step !== 5} loop={step !== 5} muted={step !== 5} controls={step === 5} playsInline className="w-full h-full object-cover" />
                         ) : s.image_path ? (
                           <img src={s.image_path} className="w-full h-full object-cover animate-in fade-in zoom-in-95 duration-700" key={s.image_path} alt="Scene Visual" />
                         ) : isFailed ? (
@@ -763,6 +846,20 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               <div className="mb-10 text-center">
                 <h2 className="text-5xl font-black text-brand-dark mb-4 tracking-tighter">Director's Preview</h2>
                 <p className="text-gray-400 font-medium italic">모든 씬이 유기적으로 연결된 최종 결과물을 확인하세요.</p>
+                <div className="flex items-center justify-center gap-4 mt-4">
+                  <button
+                    onClick={() => { setActivePreviewIdx(0); }}
+                    className="px-8 py-3 bg-brand-cyan text-black rounded-full font-black text-sm shadow-lg hover:scale-105 transition-all flex items-center gap-2"
+                  >
+                    <Icons.Play size={16} /> Play All
+                  </button>
+                  <span className="text-sm font-bold text-gray-500">
+                    Scene {activePreviewIdx + 1} / {scenes.length}
+                  </span>
+                  <div className="w-40 h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-brand-cyan rounded-full transition-all duration-500" style={{ width: `${((activePreviewIdx + 1) / scenes.length) * 100}%` }}></div>
+                  </div>
+                </div>
               </div>
 
               <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-10">
@@ -850,21 +947,71 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
 
         {/* STEP 7: Export */}
         {step === 7 && (
-          <div className="flex-1 flex flex-col items-center justify-center py-20 animate-in fade-in zoom-in-95 duration-1000">
-             <div className="w-40 h-40 bg-brand-cyan/20 rounded-full flex items-center justify-center mb-10 animate-bounce shadow-[0_0_80px_rgba(0,194,255,0.2)]">
-                <Icons.Check className="text-brand-cyan" size={80} strokeWidth={4} />
+          <div className="flex-1 flex flex-col animate-in fade-in zoom-in-95 duration-1000">
+             <div className="text-center mb-10">
+                <h2 className="text-5xl font-black text-brand-dark mb-4 tracking-tighter">Export Your Video</h2>
+                <p className="text-gray-400 font-medium italic text-lg">
+                  개별 씬을 다운로드하거나 모든 씬을 한 번에 다운로드하세요.
+                </p>
              </div>
-             <h2 className="text-7xl font-black mb-6 text-brand-dark tracking-tighter">PROJECT COMPLETE</h2>
-             <p className="text-gray-400 font-medium text-xl mb-16 text-center max-w-xl leading-relaxed italic">
-                축하합니다! 당신의 창작물이 구글 클라우드와 완벽하게 동기화되었습니다.<br/>
-                워크스페이스에서 언제든 결과물을 확인하고 공유할 수 있습니다.
-             </p>
-             <button 
-                onClick={() => onNavigate('projects')} 
-                className="bg-brand-dark text-white px-20 py-8 rounded-full font-black text-3xl shadow-[0_30px_70px_rgba(0,0,0,0.3)] hover:scale-105 active:scale-95 transition-all flex items-center gap-6"
-              >
-                Go to Workspace <Icons.ChevronRight size={36} />
-              </button>
+
+             <div className="mb-8 flex justify-center">
+                <button
+                  onClick={handleDownloadAll}
+                  disabled={downloadingAll || scenes.every(s => !s.video_path)}
+                  className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${downloadingAll ? 'bg-gray-100 text-gray-400' : 'bg-brand-cyan text-black hover:scale-105 active:scale-95'}`}
+                >
+                  {downloadingAll ? (
+                    <><Icons.Loader2 className="animate-spin" size={20} /> Downloading...</>
+                  ) : (
+                    <><Icons.Download size={20} /> Download All Scenes</>
+                  )}
+                </button>
+             </div>
+
+             <div className="flex-1 overflow-y-auto pr-4 hide-scrollbar">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {scenes.map((s, i) => (
+                    <div key={i} className="bg-gray-50 rounded-[2.5rem] overflow-hidden border border-gray-100 shadow-sm hover:shadow-xl transition-all">
+                      <div className={`relative bg-black ${aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'} overflow-hidden`}>
+                        {s.video_path ? (
+                          <video src={s.video_path} poster={s.image_path} controls playsInline className="w-full h-full object-cover" />
+                        ) : s.image_path ? (
+                          <img src={s.image_path} className="w-full h-full object-cover" alt={`Scene ${i + 1}`} />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Icons.VideoOff size={40} className="text-white/20" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-6 flex items-center justify-between">
+                        <div>
+                          <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">Scene {i + 1}</span>
+                          <p className="text-xs text-brand-dark font-medium italic line-clamp-1 mt-1">{s.script_segment}</p>
+                        </div>
+                        {s.video_path && (
+                          <button
+                            onClick={() => downloadVideo(s.video_path!, `scene_${i + 1}.mp4`)}
+                            className="shrink-0 w-10 h-10 bg-brand-dark text-white rounded-full flex items-center justify-center hover:scale-110 transition-all shadow-md"
+                          >
+                            <Icons.Download size={16} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+             </div>
+
+             <div className="flex gap-4 mt-10">
+                <button onClick={() => setStep(6)} className="px-10 py-6 rounded-full font-black text-gray-400 hover:text-black transition-colors">Back</button>
+                <button 
+                  onClick={() => onNavigate('projects')} 
+                  className="flex-1 bg-brand-dark text-white py-6 rounded-full font-black text-2xl shadow-2xl hover:scale-[1.02] transition-all flex items-center justify-center gap-4"
+                >
+                  Go to Workspace <Icons.ChevronRight size={28} />
+                </button>
+             </div>
           </div>
         )}
       </div>
