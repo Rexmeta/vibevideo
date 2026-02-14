@@ -208,7 +208,7 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
   }, 1, '오디오 생성');
 };
 
-export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9'): Promise<string | null> => {
+export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9'): Promise<{ base64: string; mimeType: string } | null> => {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error('API 키가 설정되지 않았습니다.');
@@ -231,8 +231,9 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
     );
 
     for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData) {
-        return part.inlineData.data || null;
+      if (part.inlineData && part.inlineData.data) {
+        const mimeType = part.inlineData.mimeType || 'image/png';
+        return { base64: part.inlineData.data, mimeType };
       }
     }
     throw new Error('이미지 데이터가 생성되지 않았습니다.');
@@ -253,17 +254,25 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
   if (imageSource) {
     try {
       let imageBytes: string;
+      let mimeType = 'image/png';
       if (imageSource.startsWith('data:')) {
+        const mimeMatch = imageSource.match(/^data:(image\/[a-z+]+);base64,/);
+        if (mimeMatch) mimeType = mimeMatch[1];
         imageBytes = imageSource.replace(/^data:image\/[a-z+]+;base64,/, "");
       } else if (imageSource.startsWith('http')) {
+        if (imageSource.includes('.jpg') || imageSource.includes('.jpeg')) mimeType = 'image/jpeg';
+        else if (imageSource.includes('.png')) mimeType = 'image/png';
         imageBytes = await urlToBase64(imageSource);
       } else {
         imageBytes = imageSource;
       }
-      payload.image = { imageBytes, mimeType: 'image/jpeg' };
+      payload.image = { imageBytes, mimeType };
+      console.log(`[Video Gen] Using seed image (${mimeType}, ${Math.round(imageBytes.length / 1024)}KB base64)`);
     } catch (imgErr) {
       console.warn("[Video Gen] Could not load reference image, generating without it:", imgErr);
     }
+  } else {
+    console.log("[Video Gen] No seed image provided, generating from text only");
   }
 
   try {
@@ -278,19 +287,19 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
 
     if (!operation.done) {
       console.error("[Video Gen] Timed out after polling");
-      return null;
+      throw new Error('비디오 생성 시간 초과 (약 5분 대기 후 실패)');
     }
 
     const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
     if (!downloadLink) {
       console.error("[Video Gen] No video URI in response");
-      return null;
+      throw new Error('비디오 URI가 응답에 포함되지 않았습니다.');
     }
 
     const separator = downloadLink.includes('?') ? '&' : '?';
     return `${downloadLink}${separator}key=${apiKey}`;
-  } catch (e) {
+  } catch (e: any) {
     console.error("[Video Gen] Generation failed:", e);
-    return null;
+    throw e;
   }
 }

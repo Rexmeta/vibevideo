@@ -352,12 +352,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             if (idx === 0 && url.startsWith('http')) setThumbnail(url);
             return;
           }
-          const base64 = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio);
-          if (base64) {
-            const previewUrl = `data:image/jpeg;base64,${base64}`;
+          const result = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio);
+          if (result) {
+            const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
             updateSceneAt(idx, { image_path: previewUrl });
             saveMedia(projectId, idx, 'image', previewUrl);
-            const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.jpg`, base64, 'base64');
+            const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
+            const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.${ext}`, result.base64, 'base64');
             updateSceneAt(idx, { image_path: url });
             if (idx === 0) setThumbnail(url);
           }
@@ -398,12 +399,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         setProcessingSet(new Set()); setProcessingType(null);
         return;
       }
-      const base64 = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio);
-      if (base64) {
-        const previewUrl = `data:image/jpeg;base64,${base64}`;
+      const result = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio);
+      if (result) {
+        const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
         updateSceneAt(idx, { image_path: previewUrl });
         saveMedia(projectId, idx, 'image', previewUrl);
-        const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.jpg`, base64, 'base64');
+        const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
+        const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.${ext}`, result.base64, 'base64');
         updateSceneAt(idx, { image_path: url });
         if (idx === 0) setThumbnail(url);
         setFailedScenes(prev => { const n = new Map(prev); n.delete(fKey); return n; });
@@ -656,7 +658,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                       {isFailed && <span className="bg-red-100 text-red-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">Failed</span>}
                       {isActive && <span className="bg-brand-cyan/20 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-black uppercase animate-pulse">Processing</span>}
                     </div>
-                    <p className="text-brand-dark text-lg font-medium leading-relaxed italic mb-3 line-clamp-2">"{s.script_segment}"</p>
+                    <p className="text-brand-dark text-sm font-medium leading-relaxed italic mb-3">"{s.script_segment}"</p>
                     {isFailed && <p className="text-red-500 text-xs mb-3 font-medium">{failMsg}</p>}
                     
                     <div className="flex flex-wrap gap-3">
