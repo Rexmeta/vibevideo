@@ -132,6 +132,7 @@ export const uploadFileToCloud = async (path: string, data: string | Blob, forma
   let contentType = 'application/octet-stream';
   if (path.endsWith('.wav')) contentType = 'audio/wav';
   else if (path.endsWith('.jpg') || path.endsWith('.jpeg')) contentType = 'image/jpeg';
+  else if (path.endsWith('.png')) contentType = 'image/png';
   else if (path.endsWith('.mp4')) contentType = 'video/mp4';
 
   if (!storage) {
@@ -359,26 +360,34 @@ export const getProjectsPage = async (
     return { projects: local, lastDoc: null, hasMore: false, fromCloud: false };
   }
 
-  try {
+  const tryQuery = async (useCompoundIndex: boolean): Promise<PaginatedResult> => {
     let q;
-    if (lastDocument) {
-      q = query(
-        collection(db, PROJECTS_COLLECTION), 
-        where("user_id", "==", userId),
-        orderBy("updated_at", "desc"),
-        startAfter(lastDocument),
-        limit(pageSize)
-      );
+    if (useCompoundIndex) {
+      if (lastDocument) {
+        q = query(
+          collection(db!, PROJECTS_COLLECTION), 
+          where("user_id", "==", userId),
+          orderBy("updated_at", "desc"),
+          startAfter(lastDocument),
+          limit(pageSize)
+        );
+      } else {
+        q = query(
+          collection(db!, PROJECTS_COLLECTION), 
+          where("user_id", "==", userId),
+          orderBy("updated_at", "desc"),
+          limit(pageSize)
+        );
+      }
     } else {
       q = query(
-        collection(db, PROJECTS_COLLECTION), 
+        collection(db!, PROJECTS_COLLECTION), 
         where("user_id", "==", userId),
-        orderBy("updated_at", "desc"),
-        limit(pageSize)
+        limit(100)
       );
     }
 
-    const querySnapshot = await withTimeout(getDocs(q), 10000, '프로젝트 목록 조회');
+    const querySnapshot = await withTimeout(getDocs(q), 15000, '프로젝트 목록 조회');
     const projects: Project[] = [];
     let lastDoc: QueryDocumentSnapshot | null = null;
 
@@ -386,6 +395,14 @@ export const getProjectsPage = async (
       projects.push(docSnap.data() as Project);
       lastDoc = docSnap as QueryDocumentSnapshot;
     });
+
+    if (!useCompoundIndex) {
+      projects.sort((a, b) => {
+        const dateA = new Date(a.updated_at || a.created_at).getTime();
+        const dateB = new Date(b.updated_at || b.created_at).getTime();
+        return dateB - dateA;
+      });
+    }
 
     projects.forEach(p => {
       try {
@@ -403,17 +420,26 @@ export const getProjectsPage = async (
       } catch(e) {}
     });
 
-    console.log(`[Database] 페이지 조회: ${projects.length}개 프로젝트 로드`);
+    console.log(`[Database] 페이지 조회: ${projects.length}개 프로젝트 로드 (${useCompoundIndex ? 'compound' : 'simple'} query)`);
     return { 
       projects, 
-      lastDoc, 
-      hasMore: querySnapshot.size === pageSize,
+      lastDoc: useCompoundIndex ? lastDoc : null, 
+      hasMore: useCompoundIndex ? querySnapshot.size === pageSize : false,
       fromCloud: true 
     };
+  };
+
+  try {
+    return await tryQuery(true);
   } catch (error: any) {
-    console.warn("[Database] 페이지 조회 실패:", error?.message);
-    const local = getLocalProjectsList(userId);
-    return { projects: local, lastDoc: null, hasMore: false, fromCloud: false };
+    console.warn("[Database] Compound query 실패, simple query로 재시도:", error?.message);
+    try {
+      return await tryQuery(false);
+    } catch (fallbackError: any) {
+      console.warn("[Database] 페이지 조회 실패:", fallbackError?.message);
+      const local = getLocalProjectsList(userId);
+      return { projects: local, lastDoc: null, hasMore: false, fromCloud: false };
+    }
   }
 };
 
@@ -423,14 +449,12 @@ export const syncProjectsFromCloud = async (userId: string, localProjects: Proje
   const projectMap = new Map<string, Project>();
   localProjects.forEach(p => projectMap.set(p.id, p));
 
-  try {
-    const q = query(
-      collection(db, PROJECTS_COLLECTION), 
-      where("user_id", "==", userId),
-      orderBy("updated_at", "desc"),
-      limit(PAGE_SIZE)
-    );
-    const querySnapshot = await withTimeout(getDocs(q), 10000, '프로젝트 목록 조회');
+  const doSync = async (useCompound: boolean) => {
+    const q = useCompound
+      ? query(collection(db!, PROJECTS_COLLECTION), where("user_id", "==", userId), orderBy("updated_at", "desc"), limit(PAGE_SIZE))
+      : query(collection(db!, PROJECTS_COLLECTION), where("user_id", "==", userId), limit(100));
+    
+    const querySnapshot = await withTimeout(getDocs(q), 15000, '프로젝트 동기화');
     querySnapshot.forEach((docSnap) => {
       const cloudProject = docSnap.data() as Project;
       const localVersion = projectMap.get(cloudProject.id);
@@ -460,11 +484,20 @@ export const syncProjectsFromCloud = async (userId: string, localProjects: Proje
         if (userId) updateProjectIndex(userId, p.id, 'add');
       } catch(e) {}
     });
-    console.log(`[Database] 클라우드에서 ${querySnapshot.size}개 프로젝트 동기화 완료`);
+    console.log(`[Database] 클라우드에서 ${querySnapshot.size}개 프로젝트 동기화 완료 (${useCompound ? 'compound' : 'simple'})`);
     return { projects: merged, fromCloud: true };
+  };
+
+  try {
+    return await doSync(true);
   } catch (error: any) {
-    console.warn("[Database] 클라우드 동기화 실패:", error?.message);
-    return { projects: localProjects, fromCloud: false };
+    console.warn("[Database] Compound sync 실패, simple query로 재시도:", error?.message);
+    try {
+      return await doSync(false);
+    } catch (fallbackError: any) {
+      console.warn("[Database] 클라우드 동기화 실패:", fallbackError?.message);
+      return { projects: localProjects, fromCloud: false };
+    }
   }
 };
 

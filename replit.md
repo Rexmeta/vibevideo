@@ -103,6 +103,14 @@ service firebase.storage {
 ```
 
 ## Recent Changes
+- 2026-02-14: Cloud connection reliability fix:
+  - Firestore query fallback: compound query (where + orderBy) → simple query (where only) when composite index unavailable
+  - Client-side sorting as fallback when compound index not available
+  - Timeout increased from 10s to 15s for Firestore queries
+  - PNG content type support added to `uploadFileToCloud`
+  - Image generation returns correct mimeType (was hardcoded as JPEG, now detects from API response)
+  - Video generation properly detects seed image mimeType from data URL or HTTP URL
+  - Script text in scene cards: removed line-clamp, reduced font for full visibility
 - 2026-02-13: Parallel processing & retry system:
   - Audio/Image/Video batch generation now runs in parallel (3 concurrent for audio/image, 2 for video)
   - Per-scene error tracking with visual Failed/Processing badges and retry buttons
