@@ -13,7 +13,7 @@ import {
   uploadFileToCloud,
   generateProjectId 
 } from '../services/storageService';
-import { saveMedia, getMedia } from '../services/mediaCache';
+import { saveMedia, getMedia, saveProjectMeta, getProjectMeta } from '../services/mediaCache';
 import { Icons } from './Icons';
 import { Scene, Project, ProjectStatus, ViewState } from '../types';
 
@@ -108,7 +108,15 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           thumbnail: params.extraData?.thumbnail || thumbnailRef.current,
           ...params.extraData
         };
-        saveProjectToCloud(proj).catch(e => console.error("Unmount sync error:", e));
+        const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
+          const c = { ...s };
+          if (c.audio_path && c.audio_path.startsWith('data:')) c.audio_path = '[local-audio]';
+          if (c.image_path && c.image_path.startsWith('data:')) c.image_path = '[local-image]';
+          if (c.video_path && (c.video_path.startsWith('data:') || c.video_path.startsWith('blob:'))) c.video_path = '[local-video]';
+          return c;
+        }) };
+        saveProjectMeta(projectId, localProj).catch(() => {});
+        saveProjectToCloud(proj, true).catch(e => console.error("Unmount sync error:", e));
       }
     };
   }, []);
@@ -126,7 +134,24 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         
         if (!p) {
           const localData = localStorage.getItem(`vibe_video_backup_${idToLoad}`);
-          if (localData) p = JSON.parse(localData);
+          if (localData) {
+            try { p = JSON.parse(localData); } catch {}
+          }
+        }
+
+        if (!p || !p.saved_scenes || p.saved_scenes.length === 0) {
+          const idbProject = await getProjectMeta(idToLoad);
+          if (idbProject && idbProject.saved_scenes && idbProject.saved_scenes.length > 0) {
+            if (!p) {
+              p = idbProject;
+            } else {
+              const idbMax = idbProject.saved_max_step || idbProject.saved_step || 1;
+              const currentMax = p.saved_max_step || p.saved_step || 1;
+              if (idbMax >= currentMax) {
+                p = { ...p, ...idbProject, id: p.id };
+              }
+            }
+          }
         }
 
         if (p) {
@@ -144,28 +169,36 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           setThumbnail(p.thumbnail);
 
           const restoredScenes = p.saved_scenes || [];
+          const maxForRestore = Math.max(restoredMaxStep, restoredStep);
           const recoveredScenes = await Promise.all(restoredScenes.map(async (s, i) => {
             const sc = { ...s };
             if (sc.audio_path && (sc.audio_path.startsWith('data:') || (sc.audio_path.length > 200 && !sc.audio_path.startsWith('http')))) {
               saveMedia(p.id, i, 'audio', sc.audio_path);
-            } else if (sc.audio_path === '[local-audio]' || (!sc.audio_path && restoredStep > 3)) {
+            } else if (sc.audio_path === '[local-audio]' || (!sc.audio_path && maxForRestore >= 3)) {
               const cached = await getMedia(p.id, i, 'audio');
               if (cached) sc.audio_path = cached;
             }
             if (sc.image_path && sc.image_path.startsWith('data:')) {
               saveMedia(p.id, i, 'image', sc.image_path);
-            } else if (sc.image_path === '[local-image]' || (!sc.image_path && restoredStep > 4)) {
+            } else if (sc.image_path === '[local-image]' || (!sc.image_path && maxForRestore >= 4)) {
               const cached = await getMedia(p.id, i, 'image');
               if (cached) sc.image_path = cached;
             }
-            if (sc.video_path === '[local-video]' || (!sc.video_path && restoredStep > 5)) {
+            if (sc.video_path === '[local-video]' || (!sc.video_path && maxForRestore >= 5)) {
               const cachedVideo = await getMedia(p.id, i, 'video');
               if (cachedVideo) {
                 try {
-                  const resp = await fetch(cachedVideo);
-                  const blob = await resp.blob();
-                  sc.video_path = URL.createObjectURL(blob);
-                  trackBlobUrl(sc.video_path);
+                  if (cachedVideo.startsWith('blob:')) {
+                    sc.video_path = cachedVideo;
+                    trackBlobUrl(sc.video_path);
+                  } else if (cachedVideo.startsWith('data:')) {
+                    const resp = await fetch(cachedVideo);
+                    const blob = await resp.blob();
+                    sc.video_path = URL.createObjectURL(blob);
+                    trackBlobUrl(sc.video_path);
+                  } else {
+                    sc.video_path = cachedVideo;
+                  }
                 } catch {
                   sc.video_path = undefined;
                 }
@@ -242,12 +275,20 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         if (c.video_path && (c.video_path.startsWith('data:') || c.video_path.startsWith('blob:'))) c.video_path = '[local-video]';
         return c;
       }) };
+
+      saveProjectMeta(projectId, localProj).catch(() => {});
+
       try {
         localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(localProj));
       } catch (e: any) {
         console.warn("[Sync] localStorage 저장 실패:", e?.message);
         try {
-          const metaOnly = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => ({ script_segment: s.script_segment, visual_prompt: s.visual_prompt })) };
+          const metaOnly = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => ({
+            ...s,
+            audio_path: s.audio_path === '[local-audio]' ? '[local-audio]' : undefined,
+            image_path: s.image_path === '[local-image]' ? '[local-image]' : undefined,
+            video_path: s.video_path === '[local-video]' ? '[local-video]' : undefined,
+          })) };
           localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(metaOnly));
         } catch (e2) {}
       }
@@ -255,7 +296,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       try {
         setSyncing(true);
         setSyncError(false);
-        await saveProjectToCloud(proj);
+        await saveProjectToCloud(proj, true);
       } catch (e) {
         console.error("Sync error:", e);
         setSyncError(true);

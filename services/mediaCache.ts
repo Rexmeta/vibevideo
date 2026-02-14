@@ -1,6 +1,7 @@
 const DB_NAME = 'vibe_video_media';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'media';
+const PROJECT_STORE = 'projects';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -8,10 +9,13 @@ const openDB = (): Promise<IDBDatabase> => {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME);
+      }
+      if (!db.objectStoreNames.contains(PROJECT_STORE)) {
+        db.createObjectStore(PROJECT_STORE);
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -77,6 +81,50 @@ export const deleteProjectMedia = async (projectId: string): Promise<void> => {
     });
   } catch (e) {
     console.warn('[MediaCache] deleteProject failed:', e);
+  }
+};
+
+export const saveProjectMeta = async (projectId: string, data: any): Promise<void> => {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(PROJECT_STORE, 'readwrite');
+    tx.objectStore(PROJECT_STORE).put(data, projectId);
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) {
+    console.warn('[MediaCache] saveProjectMeta failed:', e);
+  }
+};
+
+export const getProjectMeta = async (projectId: string): Promise<any | null> => {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(PROJECT_STORE, 'readonly');
+    const request = tx.objectStore(PROJECT_STORE).get(projectId);
+    return await new Promise<any | null>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (e) {
+    console.warn('[MediaCache] getProjectMeta failed:', e);
+    return null;
+  }
+};
+
+export const getAllProjectMetas = async (): Promise<any[]> => {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(PROJECT_STORE, 'readonly');
+    const request = tx.objectStore(PROJECT_STORE).getAll();
+    return await new Promise<any[]>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (e) {
+    console.warn('[MediaCache] getAllProjectMetas failed:', e);
+    return [];
   }
 };
 

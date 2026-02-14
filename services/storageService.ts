@@ -186,24 +186,28 @@ export const uploadFileToCloud = async (path: string, data: string | Blob, forma
 
 const MAX_DOC_SCENES = 50;
 
-export const saveProjectToCloud = async (project: Project): Promise<void> => {
+export const saveProjectToCloud = async (project: Project, skipLocalSave: boolean = false): Promise<void> => {
   if (!project.id) return;
   
-  try {
-    const lightProject = { ...project };
-    if (lightProject.saved_scenes && lightProject.saved_scenes.length > 0) {
-      lightProject.saved_scenes = lightProject.saved_scenes.map(s => {
-        const c = { ...s };
-        if (isDataUrl(c.audio_path) || isBase64Only(c.audio_path)) c.audio_path = undefined;
-        if (isDataUrl(c.image_path) || isBase64Only(c.image_path)) c.image_path = undefined;
-        if (isDataUrl(c.video_path) || isBlobUrl(c.video_path)) c.video_path = undefined;
-        return c;
-      });
+  if (!skipLocalSave) {
+    try {
+      const lightProject = { ...project };
+      if (lightProject.saved_scenes && lightProject.saved_scenes.length > 0) {
+        lightProject.saved_scenes = lightProject.saved_scenes.map(s => {
+          const c = { ...s };
+          if (isDataUrl(c.audio_path) || isBase64Only(c.audio_path)) c.audio_path = undefined;
+          if (isDataUrl(c.image_path) || isBase64Only(c.image_path)) c.image_path = undefined;
+          if (isDataUrl(c.video_path) || isBlobUrl(c.video_path)) c.video_path = undefined;
+          return c;
+        });
+      }
+      localStorage.setItem(`vibe_video_backup_${project.id}`, JSON.stringify(lightProject));
+    } catch (e) {
+      console.warn("[Database Save] localStorage 저장 실패 (용량 초과)");
     }
-    localStorage.setItem(`vibe_video_backup_${project.id}`, JSON.stringify(lightProject));
-    if (project.user_id) updateProjectIndex(project.user_id, project.id, 'add');
-  } catch (e) {
-    console.warn("[Database Save] localStorage 저장 실패 (용량 초과)");
+  }
+  if (project.user_id) {
+    try { updateProjectIndex(project.user_id, project.id, 'add'); } catch (e) {}
   }
 
   if (!db) {
