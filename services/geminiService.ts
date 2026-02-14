@@ -29,15 +29,18 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 1, label:
       return await fn();
     } catch (e: any) {
       lastError = e;
-      const isRetryable = e?.message?.includes('시간 초과') || 
-                          e?.message?.includes('timeout') ||
-                          e?.message?.includes('DEADLINE_EXCEEDED') ||
-                          e?.message?.includes('503') ||
-                          e?.message?.includes('429') ||
-                          e?.message?.includes('RESOURCE_EXHAUSTED');
+      const errStr = String(e?.message || '') + String(e?.status || '');
+      const is429 = errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED');
+      const isRetryable = is429 ||
+                          errStr.includes('시간 초과') || 
+                          errStr.includes('timeout') ||
+                          errStr.includes('DEADLINE_EXCEEDED') ||
+                          errStr.includes('503') ||
+                          errStr.includes('500');
       if (attempt < maxRetries && isRetryable) {
-        const delay = Math.min(2000 * Math.pow(2, attempt), 8000);
-        console.log(`[Retry] ${label} attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+        const baseDelay = is429 ? 15000 : 3000;
+        const delay = Math.min(baseDelay * Math.pow(2, attempt), 60000);
+        console.log(`[Retry] ${label} attempt ${attempt + 1} failed (${is429 ? '429 rate limit' : errStr.slice(0, 50)}), retrying in ${delay / 1000}s...`);
         await new Promise(r => setTimeout(r, delay));
       } else {
         break;
@@ -243,45 +246,59 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
 export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9'): Promise<string | null> => {
   let validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
   const apiKey = getApiKey();
-  const aiStart = new GoogleGenAI({ apiKey });
-  
-  const payload: any = {
-    model: 'veo-3.1-fast-generate-preview',
-    prompt: `Smooth motion, high quality: ${prompt}`,
-    config: { numberOfVideos: 1, resolution: '720p', aspectRatio: validRatio }
+
+  const buildPayload = async () => {
+    const payload: any = {
+      model: 'veo-3.1-fast-generate-preview',
+      prompt: `Smooth motion, high quality: ${prompt}`,
+      config: { numberOfVideos: 1, resolution: '720p', aspectRatio: validRatio }
+    };
+
+    if (imageSource) {
+      try {
+        let imageBytes: string;
+        let mimeType = 'image/png';
+        if (imageSource.startsWith('data:')) {
+          const mimeMatch = imageSource.match(/^data:(image\/[a-z+]+);base64,/);
+          if (mimeMatch) mimeType = mimeMatch[1];
+          imageBytes = imageSource.replace(/^data:image\/[a-z+]+;base64,/, "");
+        } else if (imageSource.startsWith('http')) {
+          if (imageSource.includes('.jpg') || imageSource.includes('.jpeg')) mimeType = 'image/jpeg';
+          else if (imageSource.includes('.png')) mimeType = 'image/png';
+          imageBytes = await urlToBase64(imageSource);
+        } else {
+          imageBytes = imageSource;
+        }
+        payload.image = { imageBytes, mimeType };
+        console.log(`[Video Gen] Using seed image (${mimeType}, ${Math.round(imageBytes.length / 1024)}KB base64)`);
+      } catch (imgErr) {
+        console.warn("[Video Gen] Could not load reference image, generating without it:", imgErr);
+      }
+    } else {
+      console.log("[Video Gen] No seed image provided, generating from text only");
+    }
+    return payload;
   };
 
-  if (imageSource) {
-    try {
-      let imageBytes: string;
-      let mimeType = 'image/png';
-      if (imageSource.startsWith('data:')) {
-        const mimeMatch = imageSource.match(/^data:(image\/[a-z+]+);base64,/);
-        if (mimeMatch) mimeType = mimeMatch[1];
-        imageBytes = imageSource.replace(/^data:image\/[a-z+]+;base64,/, "");
-      } else if (imageSource.startsWith('http')) {
-        if (imageSource.includes('.jpg') || imageSource.includes('.jpeg')) mimeType = 'image/jpeg';
-        else if (imageSource.includes('.png')) mimeType = 'image/png';
-        imageBytes = await urlToBase64(imageSource);
-      } else {
-        imageBytes = imageSource;
-      }
-      payload.image = { imageBytes, mimeType };
-      console.log(`[Video Gen] Using seed image (${mimeType}, ${Math.round(imageBytes.length / 1024)}KB base64)`);
-    } catch (imgErr) {
-      console.warn("[Video Gen] Could not load reference image, generating without it:", imgErr);
-    }
-  } else {
-    console.log("[Video Gen] No seed image provided, generating from text only");
-  }
+  return withRetry(async () => {
+    const payload = await buildPayload();
+    const aiStart = new GoogleGenAI({ apiKey });
 
-  try {
     let operation = await aiStart.models.generateVideos(payload);
     let attempts = 0;
-    while (!operation.done && attempts < 40) {
-      await new Promise(r => setTimeout(r, 7000));
+    const maxAttempts = 60;
+    const pollInterval = 5000;
+    while (!operation.done && attempts < maxAttempts) {
+      await new Promise(r => setTimeout(r, pollInterval));
       const aiPoll = new GoogleGenAI({ apiKey });
-      operation = await aiPoll.operations.getVideosOperation({ operation: operation });
+      try {
+        operation = await aiPoll.operations.getVideosOperation({ operation: operation });
+      } catch (pollErr: any) {
+        console.warn(`[Video Gen] Poll attempt ${attempts} error:`, pollErr?.message);
+        if (pollErr?.message?.includes('429') || pollErr?.message?.includes('RESOURCE_EXHAUSTED')) {
+          await new Promise(r => setTimeout(r, 10000));
+        }
+      }
       attempts++;
     }
 
@@ -292,14 +309,12 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
 
     const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
     if (!downloadLink) {
-      console.error("[Video Gen] No video URI in response");
-      throw new Error('비디오 URI가 응답에 포함되지 않았습니다.');
+      const errMsg = (operation as any).error?.message || '';
+      console.error("[Video Gen] No video URI in response", errMsg);
+      throw new Error(errMsg || '비디오 URI가 응답에 포함되지 않았습니다.');
     }
 
     const separator = downloadLink.includes('?') ? '&' : '?';
     return `${downloadLink}${separator}key=${apiKey}`;
-  } catch (e: any) {
-    console.error("[Video Gen] Generation failed:", e);
-    throw e;
-  }
+  }, 2, '비디오 생성');
 }

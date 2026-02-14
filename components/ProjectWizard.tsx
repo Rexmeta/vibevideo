@@ -587,17 +587,29 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       }));
 
     if (tasks.length === 0) { setProcessingType(null); return; }
-    setLoadingMessage(`비디오 생성 중... (${tasks.length}개 씬)`);
 
-    const results = await runParallel(
-      tasks, 2,
-      (idx) => setProcessingSet(prev => new Set(prev).add(idx)),
-      (idx) => setProcessingSet(prev => { const n = new Set(prev); n.delete(idx); return n; })
-    );
+    const results: { idx: number; error?: any }[] = [];
+    for (let ti = 0; ti < tasks.length; ti++) {
+      const task = tasks[ti];
+      setLoadingMessage(`비디오 생성 중... (${ti + 1}/${tasks.length}개 씬)`);
+      setProcessingSet(new Set([task.idx]));
+      if (ti > 0) {
+        setLoadingMessage(`비디오 생성 대기 중... (${ti + 1}/${tasks.length}개 씬, 속도 제한 방지)`);
+        await new Promise(r => setTimeout(r, 5000));
+        setLoadingMessage(`비디오 생성 중... (${ti + 1}/${tasks.length}개 씬)`);
+      }
+      try {
+        await task.fn();
+        results.push({ idx: task.idx });
+        newFailed.delete(`video-${task.idx}`);
+      } catch (error: any) {
+        results.push({ idx: task.idx, error });
+        newFailed.set(`video-${task.idx}`, error?.message || '오류');
+      }
+      setProcessingSet(new Set());
+    }
 
     const errors = results.filter(r => r.error);
-    errors.forEach(r => newFailed.set(`video-${r.idx}`, r.error?.message || '오류'));
-    results.filter(r => !r.error).forEach(r => newFailed.delete(`video-${r.idx}`));
     setFailedScenes(newFailed);
     setProcessingSet(new Set());
     setProcessingType(null);
