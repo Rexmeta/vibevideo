@@ -605,9 +605,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         results.push({ idx: task.idx });
         newFailed.delete(`video-${task.idx}`);
         sync();
+        console.log(`[Batch Video] Scene ${task.idx + 1} completed successfully`);
       } catch (error: any) {
+        const errMsg = error?.message || String(error);
+        console.error(`[Batch Video] Scene ${task.idx + 1} FAILED:`, errMsg);
         results.push({ idx: task.idx, error });
-        newFailed.set(`video-${task.idx}`, error?.message || '오류');
+        newFailed.set(`video-${task.idx}`, errMsg);
       }
       setProcessingSet(new Set());
     }
@@ -624,6 +627,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const handleSingleVideo = async (idx: number) => {
     setProcessingType('video');
     setProcessingSet(new Set([idx]));
+    setLoadingMessage(`비디오 생성 중... (씬 ${idx + 1}) — 최대 5분 소요`);
     const currentScene = scenes[idx];
     const fKey = `video-${idx}`;
     try {
@@ -631,6 +635,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       if (videoUrl) {
         const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
         updateSceneAt(idx, { video_path: blobUrl });
+        console.log(`[Single Video] Scene ${idx + 1} generated successfully`);
         try {
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
           updateSceneAt(idx, { video_path: url });
@@ -641,11 +646,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         sync();
       }
     } catch (e: any) {
-      console.error(e);
-      setFailedScenes(prev => new Map(prev).set(fKey, e?.message || '오류'));
+      const errMsg = e?.message || String(e);
+      console.error(`[Single Video] Scene ${idx + 1} FAILED:`, errMsg);
+      setFailedScenes(prev => new Map(prev).set(fKey, errMsg));
     }
     setProcessingSet(new Set());
     setProcessingType(null);
+    setLoadingMessage('');
   };
 
   const [downloadingAll, setDownloadingAll] = useState(false);

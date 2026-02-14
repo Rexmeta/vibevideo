@@ -277,92 +277,136 @@ async function resizeImageForVideo(imageSource: string, maxDim: number = 768): P
   });
 }
 
-export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9'): Promise<string | null> => {
-  let validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
-  const apiKey = getApiKey();
-
-  const buildPayload = async () => {
-    const payload: any = {
-      model: 'veo-3.1-fast-generate-preview',
-      prompt: `Cinematic smooth motion, high quality: ${prompt}`,
-      config: { numberOfVideos: 1, resolution: '720p', aspectRatio: validRatio, durationSeconds: 5 }
-    };
-
-    if (imageSource) {
-      try {
-        const { imageBytes, mimeType } = await resizeImageForVideo(imageSource, 768);
-        payload.image = { imageBytes, mimeType };
-        console.log(`[Video Gen] Resized seed image → ${mimeType}, ${Math.round(imageBytes.length / 1024)}KB`);
-      } catch (imgErr) {
-        console.warn("[Video Gen] Image resize failed, trying raw:", imgErr);
-        try {
-          let imageBytes: string;
-          let mimeType = 'image/png';
-          if (imageSource.startsWith('data:')) {
-            const mimeMatch = imageSource.match(/^data:(image\/[a-z+]+);base64,/);
-            if (mimeMatch) mimeType = mimeMatch[1];
-            imageBytes = imageSource.replace(/^data:image\/[a-z+]+;base64,/, "");
-          } else if (imageSource.startsWith('http')) {
-            imageBytes = await urlToBase64(imageSource);
-          } else {
-            imageBytes = imageSource;
-          }
-          payload.image = { imageBytes, mimeType };
-        } catch (rawErr) {
-          console.warn("[Video Gen] Could not load reference image at all:", rawErr);
-        }
-      }
-    } else {
-      console.log("[Video Gen] No seed image, generating from text only");
-    }
-    return payload;
+async function attemptVideoGeneration(
+  prompt: string, 
+  apiKey: string, 
+  validRatio: '16:9' | '9:16', 
+  imageData?: { imageBytes: string; mimeType: string },
+  label: string = ''
+): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey });
+  const payload: any = {
+    model: 'veo-3.1-fast-generate-preview',
+    prompt: `Cinematic smooth motion, high quality: ${prompt}`,
+    config: { numberOfVideos: 1, resolution: '720p', aspectRatio: validRatio }
   };
 
-  return withRetry(async () => {
-    const payload = await buildPayload();
-    const aiStart = new GoogleGenAI({ apiKey });
+  if (imageData) {
+    payload.image = { imageBytes: imageData.imageBytes, mimeType: imageData.mimeType };
+    console.log(`[Video Gen][${label}] With seed image (${imageData.mimeType}, ${Math.round(imageData.imageBytes.length / 1024)}KB)`);
+  } else {
+    console.log(`[Video Gen][${label}] Text-only (no seed image)`);
+  }
 
-    console.log(`[Video Gen] Submitting generation request...`);
-    let operation = await aiStart.models.generateVideos(payload);
-    let attempts = 0;
-    const maxAttempts = 30;
-    const pollInterval = 15000;
-    let consecutivePollErrors = 0;
+  console.log(`[Video Gen][${label}] Calling generateVideos API...`);
+  let operation: any;
+  try {
+    operation = await ai.models.generateVideos(payload);
+  } catch (submitErr: any) {
+    console.error(`[Video Gen][${label}] generateVideos() threw:`, submitErr?.message || submitErr, JSON.stringify(submitErr).slice(0, 500));
+    throw submitErr;
+  }
 
-    while (!operation.done && attempts < maxAttempts) {
-      await new Promise(r => setTimeout(r, pollInterval));
+  console.log(`[Video Gen][${label}] Operation received. done=${operation.done}, name=${(operation as any).name || 'N/A'}`);
+
+  if (operation.done) {
+    console.log(`[Video Gen][${label}] Operation completed immediately. Checking response...`);
+    const opStr = JSON.stringify(operation).slice(0, 1000);
+    console.log(`[Video Gen][${label}] Operation data: ${opStr}`);
+  }
+
+  let attempts = 0;
+  const maxAttempts = 40;
+  const pollInterval = 15000;
+  let consecutivePollErrors = 0;
+
+  while (!operation.done && attempts < maxAttempts) {
+    await new Promise(r => setTimeout(r, pollInterval));
+    try {
       const aiPoll = new GoogleGenAI({ apiKey });
-      try {
-        operation = await aiPoll.operations.getVideosOperation({ operation: operation });
-        consecutivePollErrors = 0;
-        if (attempts % 5 === 0) console.log(`[Video Gen] Polling... attempt ${attempts}/${maxAttempts}`);
-      } catch (pollErr: any) {
-        consecutivePollErrors++;
-        const errMsg = pollErr?.message || String(pollErr);
-        console.warn(`[Video Gen] Poll error #${consecutivePollErrors}:`, errMsg);
-        if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
-          await new Promise(r => setTimeout(r, 15000));
-        }
-        if (consecutivePollErrors >= 5) {
-          throw new Error('폴링 중 연속 오류 발생, 재시도합니다.');
-        }
+      operation = await aiPoll.operations.getVideosOperation({ operation });
+      consecutivePollErrors = 0;
+      console.log(`[Video Gen][${label}] Poll #${attempts}: done=${operation.done}`);
+    } catch (pollErr: any) {
+      consecutivePollErrors++;
+      const msg = pollErr?.message || String(pollErr);
+      console.warn(`[Video Gen][${label}] Poll #${attempts} error (consecutive: ${consecutivePollErrors}):`, msg);
+      if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
+        await new Promise(r => setTimeout(r, 20000));
       }
-      attempts++;
+      if (consecutivePollErrors >= 5) {
+        throw new Error(`폴링 중 연속 ${consecutivePollErrors}회 오류`);
+      }
     }
+    attempts++;
+  }
 
-    if (!operation.done) {
-      throw new Error('비디오 생성 시간 초과 (약 7분 대기 후 실패)');
+  if (!operation.done) {
+    throw new Error(`비디오 생성 시간 초과 (${attempts} polls, ~${Math.round(attempts * pollInterval / 60000)}분)`);
+  }
+
+  const opResult = JSON.stringify(operation).slice(0, 1500);
+  console.log(`[Video Gen][${label}] Final operation: ${opResult}`);
+
+  const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+  if (!downloadLink) {
+    const errMsg = (operation as any).error?.message || 
+                   (operation as any).response?.error?.message || '';
+    console.error(`[Video Gen][${label}] No video URI. Error: ${errMsg}`);
+    throw new Error(errMsg || '비디오 URI 없음');
+  }
+
+  const separator = downloadLink.includes('?') ? '&' : '?';
+  console.log(`[Video Gen][${label}] SUCCESS! URI obtained.`);
+  return `${downloadLink}${separator}key=${apiKey}`;
+}
+
+export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9'): Promise<string | null> => {
+  const validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
+  const apiKey = getApiKey();
+  if (!apiKey) throw new Error('API_KEY가 설정되지 않았습니다.');
+
+  let imageData: { imageBytes: string; mimeType: string } | undefined;
+  if (imageSource) {
+    try {
+      imageData = await resizeImageForVideo(imageSource, 768);
+      console.log(`[Video Gen] Seed image resized → ${imageData.mimeType}, ${Math.round(imageData.imageBytes.length / 1024)}KB`);
+    } catch (resizeErr) {
+      console.warn("[Video Gen] Image resize failed:", resizeErr);
+      try {
+        let imageBytes: string;
+        let mimeType = 'image/jpeg';
+        if (imageSource.startsWith('data:')) {
+          const m = imageSource.match(/^data:(image\/[a-z+]+);base64,/);
+          if (m) mimeType = m[1];
+          imageBytes = imageSource.replace(/^data:image\/[a-z+]+;base64,/, "");
+        } else if (imageSource.startsWith('http')) {
+          imageBytes = await urlToBase64(imageSource);
+        } else {
+          imageBytes = imageSource;
+        }
+        imageData = { imageBytes, mimeType };
+      } catch (rawErr) {
+        console.warn("[Video Gen] Raw image load also failed, will try text-only");
+        imageData = undefined;
+      }
     }
+  }
 
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    if (!downloadLink) {
-      const errMsg = (operation as any).error?.message || '';
-      console.error("[Video Gen] No video URI in response", errMsg);
-      throw new Error(errMsg || '비디오 URI가 응답에 포함되지 않았습니다.');
+  return withRetry(async () => {
+    if (imageData) {
+      try {
+        return await attemptVideoGeneration(prompt, apiKey, validRatio, imageData, 'img');
+      } catch (imgErr: any) {
+        const msg = String(imgErr?.message || imgErr);
+        console.warn(`[Video Gen] Image-based generation failed: ${msg}`);
+        if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
+          throw imgErr;
+        }
+        console.log(`[Video Gen] Falling back to text-only generation...`);
+        return await attemptVideoGeneration(prompt, apiKey, validRatio, undefined, 'txt-fallback');
+      }
     }
-
-    const separator = downloadLink.includes('?') ? '&' : '?';
-    console.log(`[Video Gen] Success! Video ready for download.`);
-    return `${downloadLink}${separator}key=${apiKey}`;
+    return await attemptVideoGeneration(prompt, apiKey, validRatio, undefined, 'txt');
   }, 3, '비디오 생성');
 }
