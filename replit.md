@@ -102,6 +102,11 @@ service firebase.storage {
 }
 ```
 
+## AI Models Used
+- **TTS**: `gemini-2.5-flash-preview-tts` (Puck/Kore voices, 45s timeout)
+- **Image**: `gemini-2.5-flash-image` (responseModalities: IMAGE+TEXT, 60s timeout)
+- **Video**: `veo-3.1-fast-generate-preview` (sequential processing, 5s inter-scene delay, 2 retries with 15s backoff for 429, polling 60 attempts x 5s)
+
 ## Recent Changes
 - 2026-02-14: Sync timing & project restore fix + Export features:
   - Sync timing: `sync()` now builds project data inside timer callback using refs (scenesRef, stepRef, etc.) instead of at call time, preventing stale closure data
