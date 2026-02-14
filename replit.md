@@ -106,7 +106,11 @@ service firebase.storage {
 - 2026-02-14: Sync timing & project restore fix + Export features:
   - Sync timing: `sync()` now builds project data inside timer callback using refs (scenesRef, stepRef, etc.) instead of at call time, preventing stale closure data
   - Restore: maxStep computed from actual scene data (video_path, image_path, audio_path presence) so steps 5-7 are accessible after re-entry
-  - Step 5: Video elements now have playback controls (`controls={step === 5}`) for per-scene video preview
+  - Video preview fix: Veo API URLs converted to blob URLs via `fetchVideoAsBlob` for browser playback (CORS-safe)
+  - Video persistence: Generated videos saved to IndexedDB and restored as blob URLs on project re-entry
+  - Blob URL memory management: `blobUrlsRef` tracks all blob URLs, revokes on replace/unmount
+  - Step 5: Click-to-expand video preview panel with large player, scene info, close button
+  - Step 5: Scene card thumbnails show expand icon on hover for video preview
   - Step 6: Added "Play All" button, scene counter (Scene X / Y), and progress bar for sequential preview
   - Step 7: Full export page with scene grid, individual download buttons per scene, "Download All Scenes" button, video previews
   - Download helper: fetch → blob → createObjectURL → programmatic download, with fallback to window.open

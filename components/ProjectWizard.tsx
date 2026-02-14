@@ -47,11 +47,16 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingAudioIdx, setPlayingAudioIdx] = useState<number | null>(null);
   const [activePreviewIdx, setActivePreviewIdx] = useState(0);
+  const [selectedVideoIdx, setSelectedVideoIdx] = useState<number | null>(null);
 
   const restoredRef = useRef(false);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSyncRef = useRef<(() => Promise<void>) | null>(null);
   const syncParamsRef = useRef<any>(null);
+  const blobUrlsRef = useRef<Set<string>>(new Set());
+
+  const trackBlobUrl = (url: string) => { if (url.startsWith('blob:')) blobUrlsRef.current.add(url); };
+  const revokeBlobUrl = (url?: string) => { if (url && url.startsWith('blob:') && blobUrlsRef.current.has(url)) { URL.revokeObjectURL(url); blobUrlsRef.current.delete(url); } };
 
   const scenesRef = useRef(scenes);
   const stepRef = useRef(step);
@@ -73,6 +78,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         clearTimeout(syncTimerRef.current);
         syncTimerRef.current = null;
       }
+      blobUrlsRef.current.forEach(url => { try { URL.revokeObjectURL(url); } catch {} });
+      blobUrlsRef.current.clear();
       const fn = pendingSyncRef.current;
       pendingSyncRef.current = null;
       if (fn) {
@@ -151,8 +158,20 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               const cached = await getMedia(p.id, i, 'image');
               if (cached) sc.image_path = cached;
             }
-            if (sc.video_path === '[local-video]') {
-              sc.video_path = undefined;
+            if (sc.video_path === '[local-video]' || (!sc.video_path && restoredStep > 5)) {
+              const cachedVideo = await getMedia(p.id, i, 'video');
+              if (cachedVideo) {
+                try {
+                  const resp = await fetch(cachedVideo);
+                  const blob = await resp.blob();
+                  sc.video_path = URL.createObjectURL(blob);
+                  trackBlobUrl(sc.video_path);
+                } catch {
+                  sc.video_path = undefined;
+                }
+              } else {
+                sc.video_path = undefined;
+              }
             }
             return sc;
           }));
@@ -228,7 +247,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       } catch (e: any) {
         console.warn("[Sync] localStorage 저장 실패:", e?.message);
         try {
-          const metaOnly = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => ({ scene_number: s.scene_number, narration: s.narration, visual_prompt: s.visual_prompt, duration_seconds: s.duration_seconds })) };
+          const metaOnly = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => ({ script_segment: s.script_segment, visual_prompt: s.visual_prompt })) };
           localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(metaOnly));
         } catch (e2) {}
       }
@@ -307,7 +326,14 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const updateSceneAt = (idx: number, updates: Partial<Scene>) => {
     setScenes(prev => {
       const next = [...prev];
-      next[idx] = { ...next[idx], ...updates };
+      const old = next[idx];
+      if (updates.video_path && old?.video_path && old.video_path !== updates.video_path) {
+        revokeBlobUrl(old.video_path);
+      }
+      next[idx] = { ...old, ...updates };
+      if (updates.video_path && updates.video_path.startsWith('blob:')) {
+        trackBlobUrl(updates.video_path);
+      }
       return next;
     });
   };
@@ -470,6 +496,21 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     setProcessingType(null);
   };
 
+  const fetchVideoAsBlob = async (videoUrl: string, sceneIdx: number): Promise<{ blobUrl: string; blob: Blob }> => {
+    const resp = await fetch(videoUrl);
+    if (!resp.ok) throw new Error(`Video fetch failed: ${resp.status}`);
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result && typeof reader.result === 'string') {
+        saveMedia(projectId, sceneIdx, 'video', reader.result);
+      }
+    };
+    reader.readAsDataURL(blob);
+    return { blobUrl, blob };
+  };
+
   const handleBatchVideos = async () => {
     setProcessingType('video');
     const sceneSnapshot = [...scenes];
@@ -480,21 +521,25 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       .map(({ idx, s }) => ({
         idx,
         fn: async () => {
-          if (hasMedia(s.video_path) && !isMediaUploaded(s.video_path)) {
-            const blob = await fetch(s.video_path!).then(r => r.blob());
-            const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
-            updateSceneAt(idx, { video_path: url });
+          if (hasMedia(s.video_path) && !isMediaUploaded(s.video_path) && s.video_path?.startsWith('blob:')) {
+            try {
+              const blob = await fetch(s.video_path!).then(r => r.blob());
+              const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
+              updateSceneAt(idx, { video_path: url });
+            } catch (uploadErr) {
+              console.warn(`[Video Upload] Scene ${idx} re-upload failed, keeping blob URL`, uploadErr);
+            }
             return;
           }
           const videoUrl = await generateSceneVideo(s.visual_prompt!, s.image_path, aspectRatio);
           if (videoUrl) {
-            updateSceneAt(idx, { video_path: videoUrl });
+            const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
+            updateSceneAt(idx, { video_path: blobUrl });
             try {
-              const blob = await fetch(videoUrl).then(r => r.blob());
               const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
               updateSceneAt(idx, { video_path: url });
             } catch (uploadErr) {
-              console.warn(`[Video Upload] Scene ${idx} upload failed, keeping direct URL`, uploadErr);
+              console.warn(`[Video Upload] Scene ${idx} upload failed, keeping blob URL for preview`, uploadErr);
             }
           }
         }
@@ -528,13 +573,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     try {
       const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, currentScene.image_path, aspectRatio);
       if (videoUrl) {
-        updateSceneAt(idx, { video_path: videoUrl });
+        const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
+        updateSceneAt(idx, { video_path: blobUrl });
         try {
-          const blob = await fetch(videoUrl).then(r => r.blob());
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
           updateSceneAt(idx, { video_path: url });
         } catch (uploadErr) {
-          console.warn(`[Video Upload] Scene ${idx} upload failed, keeping direct URL`, uploadErr);
+          console.warn(`[Video Upload] Scene ${idx} upload failed, keeping blob URL for preview`, uploadErr);
         }
         setFailedScenes(prev => { const n = new Map(prev); n.delete(fKey); return n; });
         sync();
@@ -727,7 +772,32 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto pr-4 space-y-6 hide-scrollbar">
+            {step === 5 && selectedVideoIdx !== null && scenes[selectedVideoIdx]?.video_path && (
+              <div className="mb-8 bg-brand-dark rounded-[2.5rem] overflow-hidden shadow-2xl border-4 border-white relative">
+                <div className="flex items-center justify-between px-8 py-4 bg-black/30">
+                  <span className="text-white text-sm font-black uppercase tracking-widest">Scene {selectedVideoIdx + 1} Preview</span>
+                  <button onClick={() => setSelectedVideoIdx(null)} className="text-white/60 hover:text-white transition-colors">
+                    <Icons.X size={20} />
+                  </button>
+                </div>
+                <div className={`${aspectRatio === '9:16' ? 'aspect-[9/16] max-h-[400px] mx-auto' : 'aspect-video max-h-[360px]'}`}>
+                  <video
+                    key={`preview-panel-${selectedVideoIdx}-${scenes[selectedVideoIdx]?.video_path}`}
+                    src={scenes[selectedVideoIdx]?.video_path}
+                    poster={scenes[selectedVideoIdx]?.image_path}
+                    autoPlay
+                    controls
+                    playsInline
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                <div className="px-8 py-4 bg-black/20">
+                  <p className="text-white/60 text-xs italic line-clamp-2">{scenes[selectedVideoIdx]?.script_segment}</p>
+                </div>
+              </div>
+            )}
+
+            <div className={`flex-1 overflow-y-auto pr-4 space-y-6 hide-scrollbar ${step === 5 && selectedVideoIdx !== null ? 'max-h-[300px]' : ''}`}>
               {scenes.map((s, i) => {
                 const mediaType = step === 3 ? 'audio' : step === 4 ? 'image' : 'video';
                 const isFailed = failedScenes.has(`${mediaType}-${i}`);
@@ -801,9 +871,16 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                           )}
                        </div>
                     ) : (step === 4 || step === 5) ? (
-                      <div className="relative w-full h-full group">
+                      <div className="relative w-full h-full group" onClick={() => { if (step === 5 && s.video_path) setSelectedVideoIdx(i); }}>
                         {s.video_path ? (
-                          <video src={s.video_path} autoPlay={step !== 5} loop={step !== 5} muted={step !== 5} controls={step === 5} playsInline className="w-full h-full object-cover" />
+                          <>
+                            <video src={s.video_path} autoPlay={false} loop muted playsInline className="w-full h-full object-cover" />
+                            {step === 5 && (
+                              <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
+                                <Icons.Maximize2 className="text-white" size={28} />
+                              </div>
+                            )}
+                          </>
                         ) : s.image_path ? (
                           <img src={s.image_path} className="w-full h-full object-cover animate-in fade-in zoom-in-95 duration-700" key={s.image_path} alt="Scene Visual" />
                         ) : isFailed ? (
