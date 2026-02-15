@@ -9,9 +9,10 @@ interface NavBarProps {
   onNavigate: (view: ViewState) => void;
   currentView: ViewState;
   isLoggedIn: boolean;
+  isAdmin?: boolean;
 }
 
-export const NavBar: React.FC<NavBarProps> = ({ onNavigate, currentView, isLoggedIn }) => {
+export const NavBar: React.FC<NavBarProps> = ({ onNavigate, currentView, isLoggedIn, isAdmin }) => {
   const handleLogout = async () => {
     if (auth && confirm("로그아웃 하시겠습니까?")) {
       await signOut(auth);
@@ -89,6 +90,11 @@ export const NavBar: React.FC<NavBarProps> = ({ onNavigate, currentView, isLogge
                     <button onClick={() => onNavigate('profile')} className="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2">
                        <Icons.User size={14} /> Profile
                     </button>
+                    {isAdmin && (
+                      <button onClick={() => onNavigate('admin')} className="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2">
+                         <Icons.Settings size={14} /> AI 모델 관리
+                      </button>
+                    )}
                     <button onClick={handleLogout} className="w-full text-left px-4 py-3 text-sm font-bold text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-2">
                        <Icons.LogOut size={14} /> Logout
                     </button>

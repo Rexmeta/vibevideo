@@ -36,6 +36,8 @@ export interface Project {
   version?: number;
   scene_count?: number;
   total_duration?: number;
+  selected_image_model?: string;
+  selected_video_model?: string;
 }
 
 export interface Script {
@@ -58,7 +60,28 @@ export interface Scene {
   video_path?: string; // URL to generated video clip
 }
 
-export type ViewState = 'landing' | 'projects' | 'create' | 'profile' | 'pricing' | 'login' | 'signup';
+export type ModelType = 'image' | 'video' | 'audio';
+
+export interface AIModel {
+  id: string;
+  name: string;
+  type: ModelType;
+  provider: string;
+  description: string;
+  modelId: string;
+  isActive: boolean;
+  sortOrder: number;
+  supportsKorean: boolean;
+  iconUrl?: string;
+  apiEndpoint?: string;
+  requiresApiKey?: boolean;
+  apiKeyConfigured?: boolean;
+  defaultParams?: Record<string, any>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type ViewState = 'landing' | 'projects' | 'create' | 'profile' | 'pricing' | 'login' | 'signup' | 'admin';
 
 export interface WizardState {
   step: 1 | 2 | 3 | 4 | 5 | 6 | 7; // 1:Setup, 2:Script, 3:Audio, 4:Images, 5:Motion, 6:Assembly, 7:Export

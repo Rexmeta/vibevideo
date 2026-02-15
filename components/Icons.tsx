@@ -9,6 +9,7 @@ import {
   Scissors, 
   User, 
   ArrowRight,
+  ArrowLeft,
   Check,
   Video,
   VideoOff,
@@ -36,12 +37,21 @@ import {
   AlertCircle,
   Download,
   X,
-  Maximize2
+  Maximize2,
+  Plus,
+  Trash2,
+  Edit3,
+  Save,
+  Globe,
+  Film,
+  RotateCcw,
+  Search
 } from 'lucide-react';
 
 export const Icons = {
-  Play, Wand2, ImageIcon, Type, Languages, Scissors, User, ArrowRight, Check, Video, VideoOff, Mic, LayoutTemplate, Loader2, ChevronRight,
+  Play, Wand2, ImageIcon, Type, Languages, Scissors, User, ArrowRight, ArrowLeft, Check, Video, VideoOff, Mic, LayoutTemplate, Loader2, ChevronRight,
   Monitor, Smartphone, Square, Layout,
   Mail, Lock, CreditCard, Bell, Settings, LogOut, FileText, Shield, Eye, EyeOff, Github, Cloud,
-  RefreshCw, AlertCircle, Download, X, Maximize2
+  RefreshCw, AlertCircle, Download, X, Maximize2,
+  Plus, Trash2, Edit3, Save, Globe, Film, RotateCcw, Search
 };

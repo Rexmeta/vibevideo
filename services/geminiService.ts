@@ -215,19 +215,26 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
   }, 1, '오디오 생성');
 };
 
-export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9'): Promise<{ base64: string; mimeType: string } | null> => {
+const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
+const SUPPORTED_IMAGE_PROVIDERS = ['Google', 'NanoBanana'];
+
+export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9', modelName?: string): Promise<{ base64: string; mimeType: string } | null> => {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error('API 키가 설정되지 않았습니다.');
   }
 
-  console.log(`[Image] 이미지 생성 시작 - prompt length: ${prompt.length}, style: ${style}, ratio: ${aspectRatio}`);
+  if (modelName && !SUPPORTED_IMAGE_PROVIDERS.some(p => modelName.includes('Nano') || modelName.includes('Gemini'))) {
+    console.log(`[Image] Model "${modelName}" is not yet configured, using default Gemini model`);
+  }
+
+  console.log(`[Image] 이미지 생성 시작 - model: ${modelName || 'default'} (using ${GEMINI_IMAGE_MODEL}), prompt: ${prompt.length}chars, style: ${style}, ratio: ${aspectRatio}`);
 
   return withRetry(async () => {
     const ai = new GoogleGenAI({ apiKey });
     const response = await withTimeout(
       ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
+        model: GEMINI_IMAGE_MODEL,
         contents: [{ parts: [{ text: `Generate an image. High quality cinematic digital art, 8k, detailed textures. Scene: ${prompt}. Style: ${style}. Aspect ratio: ${aspectRatio}.` }] }],
         config: {
           responseModalities: [Modality.IMAGE, Modality.TEXT],
@@ -361,10 +368,17 @@ async function attemptVideoGeneration(
   return `${downloadLink}${separator}key=${apiKey}`;
 }
 
-export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9'): Promise<string | null> => {
+const VEO_MODEL = 'veo-3.1-fast-generate-preview';
+
+export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9', modelName?: string): Promise<string | null> => {
   const validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('API_KEY가 설정되지 않았습니다.');
+
+  if (modelName && modelName !== 'Veo 3.1') {
+    console.log(`[Video Gen] Model "${modelName}" selected but not yet configured. Using ${VEO_MODEL} (Google Veo)`);
+  }
+  console.log(`[Video Gen] Selected: ${modelName || VEO_MODEL}, actual API model: ${VEO_MODEL}`);
 
   let imageData: { imageBytes: string; mimeType: string } | undefined;
   if (imageSource) {

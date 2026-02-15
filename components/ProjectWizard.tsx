@@ -14,8 +14,9 @@ import {
   generateProjectId 
 } from '../services/storageService';
 import { saveMedia, getMedia, saveProjectMeta, getProjectMeta } from '../services/mediaCache';
+import { getModels, getModelsByType } from '../services/modelService';
 import { Icons } from './Icons';
-import { Scene, Project, ProjectStatus, ViewState } from '../types';
+import { Scene, Project, ProjectStatus, ViewState, AIModel } from '../types';
 
 interface ProjectWizardProps {
   userId: string;
@@ -49,6 +50,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [activePreviewIdx, setActivePreviewIdx] = useState(0);
   const [selectedVideoIdx, setSelectedVideoIdx] = useState<number | null>(null);
 
+  const [allModels, setAllModels] = useState<AIModel[]>([]);
+  const [selectedImageModel, setSelectedImageModel] = useState<string>('');
+  const [selectedVideoModel, setSelectedVideoModel] = useState<string>('');
+  const [showModelSelector, setShowModelSelector] = useState<'image' | 'video' | null>(null);
+
   const restoredRef = useRef(false);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSyncRef = useRef<(() => Promise<void>) | null>(null);
@@ -64,6 +70,16 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const topicRef = useRef(topic);
   const scriptRef = useRef(script);
   const thumbnailRef = useRef(thumbnail);
+
+  useEffect(() => {
+    getModels().then(models => {
+      setAllModels(models);
+      const imgModels = getModelsByType(models, 'image');
+      const vidModels = getModelsByType(models, 'video');
+      if (imgModels.length > 0 && !selectedImageModel) setSelectedImageModel(imgModels[0].id);
+      if (vidModels.length > 0 && !selectedVideoModel) setSelectedVideoModel(vidModels[0].id);
+    }).catch(e => console.warn('[Models] Load failed:', e));
+  }, []);
 
   useEffect(() => { scenesRef.current = scenes; }, [scenes]);
   useEffect(() => { stepRef.current = step; }, [step]);
@@ -106,6 +122,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           saved_topic: params.overrides?.topic || topicRef.current,
           saved_duration: params.overrides?.duration ?? duration,
           thumbnail: params.extraData?.thumbnail || thumbnailRef.current,
+          selected_image_model: selectedImageModel,
+          selected_video_model: selectedVideoModel,
           ...params.extraData
         };
         const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
@@ -167,6 +185,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           setScript(p.saved_script || '');
           setDuration(p.saved_duration || 30);
           setThumbnail(p.thumbnail);
+          if (p.selected_image_model) setSelectedImageModel(p.selected_image_model);
+          if (p.selected_video_model) setSelectedVideoModel(p.selected_video_model);
 
           const restoredScenes = p.saved_scenes || [];
           const maxForRestore = Math.max(restoredMaxStep, restoredStep);
@@ -265,6 +285,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         saved_topic: params.overrides.topic || topicRef.current,
         saved_duration: params.overrides.duration ?? duration,
         thumbnail: params.extraData.thumbnail || thumbnailRef.current,
+        selected_image_model: selectedImageModel,
+        selected_video_model: selectedVideoModel,
         ...params.extraData
       };
 
@@ -470,7 +492,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             if (idx === 0 && url.startsWith('http')) setThumbnail(url);
             return;
           }
-          const result = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio);
+          const imgModel = allModels.find(m => m.id === selectedImageModel);
+          const result = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio, imgModel?.name);
           if (result) {
             const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
             updateSceneAt(idx, { image_path: previewUrl });
@@ -484,7 +507,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       }));
 
     if (tasks.length === 0) { setProcessingType(null); return; }
-    setLoadingMessage(`이미지 생성 중... (${tasks.length}개 씬, 최대 ${CONCURRENCY}개 동시 처리)`);
+    const imgModelName = allModels.find(m => m.id === selectedImageModel)?.name || '';
+    setLoadingMessage(`이미지 생성 중... (${imgModelName} | ${tasks.length}개 씬, 최대 ${CONCURRENCY}개 동시 처리)`);
 
     const results = await runParallel(
       tasks, CONCURRENCY,
@@ -517,7 +541,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         setProcessingSet(new Set()); setProcessingType(null);
         return;
       }
-      const result = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio);
+      const imgModel = allModels.find(m => m.id === selectedImageModel);
+      const result = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio, imgModel?.name);
       if (result) {
         const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
         updateSceneAt(idx, { image_path: previewUrl });
@@ -572,7 +597,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             }
             return;
           }
-          const videoUrl = await generateSceneVideo(s.visual_prompt!, s.image_path, aspectRatio);
+          const vidModel = allModels.find(m => m.id === selectedVideoModel);
+          const videoUrl = await generateSceneVideo(s.visual_prompt!, s.image_path, aspectRatio, vidModel?.name);
           if (videoUrl) {
             const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
             updateSceneAt(idx, { video_path: blobUrl });
@@ -599,7 +625,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           await new Promise(r => setTimeout(r, 1000));
         }
       }
-      setLoadingMessage(`비디오 생성 중... (${ti + 1}/${tasks.length}개 씬) — 최대 5분 소요`);
+      const vidModelName = allModels.find(m => m.id === selectedVideoModel)?.name || '';
+      setLoadingMessage(`비디오 생성 중... (${vidModelName} | ${ti + 1}/${tasks.length}개 씬) — 최대 5분 소요`);
       try {
         await task.fn();
         results.push({ idx: task.idx });
@@ -631,11 +658,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     const currentScene = scenes[idx];
     const fKey = `video-${idx}`;
     try {
-      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, currentScene.image_path, aspectRatio);
+      const vidModel = allModels.find(m => m.id === selectedVideoModel);
+      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, currentScene.image_path, aspectRatio, vidModel?.name);
       if (videoUrl) {
         const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
         updateSceneAt(idx, { video_path: blobUrl });
-        console.log(`[Single Video] Scene ${idx + 1} generated successfully`);
+        console.log(`[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.name || 'default'})`);
         try {
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
           updateSceneAt(idx, { video_path: url });
@@ -835,6 +863,66 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               </button>
             </div>
 
+            {(step === 4 || step === 5) && (
+              <div className="mb-6">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">
+                    {step === 4 ? 'Image Model' : 'Video Model'}
+                  </span>
+                  <button
+                    onClick={() => setShowModelSelector(showModelSelector === (step === 4 ? 'image' : 'video') ? null : (step === 4 ? 'image' : 'video'))}
+                    className="text-xs font-bold text-brand-cyan hover:underline"
+                  >
+                    {showModelSelector === (step === 4 ? 'image' : 'video') ? '닫기' : '변경'}
+                  </button>
+                </div>
+                {(() => {
+                  const currentModels = step === 4 ? getModelsByType(allModels, 'image') : getModelsByType(allModels, 'video');
+                  const selectedId = step === 4 ? selectedImageModel : selectedVideoModel;
+                  const currentModel = currentModels.find(m => m.id === selectedId);
+                  return (
+                    <>
+                      <div className="flex items-center gap-3 px-5 py-3 bg-gray-50 rounded-2xl border border-gray-100">
+                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-cyan/20 to-purple-100 flex items-center justify-center">
+                          {step === 4 ? <Icons.ImageIcon size={14} className="text-brand-dark" /> : <Icons.Film size={14} className="text-brand-dark" />}
+                        </div>
+                        <div className="flex-1">
+                          <span className="font-bold text-sm">{currentModel?.name || '모델 선택'}</span>
+                          <span className="text-xs text-gray-400 ml-2">{currentModel?.provider}</span>
+                        </div>
+                        {currentModel && !currentModel.supportsKorean && (
+                          <span className="text-[10px] bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full font-bold">한글 미지원</span>
+                        )}
+                      </div>
+                      {showModelSelector === (step === 4 ? 'image' : 'video') && (
+                        <div className="mt-3 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 max-h-64 overflow-y-auto p-1">
+                          {currentModels.map(m => (
+                            <button
+                              key={m.id}
+                              onClick={() => {
+                                if (step === 4) setSelectedImageModel(m.id);
+                                else setSelectedVideoModel(m.id);
+                                setShowModelSelector(null);
+                              }}
+                              className={`p-4 rounded-2xl border-2 text-left transition-all hover:shadow-md ${m.id === selectedId ? 'border-brand-cyan bg-brand-cyan/5 shadow-lg' : 'border-gray-100 hover:border-gray-200'}`}
+                            >
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-bold text-sm truncate">{m.name}</span>
+                              </div>
+                              <span className="text-[10px] text-gray-400 font-medium">{m.provider}</span>
+                              <p className="text-[11px] text-gray-500 mt-1 line-clamp-2">{m.description}</p>
+                              {!m.supportsKorean && (
+                                <span className="inline-block mt-1 text-[9px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded font-bold">한글 미지원</span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
 
             <div className="flex-1 overflow-y-auto pr-4 space-y-6 hide-scrollbar">
               {scenes.map((s, i) => {

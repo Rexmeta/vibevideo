@@ -7,10 +7,12 @@ import { ProjectManagement } from './components/ProjectManagement';
 import { ProfilePage } from './components/ProfilePage';
 import { PricingPage } from './components/PricingPage';
 import { AuthPage } from './components/AuthPage';
+import { AdminPage } from './components/AdminPage';
 import { ViewState } from './types';
 import { Icons } from './components/Icons';
 import { auth, isFirebaseConfigured } from './services/firebaseConfig';
 import { onAuthStateChanged, User } from 'firebase/auth';
+import { isAdminUser } from './services/modelService';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewState>('landing');
@@ -62,7 +64,7 @@ const App: React.FC = () => {
 
   const handleNavigate = (view: ViewState) => {
     // Protected view check
-    if (!currentUser && (view === 'projects' || view === 'create' || view === 'profile')) {
+    if (!currentUser && (view === 'projects' || view === 'create' || view === 'profile' || view === 'admin')) {
       setCurrentView('login');
       return;
     }
@@ -123,6 +125,7 @@ const App: React.FC = () => {
         currentView={currentView}
         onNavigate={handleNavigate} 
         isLoggedIn={!!currentUser}
+        isAdmin={!!currentUser && isAdminUser(currentUser.uid)}
       />
 
       {!isFirebaseConfigured() && (
@@ -181,6 +184,10 @@ const App: React.FC = () => {
 
         {currentView === 'pricing' && (
           <PricingPage />
+        )}
+
+        {currentView === 'admin' && (
+          <AdminPage userId={currentUser?.uid || ''} onNavigate={handleNavigate} />
         )}
 
         {(currentView === 'login' || currentView === 'signup') && (

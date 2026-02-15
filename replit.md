@@ -14,25 +14,27 @@ VibeVideo AI is a React + TypeScript frontend application for AI-powered video g
 ## Project Structure
 ```
 /
-├── App.tsx              # Main app component with routing
+├── App.tsx              # Main app component with routing (includes admin route)
 ├── index.tsx            # Entry point
 ├── index.html           # HTML template with importmap
-├── types.ts             # TypeScript type definitions (Project has version, scene_count, total_duration)
+├── types.ts             # TypeScript type definitions (AIModel, ModelType, ViewState with 'admin')
 ├── vite.config.ts       # Vite configuration (port 5000, host 0.0.0.0)
 ├── tsconfig.json        # TypeScript config
 ├── components/          # React components
+│   ├── AdminPage.tsx          # AI model management (CRUD, toggle active, search, reset)
 │   ├── AuthPage.tsx
 │   ├── Icons.tsx
 │   ├── LandingPage.tsx
-│   ├── NavBar.tsx
+│   ├── NavBar.tsx             # Includes admin link for admin users
 │   ├── PricingPage.tsx
 │   ├── ProfilePage.tsx
 │   ├── ProjectManagement.tsx  # Paginated project list with "더 보기" button
-│   └── ProjectWizard.tsx
+│   └── ProjectWizard.tsx      # Model selector in steps 4 (image) and 5 (video)
 └── services/            # Service layer
     ├── firebaseConfig.ts      # Firebase init with persistent offline cache
     ├── geminiService.ts
     ├── mediaCache.ts          # IndexedDB-based media cache for large base64 data
+    ├── modelService.ts        # AI model CRUD, Firestore + localStorage, default model seeding
     └── storageService.ts      # Paginated queries, version tracking, Blob uploads, Storage cleanup
 ```
 
@@ -108,6 +110,14 @@ service firebase.storage {
 - **Video**: `veo-3.1-fast-generate-preview` (sequential processing, 60s inter-scene delay, 3 retries with 60s base backoff for 429, polling 30 attempts x 15s, seed image resized to 768px JPEG 85%)
 
 ## Recent Changes
+- 2026-02-15: AI Model Management System:
+  - AIModel type (id, name, type, provider, description, modelId, isActive, sortOrder, supportsKorean)
+  - modelService.ts: Firestore + localStorage CRUD, default model seeding (11 image + 14 video models)
+  - AdminPage.tsx: Tabbed model management UI (image/video), add/edit/delete/toggle/search/reset
+  - NavBar admin link for admin users (isAdminUser check)
+  - ProjectWizard model selector: Steps 4 (image) and 5 (video) show model picker with cards
+  - Models: Nano Banana Pro, Seedream V4.5/V4, Midjourney, Qwen, Ideogram V3, Z-Image Turbo, GPT Image 1.5, Flux 2, Grok Imagine, Veo 3.1, Sora 2, Kling 3.0/2.6/2.5T/O1, Hailuo 2.3/02, Seedance Lite/1.5 Pro/V1, Vidu Q3, Wan 2.5
+  - Video generation debugging: comprehensive logging at every API step, image→text-only fallback
 - 2026-02-14: Video generation reliability overhaul:
   - Root cause: 429 rate limit from parallel video generation + oversized seed images (1.5MB+ base64)
   - Seed image resizing: Canvas-based resize to max 768px, JPEG 85% quality (~200-400KB vs 1.5MB+)
