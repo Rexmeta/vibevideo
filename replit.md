@@ -110,6 +110,12 @@ service firebase.storage {
 - **Video**: `veo-3.1-fast-generate-preview` (sequential processing, 60s inter-scene delay, 3 retries with 60s base backoff for 429, polling 30 attempts x 15s, seed image resized to 768px JPEG 85%)
 
 ## Recent Changes
+- 2026-02-15: Model selection bug fix:
+  - Fixed: Selected models were not applied to actual API calls (only display name was passed, not modelId)
+  - generateSceneImage/generateSceneVideo now accept modelId + provider params
+  - Google/NanoBanana providers use selected modelId directly; other providers fall back to default with warning
+  - attemptVideoGeneration accepts videoModel param instead of hardcoded constant
+  - ProjectWizard passes modelId and provider (not name) at all 4 generation call sites
 - 2026-02-15: AI Model Management System:
   - AIModel type (id, name, type, provider, description, modelId, isActive, sortOrder, supportsKorean)
   - modelService.ts: Firestore + localStorage CRUD, default model seeding (11 image + 14 video models)
