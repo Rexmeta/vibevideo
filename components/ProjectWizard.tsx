@@ -493,7 +493,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             return;
           }
           const imgModel = allModels.find(m => m.id === selectedImageModel);
-          const result = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio, imgModel?.name);
+          const result = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio, imgModel?.modelId, imgModel?.provider);
           if (result) {
             const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
             updateSceneAt(idx, { image_path: previewUrl });
@@ -542,7 +542,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         return;
       }
       const imgModel = allModels.find(m => m.id === selectedImageModel);
-      const result = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio, imgModel?.name);
+      const result = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio, imgModel?.modelId, imgModel?.provider);
       if (result) {
         const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
         updateSceneAt(idx, { image_path: previewUrl });
@@ -598,7 +598,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             return;
           }
           const vidModel = allModels.find(m => m.id === selectedVideoModel);
-          const videoUrl = await generateSceneVideo(s.visual_prompt!, s.image_path, aspectRatio, vidModel?.name);
+          const videoUrl = await generateSceneVideo(s.visual_prompt!, s.image_path, aspectRatio, vidModel?.modelId, vidModel?.provider);
           if (videoUrl) {
             const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
             updateSceneAt(idx, { video_path: blobUrl });
@@ -659,11 +659,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     const fKey = `video-${idx}`;
     try {
       const vidModel = allModels.find(m => m.id === selectedVideoModel);
-      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, currentScene.image_path, aspectRatio, vidModel?.name);
+      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, currentScene.image_path, aspectRatio, vidModel?.modelId, vidModel?.provider);
       if (videoUrl) {
         const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
         updateSceneAt(idx, { video_path: blobUrl });
-        console.log(`[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.name || 'default'})`);
+        console.log(`[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.modelId || 'default'})`);
         try {
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
           updateSceneAt(idx, { video_path: url });
