@@ -35,7 +35,8 @@ VibeVideo AI is a React + TypeScript frontend application for AI-powered video g
     ├── geminiService.ts
     ├── mediaCache.ts          # IndexedDB-based media cache for large base64 data
     ├── modelService.ts        # AI model CRUD, Firestore + localStorage, default model seeding
-    └── storageService.ts      # Paginated queries, version tracking, Blob uploads, Storage cleanup
+    ├── storageService.ts      # Paginated queries, version tracking, Blob uploads, Storage cleanup
+    └── videoMergeService.ts   # FFmpeg.wasm video+audio merge and scene concatenation
 ```
 
 ## Development
@@ -110,6 +111,13 @@ service firebase.storage {
 - **Video**: `veo-3.1-fast-generate-preview` (sequential processing, 60s inter-scene delay, 3 retries with 60s base backoff for 429, polling 30 attempts x 15s, seed image resized to 768px JPEG 85%)
 
 ## Recent Changes
+- 2026-02-16: Video+Audio merge & prompt improvement:
+  - Video generation prompt now includes audio_script/script_segment as narration context for Veo API
+  - Audio sync playback: hidden `<audio>` element syncs with `<video>` play/pause/seek/ended events in Steps 5, 6, 7
+  - FFmpeg.wasm integration: `@ffmpeg/ffmpeg` + `@ffmpeg/util` for browser-side video processing
+  - videoMergeService.ts: mergeAllScenes combines per-scene video+audio into single MP4 (AAC audio, MPEG-TS concat)
+  - Step 7 Export: "하나의 비디오로 합치기" button with progress bar, merged preview player, and download
+  - Cleanup: sync event listeners properly cleaned up via ref on component unmount and video switch
 - 2026-02-16: Project save/restore reliability overhaul:
   - Root cause: Storage uploads timing out (30s), localStorage quota exceeded, Firestore save timing out → all 3 save paths failing simultaneously
   - Storage upload timeout: 30s → 60s, download URL timeout: 10s → 15s

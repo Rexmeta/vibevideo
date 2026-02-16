@@ -15,6 +15,7 @@ import {
 } from '../services/storageService';
 import { saveMedia, getMedia, saveProjectMeta, getProjectMeta } from '../services/mediaCache';
 import { getModels, getModelsByType } from '../services/modelService';
+import { mergeAllScenes, MergeInput } from '../services/videoMergeService';
 import { Icons } from './Icons';
 import { Scene, Project, ProjectStatus, ViewState, AIModel } from '../types';
 
@@ -94,6 +95,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         clearTimeout(syncTimerRef.current);
         syncTimerRef.current = null;
       }
+      if (syncCleanupRef.current) { syncCleanupRef.current(); syncCleanupRef.current = null; }
       blobUrlsRef.current.forEach(url => { try { URL.revokeObjectURL(url); } catch {} });
       blobUrlsRef.current.clear();
       const fn = pendingSyncRef.current;
@@ -674,7 +676,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             return;
           }
           const vidModel = allModels.find(m => m.id === selectedVideoModel);
-          const videoUrl = await generateSceneVideo(s.visual_prompt!, s.image_path, aspectRatio, vidModel?.modelId, vidModel?.provider);
+          const videoUrl = await generateSceneVideo(s.visual_prompt!, s.image_path, aspectRatio, vidModel?.modelId, vidModel?.provider, s.script_segment || s.audio_script);
           if (videoUrl) {
             const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
             updateSceneAt(idx, { video_path: blobUrl });
@@ -735,7 +737,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     const fKey = `video-${idx}`;
     try {
       const vidModel = allModels.find(m => m.id === selectedVideoModel);
-      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, currentScene.image_path, aspectRatio, vidModel?.modelId, vidModel?.provider);
+      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, currentScene.image_path, aspectRatio, vidModel?.modelId, vidModel?.provider, currentScene.script_segment || currentScene.audio_script);
       if (videoUrl) {
         const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
         updateSceneAt(idx, { video_path: blobUrl });
@@ -760,6 +762,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   };
 
   const [downloadingAll, setDownloadingAll] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [mergeProgress, setMergeProgress] = useState<string>('');
+  const [mergePercent, setMergePercent] = useState(0);
+  const [mergedVideoUrl, setMergedVideoUrl] = useState<string | null>(null);
+  const syncAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const downloadVideo = async (url: string, filename: string) => {
     try {
@@ -791,6 +798,78 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     setDownloadingAll(false);
   };
 
+  const handleMergeExport = async () => {
+    setMerging(true);
+    setMergeProgress('FFmpeg 로딩 중...');
+    setMergePercent(0);
+    setMergedVideoUrl(null);
+    try {
+      const inputs: MergeInput[] = scenes.map(s => ({
+        videoUrl: s.video_path || '',
+        audioUrl: s.audio_path || undefined,
+      }));
+      const blob = await mergeAllScenes(inputs, (stage, pct) => {
+        setMergeProgress(stage);
+        setMergePercent(pct);
+      });
+      const url = URL.createObjectURL(blob);
+      trackBlobUrl(url);
+      setMergedVideoUrl(url);
+    } catch (err: any) {
+      console.error('[Merge] Failed:', err);
+      setMergeProgress(`오류: ${err?.message || '합치기 실패'}`);
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  const handleDownloadMerged = async () => {
+    if (!mergedVideoUrl) return;
+    const a = document.createElement('a');
+    a.href = mergedVideoUrl;
+    a.download = `${topic || 'video'}_final.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const syncCleanupRef = useRef<(() => void) | null>(null);
+
+  const syncAudioWithVideo = (videoEl: HTMLVideoElement | null, audioUrl?: string) => {
+    if (syncCleanupRef.current) {
+      syncCleanupRef.current();
+      syncCleanupRef.current = null;
+    }
+    if (!videoEl || !audioUrl) return;
+    const sa = syncAudioRef.current;
+    if (!sa) return;
+    sa.src = audioUrl;
+    sa.currentTime = 0;
+
+    const playHandler = () => { sa.currentTime = videoEl.currentTime; sa.play().catch(() => {}); };
+    const pauseHandler = () => { sa.pause(); };
+    const seekHandler = () => { sa.currentTime = videoEl.currentTime; };
+    const endHandler = () => { sa.pause(); sa.currentTime = 0; };
+
+    videoEl.addEventListener('play', playHandler);
+    videoEl.addEventListener('pause', pauseHandler);
+    videoEl.addEventListener('seeked', seekHandler);
+    videoEl.addEventListener('ended', endHandler);
+
+    if (!videoEl.paused) {
+      sa.currentTime = videoEl.currentTime;
+      sa.play().catch(() => {});
+    }
+
+    syncCleanupRef.current = () => {
+      videoEl.removeEventListener('play', playHandler);
+      videoEl.removeEventListener('pause', pauseHandler);
+      videoEl.removeEventListener('seeked', seekHandler);
+      videoEl.removeEventListener('ended', endHandler);
+      sa.pause();
+    };
+  };
+
   const isProcessing = processingSet.size > 0;
   const isImagesReady = scenes.length > 0 && scenes.every(s => !!s.image_path);
   const isVideosReady = scenes.length > 0 && scenes.every(s => !!s.video_path);
@@ -799,6 +878,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 relative">
       <audio ref={audioRef} onEnded={() => setPlayingAudioIdx(null)} className="hidden" />
+      <audio ref={syncAudioRef} className="hidden" />
 
       {/* Persistence Bar */}
       <div className={`fixed bottom-10 left-1/2 -translate-x-1/2 z-[110] pointer-events-none transition-all duration-500 ${syncing || syncError ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-20'}`}>
@@ -1073,6 +1153,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                           controls
                           playsInline
                           className={`w-full ${aspectRatio === '9:16' ? 'max-h-[300px] mx-auto' : 'max-h-[240px]'} object-contain`}
+                          ref={(el) => { if (el && s.audio_path) syncAudioWithVideo(el, s.audio_path); }}
                         />
                       </div>
                     )}
@@ -1172,6 +1253,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                             playsInline
                             controls 
                             className="w-full h-full object-contain" 
+                            ref={(el) => { if (el && scenes[activePreviewIdx]?.audio_path) syncAudioWithVideo(el, scenes[activePreviewIdx].audio_path); }}
                             onEnded={() => {
                               if (activePreviewIdx < scenes.length - 1) {
                                 setActivePreviewIdx(activePreviewIdx + 1);
@@ -1249,22 +1331,55 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
              <div className="text-center mb-10">
                 <h2 className="text-5xl font-black text-brand-dark mb-4 tracking-tighter">Export Your Video</h2>
                 <p className="text-gray-400 font-medium italic text-lg">
-                  개별 씬을 다운로드하거나 모든 씬을 한 번에 다운로드하세요.
+                  모든 씬을 하나의 비디오로 합치거나, 개별 씬을 다운로드하세요.
                 </p>
              </div>
 
-             <div className="mb-8 flex justify-center">
+             <div className="mb-8 flex flex-col items-center gap-4">
                 <button
-                  onClick={handleDownloadAll}
-                  disabled={downloadingAll || scenes.every(s => !s.video_path)}
-                  className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${downloadingAll ? 'bg-gray-100 text-gray-400' : 'bg-brand-cyan text-black hover:scale-105 active:scale-95'}`}
+                  onClick={handleMergeExport}
+                  disabled={merging || scenes.every(s => !s.video_path)}
+                  className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${merging ? 'bg-gray-100 text-gray-400' : 'bg-gradient-to-r from-purple-600 to-brand-cyan text-white hover:scale-105 active:scale-95'}`}
                 >
-                  {downloadingAll ? (
-                    <><Icons.Loader2 className="animate-spin" size={20} /> Downloading...</>
+                  {merging ? (
+                    <><Icons.Loader2 className="animate-spin" size={20} /> {mergeProgress}</>
                   ) : (
-                    <><Icons.Download size={20} /> Download All Scenes</>
+                    <><Icons.Film size={20} /> 하나의 비디오로 합치기</>
                   )}
                 </button>
+                {merging && (
+                  <div className="w-64 h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div className="h-full bg-gradient-to-r from-purple-600 to-brand-cyan rounded-full transition-all duration-500" style={{ width: `${mergePercent}%` }}></div>
+                  </div>
+                )}
+                {mergedVideoUrl && (
+                  <div className="w-full max-w-2xl mt-4">
+                    <div className="bg-brand-dark rounded-[2rem] overflow-hidden shadow-2xl border-4 border-white">
+                      <video src={mergedVideoUrl} controls playsInline className="w-full aspect-video object-contain" />
+                    </div>
+                    <div className="flex justify-center gap-4 mt-4">
+                      <button
+                        onClick={handleDownloadMerged}
+                        className="px-10 py-4 rounded-full font-black text-base bg-brand-cyan text-black hover:scale-105 transition-all shadow-lg flex items-center gap-2"
+                      >
+                        <Icons.Download size={18} /> 최종 비디오 다운로드
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="flex gap-3 mt-2">
+                  <button
+                    onClick={handleDownloadAll}
+                    disabled={downloadingAll || scenes.every(s => !s.video_path)}
+                    className={`px-8 py-3 rounded-full font-bold text-sm transition-all flex items-center gap-2 ${downloadingAll ? 'bg-gray-100 text-gray-400' : 'bg-white border-2 border-gray-200 text-gray-600 hover:border-brand-dark hover:text-black'}`}
+                  >
+                    {downloadingAll ? (
+                      <><Icons.Loader2 className="animate-spin" size={14} /> 다운로드 중...</>
+                    ) : (
+                      <><Icons.Download size={14} /> 개별 씬 다운로드</>
+                    )}
+                  </button>
+                </div>
              </div>
 
              <div className="flex-1 overflow-y-auto pr-4 hide-scrollbar">
@@ -1273,7 +1388,14 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                     <div key={i} className="bg-gray-50 rounded-[2.5rem] overflow-hidden border border-gray-100 shadow-sm hover:shadow-xl transition-all">
                       <div className={`relative bg-black ${aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'} overflow-hidden`}>
                         {s.video_path ? (
-                          <video src={s.video_path} poster={s.image_path} controls playsInline className="w-full h-full object-cover" />
+                          <video
+                            src={s.video_path}
+                            poster={s.image_path}
+                            controls
+                            playsInline
+                            className="w-full h-full object-cover"
+                            ref={(el) => { if (el && s.audio_path) syncAudioWithVideo(el, s.audio_path); }}
+                          />
                         ) : s.image_path ? (
                           <img src={s.image_path} className="w-full h-full object-cover" alt={`Scene ${i + 1}`} />
                         ) : (

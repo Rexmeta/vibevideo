@@ -376,7 +376,7 @@ const VEO_MODEL = 'veo-3.1-fast-generate-preview';
 
 const GOOGLE_VIDEO_PROVIDERS = ['Google'];
 
-export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9', modelId?: string, provider?: string): Promise<string | null> => {
+export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, audioScript?: string): Promise<string | null> => {
   const validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('API_KEY가 설정되지 않았습니다.');
@@ -416,10 +416,15 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
     }
   }
 
+  const fullPrompt = audioScript
+    ? `${prompt}\n\n[Narration/dialogue for this scene]: ${audioScript}`
+    : prompt;
+  console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}`);
+
   return withRetry(async () => {
     if (imageData) {
       try {
-        return await attemptVideoGeneration(prompt, apiKey, validRatio, imageData, 'img', actualModel);
+        return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, imageData, 'img', actualModel);
       } catch (imgErr: any) {
         const msg = String(imgErr?.message || imgErr);
         console.warn(`[Video Gen] Image-based generation failed: ${msg}`);
@@ -427,9 +432,9 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
           throw imgErr;
         }
         console.log(`[Video Gen] Falling back to text-only generation...`);
-        return await attemptVideoGeneration(prompt, apiKey, validRatio, undefined, 'txt-fallback', actualModel);
+        return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt-fallback', actualModel);
       }
     }
-    return await attemptVideoGeneration(prompt, apiKey, validRatio, undefined, 'txt', actualModel);
+    return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt', actualModel);
   }, 3, '비디오 생성');
 }
