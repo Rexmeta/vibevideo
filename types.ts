@@ -40,6 +40,8 @@ export interface Project {
   selected_video_model?: string;
   character_profile?: string;
   use_reference_image?: boolean;
+  scene_duration_mode?: 'time' | 'scenes';
+  target_scene_count?: number;
 }
 
 export interface Script {

@@ -37,6 +37,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [script, setScript] = useState('');
   const [characterProfile, setCharacterProfile] = useState('');
   const [useReferenceImage, setUseReferenceImage] = useState(true);
+  const [sceneDurationMode, setSceneDurationMode] = useState<'time' | 'scenes'>('time');
+  const [targetSceneCount, setTargetSceneCount] = useState(4);
   const [scenes, setScenes] = useState<Partial<Scene>[]>([]);
   const [thumbnail, setThumbnail] = useState<string | undefined>(undefined);
   
@@ -132,6 +134,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           selected_video_model: selectedVideoModel,
           character_profile: characterProfileRef.current,
           use_reference_image: useReferenceImage,
+          scene_duration_mode: sceneDurationMode,
+          target_scene_count: targetSceneCount,
           ...params.extraData
         };
         const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
@@ -239,6 +243,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           setThumbnail(p.thumbnail);
           if (p.character_profile) setCharacterProfile(p.character_profile);
           if (p.use_reference_image !== undefined) setUseReferenceImage(p.use_reference_image);
+          if (p.scene_duration_mode) setSceneDurationMode(p.scene_duration_mode);
+          if (p.target_scene_count) setTargetSceneCount(p.target_scene_count);
           if (p.selected_image_model) setSelectedImageModel(p.selected_image_model);
           if (p.selected_video_model) setSelectedVideoModel(p.selected_video_model);
 
@@ -343,6 +349,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         selected_video_model: selectedVideoModel,
         character_profile: characterProfileRef.current,
         use_reference_image: useReferenceImage,
+        scene_duration_mode: sceneDurationMode,
+        target_scene_count: targetSceneCount,
         ...params.extraData
       };
 
@@ -956,6 +964,51 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                 </div>
               </section>
               <section>
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-8 flex items-center gap-2">
+                  <Icons.Clock size={14} /> Scene Duration
+                </h3>
+                <div className="flex gap-4 mb-6">
+                  <button
+                    onClick={() => setSceneDurationMode('time')}
+                    className={`flex-1 p-5 rounded-[2rem] border-4 text-center transition-all ${sceneDurationMode === 'time' ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}
+                  >
+                    <span className="text-xs font-black uppercase block mb-1">총 영상 시간</span>
+                    <span className="text-[10px] text-gray-400">초 단위로 설정</span>
+                  </button>
+                  <button
+                    onClick={() => setSceneDurationMode('scenes')}
+                    className={`flex-1 p-5 rounded-[2rem] border-4 text-center transition-all ${sceneDurationMode === 'scenes' ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}
+                  >
+                    <span className="text-xs font-black uppercase block mb-1">씬(컷) 수</span>
+                    <span className="text-[10px] text-gray-400">8초 단위 컷</span>
+                  </button>
+                </div>
+                {sceneDurationMode === 'time' ? (
+                  <div>
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="range" min={8} max={120} step={8} value={duration}
+                        onChange={e => { const v = Number(e.target.value); setDuration(v); setTargetSceneCount(Math.max(1, Math.round(v / 8))); }}
+                        className="flex-1 h-2 accent-brand-cyan"
+                      />
+                      <span className="text-2xl font-black text-brand-dark w-24 text-right">{duration}초</span>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-2 italic">약 {Math.max(1, Math.round(duration / 8))}개 씬 (8초/씬 기준)</p>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="flex items-center gap-6">
+                      {[2, 3, 4, 5, 6, 8, 10].map(n => (
+                        <button key={n} onClick={() => { setTargetSceneCount(n); setDuration(n * 8); }}
+                          className={`w-14 h-14 rounded-2xl border-4 font-black text-lg transition-all ${targetSceneCount === n ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-110' : 'border-gray-50 hover:border-gray-100'}`}
+                        >{n}</button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-400 mt-2 italic">총 약 {targetSceneCount * 8}초 영상 ({targetSceneCount}컷 × 8초)</p>
+                  </div>
+                )}
+              </section>
+              <section>
                 <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
                   <Icons.User size={14} /> Character Profile <span className="text-gray-300 normal-case font-medium">(선택사항)</span>
                 </h3>
@@ -990,7 +1043,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               <button onClick={async () => {
                 setLoading(true); setLoadingMessage("AI가 창의적인 스크립트를 빌드 중입니다...");
                 try {
-                  const result = await generateScript(topic, videoStyle);
+                  const result = await generateScript(topic, videoStyle, duration, targetSceneCount);
                   setScript(result);
                 } catch (e: any) {
                   console.error("Script generation failed:", e);
@@ -1008,7 +1061,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                <button onClick={async () => {
                   setLoading(true); setLoadingMessage("스크립트를 씬 단위로 분석하고 있습니다...");
                   try {
-                    const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio, characterProfile || undefined);
+                    const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio, characterProfile || undefined, targetSceneCount);
                     setScenes(s); setStep(3); setMaxStep(prev => Math.max(prev, 3)); setLoading(false);
                     await sync(3, s, {}, { script, topic, maxStep: Math.max(maxStep, 3) });
                   } catch (e) {

@@ -131,12 +131,13 @@ async function pcmToWav(pcmBase64: string, sampleRate: number = 24000): Promise<
   }
 }
 
-export const generateScript = async (topic: string, style: string, lengthSeconds: number = 60): Promise<string> => {
+export const generateScript = async (topic: string, style: string, lengthSeconds: number = 60, sceneCount?: number): Promise<string> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const sceneHint = sceneCount ? ` The script should be structured for exactly ${sceneCount} scenes (each scene is approximately 8 seconds of video).` : '';
   const response = await withTimeout(
     ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Generate a full video script about "${topic}". Style: ${style}. Goal duration: ${lengthSeconds} seconds. Output only the spoken text.`,
+      contents: `Generate a full video script about "${topic}". Style: ${style}. Goal duration: ${lengthSeconds} seconds.${sceneHint} Output only the spoken text.`,
     }),
     60000,
     '스크립트 생성'
@@ -144,12 +145,13 @@ export const generateScript = async (topic: string, style: string, lengthSeconds
   return response.text || "Script generation failed.";
 };
 
-export const segmentScriptIntoScenes = async (script: string, style: string, ratio: string, characterProfile?: string): Promise<Partial<Scene>[]> => {
+export const segmentScriptIntoScenes = async (script: string, style: string, ratio: string, characterProfile?: string, sceneCount?: number): Promise<Partial<Scene>[]> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
   const charInstruction = characterProfile 
     ? `\n\nIMPORTANT - Main Character Description (must appear consistently in EVERY scene's visual_prompt): ${characterProfile}. Always describe this exact same character in each visual_prompt to maintain visual consistency across all scenes.`
     : '';
-  const prompt = `Segment this script into exactly 3-5 visual scenes for a ${ratio} video. Style: ${style}.${charInstruction} Output JSON array. Script: "${script}"`;
+  const sceneCountInstruction = sceneCount ? `exactly ${sceneCount}` : '3-5';
+  const prompt = `Segment this script into ${sceneCountInstruction} visual scenes for a ${ratio} video. Each scene will be approximately 8 seconds of video. Style: ${style}.${charInstruction} Output JSON array. Script: "${script}"`;
   const response = await withTimeout(
     ai.models.generateContent({
       model: 'gemini-3-flash-preview',
