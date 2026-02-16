@@ -144,9 +144,12 @@ export const generateScript = async (topic: string, style: string, lengthSeconds
   return response.text || "Script generation failed.";
 };
 
-export const segmentScriptIntoScenes = async (script: string, style: string, ratio: string): Promise<Partial<Scene>[]> => {
+export const segmentScriptIntoScenes = async (script: string, style: string, ratio: string, characterProfile?: string): Promise<Partial<Scene>[]> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
-  const prompt = `Segment this script into exactly 3-5 visual scenes for a ${ratio} video. Style: ${style}. Output JSON array. Script: "${script}"`;
+  const charInstruction = characterProfile 
+    ? `\n\nIMPORTANT - Main Character Description (must appear consistently in EVERY scene's visual_prompt): ${characterProfile}. Always describe this exact same character in each visual_prompt to maintain visual consistency across all scenes.`
+    : '';
+  const prompt = `Segment this script into exactly 3-5 visual scenes for a ${ratio} video. Style: ${style}.${charInstruction} Output JSON array. Script: "${script}"`;
   const response = await withTimeout(
     ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -218,7 +221,7 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
 const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
 const GOOGLE_IMAGE_PROVIDERS = ['Google', 'NanoBanana'];
 
-export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9', modelId?: string, provider?: string): Promise<{ base64: string; mimeType: string } | null> => {
+export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, characterProfile?: string): Promise<{ base64: string; mimeType: string } | null> => {
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error('API 키가 설정되지 않았습니다.');
@@ -238,7 +241,7 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
     const response = await withTimeout(
       ai.models.generateContent({
         model: actualModel,
-        contents: [{ parts: [{ text: `Generate an image. High quality cinematic digital art, 8k, detailed textures. Scene: ${prompt}. Style: ${style}. Aspect ratio: ${aspectRatio}.` }] }],
+        contents: [{ parts: [{ text: `Generate an image. High quality cinematic digital art, 8k, detailed textures. Scene: ${prompt}. Style: ${style}. Aspect ratio: ${aspectRatio}.${characterProfile ? ` Main character (must match exactly): ${characterProfile}.` : ''}` }] }],
         config: {
           responseModalities: [Modality.IMAGE, Modality.TEXT],
         }
@@ -376,7 +379,7 @@ const VEO_MODEL = 'veo-3.1-fast-generate-preview';
 
 const GOOGLE_VIDEO_PROVIDERS = ['Google'];
 
-export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, audioScript?: string): Promise<string | null> => {
+export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, audioScript?: string, characterProfile?: string): Promise<string | null> => {
   const validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('API_KEY가 설정되지 않았습니다.');
@@ -416,9 +419,9 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
     }
   }
 
-  const fullPrompt = audioScript
-    ? `${prompt}\n\n[Narration/dialogue for this scene]: ${audioScript}`
-    : prompt;
+  const charPart = characterProfile ? `\n\n[Main character - must match exactly]: ${characterProfile}` : '';
+  const audioPart = audioScript ? `\n\n[Narration/dialogue for this scene]: ${audioScript}` : '';
+  const fullPrompt = `${prompt}${charPart}${audioPart}`;
   console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}`);
 
   return withRetry(async () => {

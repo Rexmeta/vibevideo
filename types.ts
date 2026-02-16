@@ -38,6 +38,8 @@ export interface Project {
   total_duration?: number;
   selected_image_model?: string;
   selected_video_model?: string;
+  character_profile?: string;
+  use_reference_image?: boolean;
 }
 
 export interface Script {

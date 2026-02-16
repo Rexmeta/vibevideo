@@ -35,6 +35,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [topic, setTopic] = useState('');
   const [duration, setDuration] = useState(30);
   const [script, setScript] = useState('');
+  const [characterProfile, setCharacterProfile] = useState('');
+  const [useReferenceImage, setUseReferenceImage] = useState(true);
   const [scenes, setScenes] = useState<Partial<Scene>[]>([]);
   const [thumbnail, setThumbnail] = useState<string | undefined>(undefined);
   
@@ -71,6 +73,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const topicRef = useRef(topic);
   const scriptRef = useRef(script);
   const thumbnailRef = useRef(thumbnail);
+  const characterProfileRef = useRef(characterProfile);
 
   useEffect(() => {
     getModels().then(models => {
@@ -88,6 +91,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   useEffect(() => { topicRef.current = topic; }, [topic]);
   useEffect(() => { scriptRef.current = script; }, [script]);
   useEffect(() => { thumbnailRef.current = thumbnail; }, [thumbnail]);
+  useEffect(() => { characterProfileRef.current = characterProfile; }, [characterProfile]);
 
   useEffect(() => {
     return () => {
@@ -126,6 +130,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           thumbnail: params.extraData?.thumbnail || thumbnailRef.current,
           selected_image_model: selectedImageModel,
           selected_video_model: selectedVideoModel,
+          character_profile: characterProfileRef.current,
+          use_reference_image: useReferenceImage,
           ...params.extraData
         };
         const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
@@ -231,6 +237,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           setScript(p.saved_script || '');
           setDuration(p.saved_duration || 30);
           setThumbnail(p.thumbnail);
+          if (p.character_profile) setCharacterProfile(p.character_profile);
+          if (p.use_reference_image !== undefined) setUseReferenceImage(p.use_reference_image);
           if (p.selected_image_model) setSelectedImageModel(p.selected_image_model);
           if (p.selected_video_model) setSelectedVideoModel(p.selected_video_model);
 
@@ -333,6 +341,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         thumbnail: params.extraData.thumbnail || thumbnailRef.current,
         selected_image_model: selectedImageModel,
         selected_video_model: selectedVideoModel,
+        character_profile: characterProfileRef.current,
+        use_reference_image: useReferenceImage,
         ...params.extraData
       };
 
@@ -565,7 +575,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             return;
           }
           const imgModel = allModels.find(m => m.id === selectedImageModel);
-          const result = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio, imgModel?.modelId, imgModel?.provider);
+          const result = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio, imgModel?.modelId, imgModel?.provider, characterProfile || undefined);
           if (result) {
             const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
             updateSceneAt(idx, { image_path: previewUrl });
@@ -614,7 +624,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         return;
       }
       const imgModel = allModels.find(m => m.id === selectedImageModel);
-      const result = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio, imgModel?.modelId, imgModel?.provider);
+      const result = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio, imgModel?.modelId, imgModel?.provider, characterProfile || undefined);
       if (result) {
         const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
         updateSceneAt(idx, { image_path: previewUrl });
@@ -676,7 +686,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             return;
           }
           const vidModel = allModels.find(m => m.id === selectedVideoModel);
-          const videoUrl = await generateSceneVideo(s.visual_prompt!, s.image_path, aspectRatio, vidModel?.modelId, vidModel?.provider, s.script_segment || s.audio_script);
+          const seedImage = (useReferenceImage && idx > 0 && sceneSnapshot[0]?.image_path) ? sceneSnapshot[0].image_path : s.image_path;
+          const videoUrl = await generateSceneVideo(s.visual_prompt!, seedImage, aspectRatio, vidModel?.modelId, vidModel?.provider, s.script_segment || s.audio_script, characterProfile || undefined);
           if (videoUrl) {
             const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
             updateSceneAt(idx, { video_path: blobUrl });
@@ -737,7 +748,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     const fKey = `video-${idx}`;
     try {
       const vidModel = allModels.find(m => m.id === selectedVideoModel);
-      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, currentScene.image_path, aspectRatio, vidModel?.modelId, vidModel?.provider, currentScene.script_segment || currentScene.audio_script);
+      const seedImage = (useReferenceImage && idx > 0 && scenes[0]?.image_path) ? scenes[0].image_path : currentScene.image_path;
+      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, seedImage, aspectRatio, vidModel?.modelId, vidModel?.provider, currentScene.script_segment || currentScene.audio_script, characterProfile || undefined);
       if (videoUrl) {
         const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
         updateSceneAt(idx, { video_path: blobUrl });
@@ -943,6 +955,27 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                   ))}
                 </div>
               </section>
+              <section>
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
+                  <Icons.User size={14} /> Character Profile <span className="text-gray-300 normal-case font-medium">(선택사항)</span>
+                </h3>
+                <p className="text-xs text-gray-400 mb-4 italic">주인공의 외형을 상세히 설명하면 모든 씬에서 일관된 캐릭터가 등장합니다.</p>
+                <textarea
+                  value={characterProfile}
+                  onChange={e => setCharacterProfile(e.target.value)}
+                  placeholder="예: 30대 한국 남성, 짧은 검은 머리, 둥근 안경, 파란색 후드티를 입고 있음. 중간 체형, 밝고 친근한 표정."
+                  className="w-full p-6 bg-gray-50 rounded-[2rem] outline-none text-sm font-medium leading-relaxed shadow-inner resize-none h-24"
+                />
+                <div className="mt-4 flex items-center gap-3">
+                  <button
+                    onClick={() => setUseReferenceImage(!useReferenceImage)}
+                    className={`w-12 h-7 rounded-full transition-all relative ${useReferenceImage ? 'bg-brand-cyan' : 'bg-gray-200'}`}
+                  >
+                    <div className={`w-5 h-5 bg-white rounded-full absolute top-1 transition-all shadow-sm ${useReferenceImage ? 'left-6' : 'left-1'}`} />
+                  </button>
+                  <span className="text-xs font-bold text-gray-500">첫 번째 씬 이미지를 나머지 씬의 참조 이미지로 사용</span>
+                </div>
+              </section>
             </div>
             <button onClick={() => { const ns = 2; setStep(ns); setMaxStep(prev => Math.max(prev, ns)); sync(ns); }} className="mt-20 bg-brand-dark text-white py-8 rounded-full font-black text-2xl shadow-2xl hover:brightness-110 transition-all">
               Initialize Vibe Script <Icons.ChevronRight className="inline" size={28} />
@@ -975,7 +1008,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                <button onClick={async () => {
                   setLoading(true); setLoadingMessage("스크립트를 씬 단위로 분석하고 있습니다...");
                   try {
-                    const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio);
+                    const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio, characterProfile || undefined);
                     setScenes(s); setStep(3); setMaxStep(prev => Math.max(prev, 3)); setLoading(false);
                     await sync(3, s, {}, { script, topic, maxStep: Math.max(maxStep, 3) });
                   } catch (e) {

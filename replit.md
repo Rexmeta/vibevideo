@@ -1,201 +1,54 @@
 # VibeVideo AI
 
 ## Overview
-VibeVideo AI is a React + TypeScript frontend application for AI-powered video generation. Users can create videos from text, images, or audio clips using AI. The app uses Firebase for authentication, Firestore, and storage, and integrates with Google's Gemini API.
+VibeVideo AI is a React + TypeScript frontend application designed for AI-powered video generation. It enables users to create videos from various inputs like text, images, or audio clips using advanced AI models. The project aims to provide a seamless and robust platform for AI-driven media creation, leveraging Firebase for core services and Google's Gemini API for AI functionalities.
 
-## Project Architecture
-- **Framework**: React 18 with TypeScript
-- **Build Tool**: Vite 5
-- **Styling**: Tailwind CSS (loaded via CDN)
-- **Backend Services**: Firebase (Auth, Firestore, Storage)
-- **AI Integration**: Google Gemini API (@google/genai)
-- **Icons**: Lucide React
+## User Preferences
+No specific user preferences were provided in the original `replit.md` file. The user is expected to provide these during the interaction.
 
-## Project Structure
-```
-/
-├── App.tsx              # Main app component with routing (includes admin route)
-├── index.tsx            # Entry point
-├── index.html           # HTML template with importmap
-├── types.ts             # TypeScript type definitions (AIModel, ModelType, ViewState with 'admin')
-├── vite.config.ts       # Vite configuration (port 5000, host 0.0.0.0)
-├── tsconfig.json        # TypeScript config
-├── components/          # React components
-│   ├── AdminPage.tsx          # AI model management (CRUD, toggle active, search, reset)
-│   ├── AuthPage.tsx
-│   ├── Icons.tsx
-│   ├── LandingPage.tsx
-│   ├── NavBar.tsx             # Includes admin link for admin users
-│   ├── PricingPage.tsx
-│   ├── ProfilePage.tsx
-│   ├── ProjectManagement.tsx  # Paginated project list with "더 보기" button
-│   └── ProjectWizard.tsx      # Model selector in steps 4 (image) and 5 (video)
-└── services/            # Service layer
-    ├── firebaseConfig.ts      # Firebase init with persistent offline cache
-    ├── geminiService.ts
-    ├── mediaCache.ts          # IndexedDB-based media cache for large base64 data
-    ├── modelService.ts        # AI model CRUD, Firestore + localStorage, default model seeding
-    ├── storageService.ts      # Paginated queries, version tracking, Blob uploads, Storage cleanup
-    └── videoMergeService.ts   # FFmpeg.wasm video+audio merge and scene concatenation
-```
+## System Architecture
+The application is built with React 18 and TypeScript, using Vite 5 as the build tool. Styling is handled by Tailwind CSS, loaded via CDN. Firebase is extensively used for authentication, Firestore (database), and Storage. The core AI capabilities are powered by the Google Gemini API.
 
-## Development
-- **Dev Server**: `npm run dev` (runs on port 5000)
-- **Build**: `npm run build` (outputs to `dist/`)
-- **Deployment**: Static site deployment from `dist/` directory
+### UI/UX Decisions
+- **General Design**: The application incorporates a clear, step-by-step wizard for project creation (`ProjectWizard.tsx`).
+- **Admin Interface**: An `AdminPage.tsx` exists for managing AI models, providing CRUD operations, toggling activity, searching, and resetting models.
+- **Navigation**: A `NavBar.tsx` includes dynamic links, such as an admin link for authenticated admin users.
+- **Project Management**: `ProjectManagement.tsx` offers a paginated list of projects with a "더 보기" (Load More) button.
 
-## Environment Variables
-- `API_KEY` - Google Gemini API key (mapped via Vite's define config)
-- `FIREBASE_API_KEY` - Firebase 프로젝트 API Key (필수)
-- `FIREBASE_AUTH_DOMAIN` - Firebase Auth Domain (필수)
-- `FIREBASE_PROJECT_ID` - Firebase Project ID (필수)
-- `FIREBASE_STORAGE_BUCKET` - Firebase Storage Bucket
-- `FIREBASE_MESSAGING_SENDER_ID` - Firebase Messaging Sender ID
-- `FIREBASE_APP_ID` - Firebase App ID (필수)
-- `FIREBASE_MEASUREMENT_ID` - Firebase Measurement ID (선택)
+### Technical Implementations
+- **Routing**: `App.tsx` handles main application routing, including a dedicated admin route.
+- **State Management**: React's built-in hooks are used for component state.
+- **Media Handling**: `mediaCache.ts` utilizes IndexedDB for caching large base64 media data, enhancing performance and offline capabilities.
+- **Video Processing**: `videoMergeService.ts` integrates `FFmpeg.wasm` for in-browser video merging and scene concatenation.
+- **AI Model Management**: `modelService.ts` handles CRUD operations for AI models, persisting data in Firestore and localStorage, and seeding default models.
+- **Data Persistence**: Firebase Firestore is used with offline persistence enabled for multi-tab support.
+- **Storage**: Firebase Storage manages media uploads, with structured paths and robust retry mechanisms.
 
-## AI Models Used
-- **TTS**: `gemini-2.5-flash-preview-tts` (Puck/Kore voices, 45s timeout)
-- **Image**: `gemini-2.5-flash-image` (Nano Banana, responseModalities: IMAGE+TEXT, 60s timeout)
-- **Video**: `veo-3.1-fast-generate-preview` (polling-based, 40 attempts x 7s)
+### Feature Specifications
+- **AI Model Selection**: Users can select specific AI models for image and video generation within the `ProjectWizard`.
+- **Character Consistency**: The system supports maintaining character consistency across scenes by injecting character descriptions into prompts and using reference images.
+- **Video & Audio Merging**: Facilitates merging per-scene video and audio into a single MP4 file client-side.
+- **Project Save/Restore**: Robust system to save project progress, including generated media, to Cloud, IndexedDB, and localStorage with conflict detection and priority-based restoration.
+- **Parallel Processing**: Audio, image, and video generation tasks run in parallel (with limits) to improve performance, including per-scene error tracking and retry mechanisms.
+- **Export Features**: Comprehensive export options, including individual scene downloads and full project video downloads.
 
-## Database & Storage Architecture (Production-Ready)
+### System Design Choices
+- **Firestore Structure**: A flat `projects` collection is used, with one document per project. Each project document includes summary fields (`scene_count`, `total_duration`) to avoid loading full scenes for list views.
+- **Conflict Detection**: A `version` field and Firestore transactions are used for optimistic concurrency control.
+- **Storage Strategy**: Blob-based uploads with aggressive caching headers and recursive cleanup for deleted projects.
+- **Client-Side Caching**: A multi-layered approach combines IndexedDB for large media, localStorage for light metadata, and Firestore's SDK persistence.
+- **Security Rules**: Firestore and Storage rules are configured to ensure that users can only access their own project data.
 
-### Firestore
-- **Collection**: `projects` (flat collection, one document per project)
-- **Offline Persistence**: Enabled via `persistentLocalCache` + `persistentMultipleTabManager` (multi-tab support)
-- **Queries**: Paginated with `orderBy("updated_at", "desc")` + `limit(20)` + `startAfter(lastDoc)`
-- **Conflict Detection**: `version` field incremented on each save; `runTransaction` for concurrent access safety
-- **Document Size Guard**: `saved_scenes` capped at 50 scenes; base64 data always stripped before Firestore save
-- **Summary Fields**: `scene_count`, `total_duration` stored for list view without loading full scenes
-- **Required Composite Index**: `projects` collection → `user_id` ASC + `updated_at` DESC
-
-### Firebase Storage
-- **Path Structure**: `users/{userId}/projects/{projectId}/{type}/s{index}.{ext}`
-- **Upload Method**: Blob-based (`uploadBytes`) with `cacheControl: 'public, max-age=31536000'`
-- **Retry**: 1 automatic retry with 1s delay on failure (30s timeout per attempt)
-- **Cleanup**: Full recursive folder deletion (`listAll` + `deleteObject`) when project is deleted
-
-### Client-Side Caching
-- **IndexedDB (mediaCache.ts)**: Stores large base64 audio/image data keyed by `{projectId}__s{idx}__{type}`
-- **localStorage**: Lightweight project metadata only (no base64); project index per user (`vibe_project_index_{userId}`) capped at 50 entries
-- **Firestore IndexedDB**: Automatic offline cache via Firebase SDK persistence
-
-### Security Rules (Recommended for Firebase Console)
-```
-// Firestore Rules
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /projects/{projectId} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.user_id;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.user_id;
-    }
-  }
-}
-
-// Storage Rules
-rules_version = '2';
-service firebase.storage {
-  match /b/{bucket}/o {
-    match /users/{userId}/{allPaths=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-  }
-}
-```
-
-## AI Models Used
-- **TTS**: `gemini-2.5-flash-preview-tts` (Puck/Kore voices, 45s timeout)
-- **Image**: `gemini-2.5-flash-image` (responseModalities: IMAGE+TEXT, 60s timeout)
-- **Video**: `veo-3.1-fast-generate-preview` (sequential processing, 60s inter-scene delay, 3 retries with 60s base backoff for 429, polling 30 attempts x 15s, seed image resized to 768px JPEG 85%)
-
-## Recent Changes
-- 2026-02-16: Video+Audio merge & prompt improvement:
-  - Video generation prompt now includes audio_script/script_segment as narration context for Veo API
-  - Audio sync playback: hidden `<audio>` element syncs with `<video>` play/pause/seek/ended events in Steps 5, 6, 7
-  - FFmpeg.wasm integration: `@ffmpeg/ffmpeg` + `@ffmpeg/util` for browser-side video processing
-  - videoMergeService.ts: mergeAllScenes combines per-scene video+audio into single MP4 (AAC audio, MPEG-TS concat)
-  - Step 7 Export: "하나의 비디오로 합치기" button with progress bar, merged preview player, and download
-  - Cleanup: sync event listeners properly cleaned up via ref on component unmount and video switch
-- 2026-02-16: Project save/restore reliability overhaul:
-  - Root cause: Storage uploads timing out (30s), localStorage quota exceeded, Firestore save timing out → all 3 save paths failing simultaneously
-  - Storage upload timeout: 30s → 60s, download URL timeout: 10s → 15s
-  - Firestore save timeout: 10s → 20s, project query timeout: 8s → 15s
-  - localStorage save: now strips ALL non-HTTP paths (not just data: prefixes), removes visual_prompt/audio_script to reduce size
-  - localStorage metaOnly fallback: ultra-lightweight with only essential fields
-  - Emergency backup: also strips base64 data before saving (was saving raw data causing quota overflow)
-  - Video IndexedDB save: fetchVideoAsBlob now awaits readAsDataURL completion before proceeding (was fire-and-forget)
-  - Restore logic: checks all 3 sources (Cloud, IndexedDB, localStorage), picks source with highest saved_max_step
-  - Restore: merges HTTP URLs from Cloud into local data when local has higher progress but no uploaded URLs
-  - Emergency backup: also checked during getProjectFromCloud fallback
-- 2026-02-15: Model selection bug fix:
-  - Fixed: Selected models were not applied to actual API calls (only display name was passed, not modelId)
-  - generateSceneImage/generateSceneVideo now accept modelId + provider params
-  - Google/NanoBanana providers use selected modelId directly; other providers fall back to default with warning
-  - attemptVideoGeneration accepts videoModel param instead of hardcoded constant
-  - ProjectWizard passes modelId and provider (not name) at all 4 generation call sites
-- 2026-02-15: AI Model Management System:
-  - AIModel type (id, name, type, provider, description, modelId, isActive, sortOrder, supportsKorean)
-  - modelService.ts: Firestore + localStorage CRUD, default model seeding (11 image + 14 video models)
-  - AdminPage.tsx: Tabbed model management UI (image/video), add/edit/delete/toggle/search/reset
-  - NavBar admin link for admin users (isAdminUser check)
-  - ProjectWizard model selector: Steps 4 (image) and 5 (video) show model picker with cards
-  - Models: Nano Banana Pro, Seedream V4.5/V4, Midjourney, Qwen, Ideogram V3, Z-Image Turbo, GPT Image 1.5, Flux 2, Grok Imagine, Veo 3.1, Sora 2, Kling 3.0/2.6/2.5T/O1, Hailuo 2.3/02, Seedance Lite/1.5 Pro/V1, Vidu Q3, Wan 2.5
-  - Video generation debugging: comprehensive logging at every API step, image→text-only fallback
-- 2026-02-14: Video generation reliability overhaul:
-  - Root cause: 429 rate limit from parallel video generation + oversized seed images (1.5MB+ base64)
-  - Seed image resizing: Canvas-based resize to max 768px, JPEG 85% quality (~200-400KB vs 1.5MB+)
-  - Sequential processing with 60s inter-scene delay (countdown timer shown to user)
-  - Retry: 3 retries with 60s base backoff for 429 (exponential, max 180s), Retry-After header support
-  - Polling: 15s interval (per Veo API docs), consecutive error tracking (fails after 5)
-  - Video duration: explicit 5s config
-  - Inline video preview: "Preview Video" button (purple gradient) toggles inline player in scene card
-  - Removed old expanded preview panel in favor of inline previews
-  - Each successful scene synced immediately (not just at batch end)
-- 2026-02-14: Sync timing & project restore fix + Export features:
-  - Sync timing: `sync()` now builds project data inside timer callback using refs (scenesRef, stepRef, etc.) instead of at call time, preventing stale closure data
-  - Restore: maxStep computed from actual scene data (video_path, image_path, audio_path presence) so steps 5-7 are accessible after re-entry
-  - Video preview fix: Veo API URLs converted to blob URLs via `fetchVideoAsBlob` for browser playback (CORS-safe)
-  - Video persistence: Generated videos saved to IndexedDB and restored as blob URLs on project re-entry
-  - Blob URL memory management: `blobUrlsRef` tracks all blob URLs, revokes on replace/unmount
-  - Step 5: Click-to-expand video preview panel with large player, scene info, close button
-  - Step 5: Scene card thumbnails show expand icon on hover for video preview
-  - Step 6: Added "Play All" button, scene counter (Scene X / Y), and progress bar for sequential preview
-  - Step 7: Full export page with scene grid, individual download buttons per scene, "Download All Scenes" button, video previews
-  - Download helper: fetch → blob → createObjectURL → programmatic download, with fallback to window.open
-- 2026-02-14: Cloud connection reliability fix:
-  - Firestore query fallback: compound query (where + orderBy) → simple query (where only) when composite index unavailable
-  - Client-side sorting as fallback when compound index not available
-  - Timeout increased from 10s to 15s for Firestore queries
-  - PNG content type support added to `uploadFileToCloud`
-  - Image generation returns correct mimeType (was hardcoded as JPEG, now detects from API response)
-  - Video generation properly detects seed image mimeType from data URL or HTTP URL
-  - Script text in scene cards: removed line-clamp, reduced font for full visibility
-- 2026-02-13: Parallel processing & retry system:
-  - Audio/Image/Video batch generation now runs in parallel (3 concurrent for audio/image, 2 for video)
-  - Per-scene error tracking with visual Failed/Processing badges and retry buttons
-  - Individual scene retry: `handleSingleAudio`, `handleSingleImage`, `handleSingleVideo`
-  - Auto-retry with exponential backoff in geminiService for timeout/429/503 errors (1 retry)
-  - Failed scenes show error message, red border, and dedicated retry button
-  - Processing status shows concurrent count in real-time
-- 2026-02-13: Production-level DB/Storage architecture upgrade:
-  - Firestore offline persistence via `persistentLocalCache` + multi-tab support
-  - Paginated project queries: `orderBy("updated_at", "desc")` + `limit(20)` + cursor-based pagination
-  - Version-based conflict detection with `runTransaction` for concurrent edit safety
-  - Project IDs use `crypto.randomUUID()` instead of `Date.now()` (collision-safe)
-  - All uploads converted from `uploadString` (base64) to `uploadBytes` (Blob) for efficiency
-  - Storage cache headers: `public, max-age=31536000` for CDN optimization
-  - Full Storage folder cleanup on project deletion (recursive `listAll` + `deleteObject`)
-  - Document size guard: scenes capped at 50, summary fields (`scene_count`, `total_duration`)
-  - localStorage lightweight index system (`vibe_project_index_{userId}`, 50 entry cap)
-  - ProjectManagement: "더 보기" pagination button, lazy-loaded thumbnails
-- 2026-02-13: Media persistence & crash fix:
-  - Added IndexedDB-based media cache (services/mediaCache.ts) for large base64 audio/image data
-  - Fixed localStorage QuotaExceededError crash: base64 data stripped before localStorage save
-  - Project restore recovers media from IndexedDB when '[local-*]' placeholders detected
-  - Storage upload timeout 30s with 1 automatic retry
-- 2026-02-13: Performance & reliability improvements:
-  - Local-first project loading, Firestore timeouts, sync debouncing
-  - Image model: gemini-2.5-flash-image, per-scene progress and error reporting
-- 2026-02-13: Initial Replit setup - Vite port 5000, Firebase env vars
+## External Dependencies
+- **Firebase**:
+    - **Authentication**: User authentication.
+    - **Firestore**: NoSQL database for project data storage and retrieval.
+    - **Storage**: Blob storage for images, audio, and video files.
+- **Google Gemini API**: (@google/genai) Used for AI-powered text-to-speech (TTS), image generation, and video generation.
+    - **TTS Models**: `gemini-2.5-flash-preview-tts`
+    - **Image Models**: `gemini-2.5-flash-image`
+    - **Video Models**: `veo-3.1-fast-generate-preview`
+- **FFmpeg.wasm**: Integrated via `@ffmpeg/ffmpeg` and `@ffmpeg/util` for client-side video and audio processing.
+- **Lucide React**: For icons used throughout the application.
+- **Vite**: Build tool for the React application.
+- **Tailwind CSS**: Utility-first CSS framework for styling.
