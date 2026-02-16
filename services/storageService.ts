@@ -159,8 +159,8 @@ export const uploadFileToCloud = async (path: string, data: string | Blob, forma
       throw new Error('Invalid upload data format');
     }
     
-    await withTimeout(uploadBytes(storageRef, blob, metadata), 30000, '파일 업로드');
-    return await withTimeout(getDownloadURL(storageRef), 10000, '다운로드 URL 조회');
+    await withTimeout(uploadBytes(storageRef, blob, metadata), 60000, '파일 업로드');
+    return await withTimeout(getDownloadURL(storageRef), 15000, '다운로드 URL 조회');
   };
 
   try {
@@ -239,11 +239,20 @@ export const saveProjectToCloud = async (project: Project, skipLocalSave: boolea
       dataToSave.saved_scenes = sanitizedScenes;
     }
 
-    await withTimeout(setDoc(projectRef, dataToSave, { merge: true }), 10000, '프로젝트 저장');
+    await withTimeout(setDoc(projectRef, dataToSave, { merge: true }), 20000, '프로젝트 저장');
     console.log(`[Database] Project Saved Successfully: ${project.id}`);
   } catch (error: any) {
     console.warn("[Database Save] 클라우드 저장 실패, 로컬에 백업됨:", error?.message);
-    try { localStorage.setItem(`vibe_video_backup_emergency_${project.id}`, JSON.stringify(project)); } catch(e) {}
+    try {
+      const emergencyData = { ...project, saved_scenes: project.saved_scenes?.map(s => {
+        const c = { ...s };
+        if (c.audio_path && !c.audio_path.startsWith('http')) c.audio_path = '[local-audio]';
+        if (c.image_path && !c.image_path.startsWith('http')) c.image_path = '[local-image]';
+        if (c.video_path && !c.video_path.startsWith('http')) c.video_path = '[local-video]';
+        return c;
+      }) };
+      localStorage.setItem(`vibe_video_backup_emergency_${project.id}`, JSON.stringify(emergencyData));
+    } catch(e) {}
   }
 };
 
@@ -303,7 +312,7 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
   if (db) {
     try {
       const projectRef = doc(db, PROJECTS_COLLECTION, id);
-      const docSnap = await withTimeout(getDoc(projectRef), 8000, '프로젝트 조회');
+      const docSnap = await withTimeout(getDoc(projectRef), 15000, '프로젝트 조회');
       if (docSnap.exists()) {
         const project = docSnap.data() as Project;
         try { 
@@ -325,10 +334,10 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
     }
   }
 
-  const local = localStorage.getItem(`vibe_video_backup_${id}`);
+  const local = localStorage.getItem(`vibe_video_backup_${id}`) || localStorage.getItem(`vibe_video_backup_emergency_${id}`);
   if (local) {
     console.log("[Database] 로컬 백업에서 프로젝트 복원:", id);
-    return JSON.parse(local);
+    try { return JSON.parse(local); } catch {}
   }
   
   return undefined;

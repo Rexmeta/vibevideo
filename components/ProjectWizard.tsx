@@ -128,12 +128,21 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         };
         const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
           const c = { ...s };
-          if (c.audio_path && c.audio_path.startsWith('data:')) c.audio_path = '[local-audio]';
-          if (c.image_path && c.image_path.startsWith('data:')) c.image_path = '[local-image]';
-          if (c.video_path && (c.video_path.startsWith('data:') || c.video_path.startsWith('blob:'))) c.video_path = '[local-video]';
+          if (c.audio_path && !c.audio_path.startsWith('http')) c.audio_path = '[local-audio]';
+          if (c.image_path && !c.image_path.startsWith('http')) c.image_path = '[local-image]';
+          if (c.video_path && !c.video_path.startsWith('http')) c.video_path = '[local-video]';
           return c;
         }) };
         saveProjectMeta(projectId, localProj).catch(() => {});
+        try {
+          const lsProj = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => {
+            const c = { ...s };
+            delete c.visual_prompt;
+            delete c.audio_script;
+            return c;
+          }) };
+          localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(lsProj));
+        } catch {}
         saveProjectToCloud(proj, true).catch(e => console.error("Unmount sync error:", e));
       }
     };
@@ -148,28 +157,63 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       try {
         let p: Project | undefined;
         const idToLoad = initialProjectId || projectId;
-        if (initialProjectId) p = await getProjectFromCloud(initialProjectId);
         
-        if (!p) {
-          const localData = localStorage.getItem(`vibe_video_backup_${idToLoad}`);
-          if (localData) {
-            try { p = JSON.parse(localData); } catch {}
+        let cloudProject: Project | undefined;
+        let localProject: Project | undefined;
+        let idbProject: Project | undefined;
+        
+        if (initialProjectId) {
+          try { cloudProject = await getProjectFromCloud(initialProjectId); } catch (e) {
+            console.warn('[Restore] Cloud fetch failed:', e);
           }
         }
+        
+        const localData = localStorage.getItem(`vibe_video_backup_${idToLoad}`);
+        if (localData) {
+          try { localProject = JSON.parse(localData); } catch {}
+        }
+        
+        try {
+          const idbData = await getProjectMeta(idToLoad);
+          if (idbData) idbProject = idbData;
+        } catch {}
 
-        if (!p || !p.saved_scenes || p.saved_scenes.length === 0) {
-          const idbProject = await getProjectMeta(idToLoad);
-          if (idbProject && idbProject.saved_scenes && idbProject.saved_scenes.length > 0) {
-            if (!p) {
-              p = idbProject;
-            } else {
-              const idbMax = idbProject.saved_max_step || idbProject.saved_step || 1;
-              const currentMax = p.saved_max_step || p.saved_step || 1;
-              if (idbMax >= currentMax) {
-                p = { ...p, ...idbProject, id: p.id };
+        const scoreProject = (proj: Project): number => {
+          const maxStep = proj.saved_max_step || proj.saved_step || 1;
+          const sceneCount = proj.saved_scenes?.length || 0;
+          const hasContent = proj.saved_scenes?.some(s => s.visual_prompt || s.audio_script) ? 1 : 0;
+          const mediaCount = proj.saved_scenes?.reduce((sum, s) => {
+            let c = 0;
+            if (s.audio_path) c++;
+            if (s.image_path) c++;
+            if (s.video_path) c++;
+            return sum + c;
+          }, 0) || 0;
+          return maxStep * 1000 + sceneCount * 100 + mediaCount * 10 + hasContent;
+        };
+
+        const candidates = [cloudProject, idbProject, localProject].filter(Boolean) as Project[];
+        if (candidates.length > 0) {
+          p = candidates.reduce((best, current) => scoreProject(current) > scoreProject(best) ? current : best);
+          
+          const allSources = [cloudProject, idbProject, localProject].filter(Boolean) as Project[];
+          if (p.saved_scenes?.length) {
+            p = { ...p, saved_scenes: p.saved_scenes.map((s, i) => {
+              const merged = { ...s };
+              for (const src of allSources) {
+                const srcScene = src.saved_scenes?.[i];
+                if (!srcScene) continue;
+                if (!merged.audio_path && srcScene.audio_path?.startsWith('http')) merged.audio_path = srcScene.audio_path;
+                if (!merged.image_path && srcScene.image_path?.startsWith('http')) merged.image_path = srcScene.image_path;
+                if (!merged.video_path && srcScene.video_path?.startsWith('http')) merged.video_path = srcScene.video_path;
+                if (!merged.visual_prompt && srcScene.visual_prompt) merged.visual_prompt = srcScene.visual_prompt;
+                if (!merged.audio_script && srcScene.audio_script) merged.audio_script = srcScene.audio_script;
+                if (!merged.script_segment && srcScene.script_segment) merged.script_segment = srcScene.script_segment;
               }
-            }
+              return merged;
+            }) };
           }
+          console.log(`[Restore] Sources: cloud=${!!cloudProject}(${cloudProject ? scoreProject(cloudProject) : '-'}), local=${!!localProject}(${localProject ? scoreProject(localProject) : '-'}), idb=${!!idbProject}(${idbProject ? scoreProject(idbProject) : '-'}), picked maxStep=${p.saved_max_step}, scenes=${p.saved_scenes?.length}`);
         }
 
         if (p) {
@@ -292,27 +336,53 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
 
       const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
         const c = { ...s };
-        if (c.audio_path && c.audio_path.startsWith('data:')) c.audio_path = '[local-audio]';
-        if (c.image_path && c.image_path.startsWith('data:')) c.image_path = '[local-image]';
-        if (c.video_path && (c.video_path.startsWith('data:') || c.video_path.startsWith('blob:'))) c.video_path = '[local-video]';
+        if (c.audio_path && !c.audio_path.startsWith('http')) c.audio_path = '[local-audio]';
+        if (c.image_path && !c.image_path.startsWith('http')) c.image_path = '[local-image]';
+        if (c.video_path && !c.video_path.startsWith('http')) c.video_path = '[local-video]';
         return c;
       }) };
 
-      saveProjectMeta(projectId, localProj).catch(() => {});
+      saveProjectMeta(projectId, localProj).catch((e) => console.warn('[Sync] IndexedDB meta save failed:', e));
 
       try {
-        localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(localProj));
+        const lsProj = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => {
+          const c = { ...s };
+          delete c.visual_prompt;
+          delete c.audio_script;
+          return c;
+        }) };
+        localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(lsProj));
       } catch (e: any) {
         console.warn("[Sync] localStorage 저장 실패:", e?.message);
         try {
-          const metaOnly = { ...localProj, saved_scenes: localProj.saved_scenes?.map(s => ({
-            ...s,
-            audio_path: s.audio_path === '[local-audio]' ? '[local-audio]' : undefined,
-            image_path: s.image_path === '[local-image]' ? '[local-image]' : undefined,
-            video_path: s.video_path === '[local-video]' ? '[local-video]' : undefined,
-          })) };
+          const metaOnly = {
+            id: localProj.id,
+            user_id: localProj.user_id,
+            title: localProj.title,
+            aspect_ratio: localProj.aspect_ratio,
+            style_template: localProj.style_template,
+            status: localProj.status,
+            created_at: localProj.created_at,
+            updated_at: localProj.updated_at,
+            saved_step: localProj.saved_step,
+            saved_max_step: localProj.saved_max_step,
+            saved_topic: localProj.saved_topic,
+            saved_duration: localProj.saved_duration,
+            thumbnail: localProj.thumbnail,
+            selected_image_model: localProj.selected_image_model,
+            selected_video_model: localProj.selected_video_model,
+            saved_scenes: localProj.saved_scenes?.map(s => ({
+              scene_number: s.scene_number,
+              audio_path: s.audio_path,
+              image_path: s.image_path,
+              video_path: s.video_path,
+              audio_duration: s.audio_duration,
+            })),
+          };
           localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(metaOnly));
-        } catch (e2) {}
+        } catch (e2) {
+          console.warn("[Sync] localStorage metaOnly도 실패, IndexedDB만 사용");
+        }
       }
 
       try {
@@ -567,13 +637,19 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     if (!resp.ok) throw new Error(`Video fetch failed: ${resp.status}`);
     const blob = await resp.blob();
     const blobUrl = URL.createObjectURL(blob);
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (reader.result && typeof reader.result === 'string') {
-        saveMedia(projectId, sceneIdx, 'video', reader.result);
-      }
-    };
-    reader.readAsDataURL(blob);
+    trackBlobUrl(blobUrl);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+      await saveMedia(projectId, sceneIdx, 'video', dataUrl);
+      console.log(`[Video Cache] Scene ${sceneIdx} saved to IndexedDB (${Math.round(dataUrl.length / 1024)}KB)`);
+    } catch (cacheErr) {
+      console.warn(`[Video Cache] Scene ${sceneIdx} IndexedDB save failed:`, cacheErr);
+    }
     return { blobUrl, blob };
   };
 

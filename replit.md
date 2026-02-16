@@ -110,6 +110,17 @@ service firebase.storage {
 - **Video**: `veo-3.1-fast-generate-preview` (sequential processing, 60s inter-scene delay, 3 retries with 60s base backoff for 429, polling 30 attempts x 15s, seed image resized to 768px JPEG 85%)
 
 ## Recent Changes
+- 2026-02-16: Project save/restore reliability overhaul:
+  - Root cause: Storage uploads timing out (30s), localStorage quota exceeded, Firestore save timing out → all 3 save paths failing simultaneously
+  - Storage upload timeout: 30s → 60s, download URL timeout: 10s → 15s
+  - Firestore save timeout: 10s → 20s, project query timeout: 8s → 15s
+  - localStorage save: now strips ALL non-HTTP paths (not just data: prefixes), removes visual_prompt/audio_script to reduce size
+  - localStorage metaOnly fallback: ultra-lightweight with only essential fields
+  - Emergency backup: also strips base64 data before saving (was saving raw data causing quota overflow)
+  - Video IndexedDB save: fetchVideoAsBlob now awaits readAsDataURL completion before proceeding (was fire-and-forget)
+  - Restore logic: checks all 3 sources (Cloud, IndexedDB, localStorage), picks source with highest saved_max_step
+  - Restore: merges HTTP URLs from Cloud into local data when local has higher progress but no uploaded URLs
+  - Emergency backup: also checked during getProjectFromCloud fallback
 - 2026-02-15: Model selection bug fix:
   - Fixed: Selected models were not applied to actual API calls (only display name was passed, not modelId)
   - generateSceneImage/generateSceneVideo now accept modelId + provider params
