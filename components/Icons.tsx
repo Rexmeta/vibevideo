@@ -46,7 +46,9 @@ import {
   Film,
   RotateCcw,
   Search,
-  Clock
+  Clock,
+  ChevronDown,
+  Key
 } from 'lucide-react';
 
 export const Icons = {
@@ -54,5 +56,6 @@ export const Icons = {
   Monitor, Smartphone, Square, Layout,
   Mail, Lock, CreditCard, Bell, Settings, LogOut, FileText, Shield, Eye, EyeOff, Github, Cloud,
   RefreshCw, AlertCircle, Download, X, Maximize2,
-  Plus, Trash2, Edit3, Save, Globe, Film, RotateCcw, Search, Clock
+  Plus, Trash2, Edit3, Save, Globe, Film, RotateCcw, Search, Clock,
+  ChevronDown, Key
 };

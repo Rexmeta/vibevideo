@@ -1,8 +1,8 @@
 
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { Scene } from "../types";
+import { getEffectiveApiKey } from "./apiKeyService";
 
-// Helper to safely get the API KEY
 const getApiKey = () => {
   const key = process.env.API_KEY;
   if (!key) {
@@ -10,6 +10,20 @@ const getApiKey = () => {
     return "";
   }
   return key;
+};
+
+const getApiKeyForModel = (modelId?: string, provider?: string, useGlobalFallback?: boolean): string => {
+  if (useGlobalFallback) {
+    return getApiKey();
+  }
+  if (modelId || provider) {
+    const effectiveKey = getEffectiveApiKey(modelId || '', provider || '');
+    if (effectiveKey) {
+      console.log(`[API Key] Using per-model/provider key for ${provider}/${modelId}`);
+      return effectiveKey;
+    }
+  }
+  return getApiKey();
 };
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -224,15 +238,16 @@ const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
 const GOOGLE_IMAGE_PROVIDERS = ['Google', 'NanoBanana'];
 
 export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, characterProfile?: string): Promise<{ base64: string; mimeType: string } | null> => {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    throw new Error('API 키가 설정되지 않았습니다.');
-  }
-
   const isGeminiCompatible = !provider || GOOGLE_IMAGE_PROVIDERS.includes(provider);
   const actualModel = (modelId && isGeminiCompatible) ? modelId : GEMINI_IMAGE_MODEL;
+  const isFallback = !isGeminiCompatible;
 
-  if (!isGeminiCompatible) {
+  const apiKey = isFallback ? getApiKey() : getApiKeyForModel(modelId, provider);
+  if (!apiKey) {
+    throw new Error('API 키가 설정되지 않았습니다. 관리 페이지에서 API 키를 설정해주세요.');
+  }
+
+  if (isFallback) {
     console.warn(`[Image] Provider "${provider}" (model: ${modelId}) is not yet integrated. Using Gemini fallback: ${GEMINI_IMAGE_MODEL}`);
   }
 
@@ -383,13 +398,14 @@ const GOOGLE_VIDEO_PROVIDERS = ['Google'];
 
 export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, audioScript?: string, characterProfile?: string, previousSceneContext?: string, sceneIndex?: number): Promise<string | null> => {
   const validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error('API_KEY가 설정되지 않았습니다.');
-
   const isGoogleProvider = !provider || GOOGLE_VIDEO_PROVIDERS.includes(provider);
   const actualModel = (modelId && isGoogleProvider) ? modelId : VEO_MODEL;
+  const isFallback = !isGoogleProvider;
 
-  if (!isGoogleProvider) {
+  const apiKey = isFallback ? getApiKey() : getApiKeyForModel(modelId, provider);
+  if (!apiKey) throw new Error('API 키가 설정되지 않았습니다. 관리 페이지에서 API 키를 설정해주세요.');
+
+  if (isFallback) {
     console.warn(`[Video Gen] Provider "${provider}" (model: ${modelId}) is not yet integrated. Using Google Veo fallback: ${VEO_MODEL}`);
   }
   console.log(`[Video Gen] Requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}`);
