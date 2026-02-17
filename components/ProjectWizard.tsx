@@ -39,6 +39,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [useReferenceImage, setUseReferenceImage] = useState(true);
   const [sceneDurationMode, setSceneDurationMode] = useState<'time' | 'scenes'>('time');
   const [targetSceneCount, setTargetSceneCount] = useState(4);
+  const [useVeoAudio, setUseVeoAudio] = useState(true);
   const [scenes, setScenes] = useState<Partial<Scene>[]>([]);
   const [thumbnail, setThumbnail] = useState<string | undefined>(undefined);
   
@@ -136,6 +137,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           use_reference_image: useReferenceImage,
           scene_duration_mode: sceneDurationMode,
           target_scene_count: targetSceneCount,
+          use_veo_audio: useVeoAudio,
           ...params.extraData
         };
         const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
@@ -245,6 +247,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           if (p.use_reference_image !== undefined) setUseReferenceImage(p.use_reference_image);
           if (p.scene_duration_mode) setSceneDurationMode(p.scene_duration_mode);
           if (p.target_scene_count) setTargetSceneCount(p.target_scene_count);
+          if (p.use_veo_audio !== undefined) setUseVeoAudio(p.use_veo_audio);
           if (p.selected_image_model) setSelectedImageModel(p.selected_image_model);
           if (p.selected_video_model) setSelectedVideoModel(p.selected_video_model);
 
@@ -351,6 +354,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         use_reference_image: useReferenceImage,
         scene_duration_mode: sceneDurationMode,
         target_scene_count: targetSceneCount,
+        use_veo_audio: useVeoAudio,
         ...params.extraData
       };
 
@@ -826,7 +830,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     try {
       const inputs: MergeInput[] = scenes.map(s => ({
         videoUrl: s.video_path || '',
-        audioUrl: s.audio_path || undefined,
+        audioUrl: useVeoAudio ? undefined : (s.audio_path || undefined),
       }));
       const blob = await mergeAllScenes(inputs, (stage, pct) => {
         setMergeProgress(stage);
@@ -1029,6 +1033,29 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                   <span className="text-xs font-bold text-gray-500">첫 번째 씬 이미지를 나머지 씬의 참조 이미지로 사용</span>
                 </div>
               </section>
+              <section>
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
+                  <Icons.Mic size={14} /> Audio Source
+                </h3>
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => setUseVeoAudio(true)}
+                    className={`flex-1 p-5 rounded-[2rem] border-4 text-left transition-all ${useVeoAudio ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}
+                  >
+                    <span className="text-xs font-black uppercase block mb-1">Veo 3.1 내장 오디오</span>
+                    <span className="text-[10px] text-gray-400 leading-relaxed block">비디오에 대사·효과음·배경음이 자동 포함됩니다. 별도 오디오 단계를 건너뛸 수 있습니다.</span>
+                    <span className="inline-block mt-2 text-[9px] bg-green-50 text-green-600 px-2 py-0.5 rounded-full font-bold">추천 · 립싱크 지원</span>
+                  </button>
+                  <button
+                    onClick={() => setUseVeoAudio(false)}
+                    className={`flex-1 p-5 rounded-[2rem] border-4 text-left transition-all ${!useVeoAudio ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}
+                  >
+                    <span className="text-xs font-black uppercase block mb-1">별도 TTS 나레이션</span>
+                    <span className="text-[10px] text-gray-400 leading-relaxed block">Gemini TTS로 나레이션을 별도 생성합니다. 음성 스타일을 세밀하게 제어할 수 있습니다.</span>
+                    <span className="inline-block mt-2 text-[9px] bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full font-bold">오디오 단계 필요</span>
+                  </button>
+                </div>
+              </section>
             </div>
             <button onClick={() => { const ns = 2; setStep(ns); setMaxStep(prev => Math.max(prev, ns)); sync(ns); }} className="mt-20 bg-brand-dark text-white py-8 rounded-full font-black text-2xl shadow-2xl hover:brightness-110 transition-all">
               Initialize Vibe Script <Icons.ChevronRight className="inline" size={28} />
@@ -1077,13 +1104,43 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
 
         {(step >= 3 && step <= 5) && (
           <div className="flex-1 flex flex-col h-full">
+            {step === 3 && useVeoAudio && (
+              <div className="mb-6 p-6 bg-gradient-to-r from-green-50 to-emerald-50 rounded-[2rem] border-2 border-green-200">
+                <div className="flex items-start gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center shrink-0 mt-0.5">
+                    <Icons.Check size={20} className="text-green-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="font-black text-sm text-green-800 mb-1">Veo 3.1 내장 오디오 활성화됨</h4>
+                    <p className="text-xs text-green-700 leading-relaxed mb-3">
+                      비디오 생성 시 대사·효과음·배경음이 자동으로 포함됩니다. 별도의 TTS 오디오 생성을 건너뛰고 바로 이미지 단계로 진행할 수 있습니다.
+                    </p>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => { const ns = 4 as any; setStep(ns); setMaxStep(prev => Math.max(prev, ns)); sync(ns); }}
+                        className="px-6 py-2.5 bg-green-600 text-white rounded-full text-xs font-black shadow-md hover:scale-105 transition-all flex items-center gap-2"
+                      >
+                        <Icons.ArrowRight size={14} /> 오디오 건너뛰기 → 이미지 단계로
+                      </button>
+                      <button
+                        onClick={() => setUseVeoAudio(false)}
+                        className="px-6 py-2.5 bg-white text-green-700 border border-green-300 rounded-full text-xs font-bold hover:bg-green-50 transition-all"
+                      >
+                        TTS 나레이션 모드로 전환
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="flex justify-between items-center mb-10">
               <div>
                 <h2 className="text-4xl font-black tracking-tight">
                   {step === 3 ? 'AI Audio Synthesis' : step === 4 ? 'Visual Storyboard' : 'AI Motion Engine'}
                 </h2>
                 <p className="text-gray-400 font-medium italic">
-                  {step === 4 ? '모든 이미지가 생성되어야 다음 단계로 진행할 수 있습니다.' : '오토 제너레이트 버튼을 클릭하여 모든 씬을 한 번에 완성하세요.'}
+                  {step === 3 && useVeoAudio ? 'Veo 3.1 내장 오디오를 사용 중입니다. 아래에서 TTS 나레이션을 추가로 생성하거나 건너뛸 수 있습니다.' :
+                   step === 4 ? '모든 이미지가 생성되어야 다음 단계로 진행할 수 있습니다.' : '오토 제너레이트 버튼을 클릭하여 모든 씬을 한 번에 완성하세요.'}
                 </p>
                 {failedCount(step === 3 ? 'audio' : step === 4 ? 'image' : 'video') > 0 && !isProcessing && (
                   <p className="text-red-500 text-sm font-bold mt-1">
@@ -1239,7 +1296,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                           controls
                           playsInline
                           className={`w-full ${aspectRatio === '9:16' ? 'max-h-[300px] mx-auto' : 'max-h-[240px]'} object-contain`}
-                          ref={(el) => { if (el && s.audio_path) syncAudioWithVideo(el, s.audio_path); }}
+                          ref={(el) => { if (el && s.audio_path && !useVeoAudio) syncAudioWithVideo(el, s.audio_path); }}
                         />
                       </div>
                     )}
@@ -1339,7 +1396,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                             playsInline
                             controls 
                             className="w-full h-full object-contain" 
-                            ref={(el) => { if (el && scenes[activePreviewIdx]?.audio_path) syncAudioWithVideo(el, scenes[activePreviewIdx].audio_path); }}
+                            ref={(el) => { if (el && scenes[activePreviewIdx]?.audio_path && !useVeoAudio) syncAudioWithVideo(el, scenes[activePreviewIdx].audio_path); }}
                             onEnded={() => {
                               if (activePreviewIdx < scenes.length - 1) {
                                 setActivePreviewIdx(activePreviewIdx + 1);
@@ -1480,7 +1537,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                             controls
                             playsInline
                             className="w-full h-full object-cover"
-                            ref={(el) => { if (el && s.audio_path) syncAudioWithVideo(el, s.audio_path); }}
+                            ref={(el) => { if (el && s.audio_path && !useVeoAudio) syncAudioWithVideo(el, s.audio_path); }}
                           />
                         ) : s.image_path ? (
                           <img src={s.image_path} className="w-full h-full object-cover" alt={`Scene ${i + 1}`} />

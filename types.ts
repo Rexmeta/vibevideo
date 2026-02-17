@@ -42,6 +42,7 @@ export interface Project {
   use_reference_image?: boolean;
   scene_duration_mode?: 'time' | 'scenes';
   target_scene_count?: number;
+  use_veo_audio?: boolean;
 }
 
 export interface Script {

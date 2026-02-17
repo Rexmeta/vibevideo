@@ -27,6 +27,8 @@ The application is built with React 18 and TypeScript, using Vite 5 as the build
 ### Feature Specifications
 - **AI Model Selection**: Users can select specific AI models for image and video generation within the `ProjectWizard`.
 - **Character Consistency**: The system supports maintaining character consistency across scenes by injecting character descriptions into prompts and using reference images.
+- **Audio Source Selection**: Users choose between Veo 3.1 built-in audio (default, with lip-sync/SFX/BGM) or separate TTS narration. When Veo audio is selected, Step 3 can be skipped and TTS audio sync/merge overlay is disabled.
+- **Scene Duration Config**: Users set script length by total time (slider, 8-120s) or by scene count (2-10 cuts, 8s each). Both modes sync bidirectionally.
 - **Video & Audio Merging**: Facilitates merging per-scene video and audio into a single MP4 file client-side.
 - **Project Save/Restore**: Robust system to save project progress, including generated media, to Cloud, IndexedDB, and localStorage with conflict detection and priority-based restoration.
 - **Parallel Processing**: Audio, image, and video generation tasks run in parallel (with limits) to improve performance, including per-scene error tracking and retry mechanisms.
