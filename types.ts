@@ -43,6 +43,7 @@ export interface Project {
   scene_duration_mode?: 'time' | 'scenes';
   target_scene_count?: number;
   use_veo_audio?: boolean;
+  video_mode?: VideoMode;
 }
 
 export interface Script {
@@ -52,17 +53,43 @@ export interface Script {
   created_at: string;
 }
 
+export type TransitionType = 'none' | 'fade' | 'fadeblack' | 'fadewhite' | 'wipeleft' | 'wiperight' | 'wipeup' | 'wipedown' | 'slideleft' | 'slideright' | 'slideup' | 'slidedown' | 'circleopen' | 'circleclose' | 'smoothleft' | 'smoothright';
+
+export type MotionPreset = 'none' | 'zoom-in' | 'zoom-out' | 'pan-left' | 'pan-right' | 'pan-up' | 'pan-down';
+
+export type TextPosition = 'top' | 'center' | 'bottom';
+
+export interface TextOverlay {
+  text: string;
+  position: TextPosition;
+  fontSize: number;
+  color: string;
+  backgroundColor: string;
+}
+
+export interface PresentationConfig {
+  transition: TransitionType;
+  transitionDuration: number;
+  motion: MotionPreset;
+  textOverlay?: TextOverlay;
+}
+
+export type VideoMode = 'ai' | 'presentation';
+
 export interface Scene {
   id: string;
   project_id: string;
-  script_segment: string; // The text for this specific scene
-  visual_prompt?: string; // Prompt for image generation
+  script_segment: string;
+  visual_prompt?: string;
   start_time?: number;
   end_time?: number;
-  image_path?: string; // base64 encoded string or URL
-  audio_path?: string; // base64 encoded audio
-  audio_duration?: number; // duration in seconds
-  video_path?: string; // URL to generated video clip
+  image_path?: string;
+  audio_path?: string;
+  audio_duration?: number;
+  video_path?: string;
+  audio_script?: string;
+  scene_number?: number;
+  presentation?: PresentationConfig;
 }
 
 export type ModelType = 'image' | 'video' | 'audio';

@@ -48,7 +48,19 @@ import {
   Search,
   Clock,
   ChevronDown,
-  Key
+  Key,
+  Layers,
+  Move,
+  Palette,
+  Sparkles,
+  ZoomIn,
+  ZoomOut,
+  ArrowLeftRight,
+  ArrowUpDown,
+  Circle,
+  SlidersHorizontal,
+  Presentation,
+  PanelLeft
 } from 'lucide-react';
 
 export const Icons = {
@@ -57,5 +69,6 @@ export const Icons = {
   Mail, Lock, CreditCard, Bell, Settings, LogOut, FileText, Shield, Eye, EyeOff, Github, Cloud,
   RefreshCw, AlertCircle, Download, X, Maximize2,
   Plus, Trash2, Edit3, Save, Globe, Film, RotateCcw, Search, Clock,
-  ChevronDown, Key
+  ChevronDown, Key,
+  Layers, Move, Palette, Sparkles, ZoomIn, ZoomOut, ArrowLeftRight, ArrowUpDown, Circle, SlidersHorizontal, Presentation, PanelLeft
 };

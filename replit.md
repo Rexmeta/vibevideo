@@ -34,6 +34,9 @@ The application is built with React 18 and TypeScript, using Vite 5 as the build
 - **Project Save/Restore**: Robust system to save project progress, including generated media, to Cloud, IndexedDB, and localStorage with conflict detection and priority-based restoration.
 - **Parallel Processing**: Audio, image, and video generation tasks run in parallel (with limits) to improve performance, including per-scene error tracking and retry mechanisms.
 - **Export Features**: Comprehensive export options, including individual scene downloads and full project video downloads.
+- **Dual Video Modes**: Two video creation paths selectable in Step 1:
+  - **AI Video Mode** (`ai`): Uses AI models (Veo) for per-scene video generation with motion.
+  - **Presentation Mode** (`presentation`): Creates video from generated images with configurable transitions (fade, wipe, slide, circle, smooth), motion effects (zoom-in/out, pan directions), and Canvas-based text overlays with Korean font support. In this mode, Step 5 shows per-scene transition/motion/text config instead of AI video generation; the video model selector is hidden; and the export step renders the final video via `renderPresentationVideo` in `videoMergeService.ts`.
 
 ### System Design Choices
 - **Firestore Structure**: A flat `projects` collection is used, with one document per project. Each project document includes summary fields (`scene_count`, `total_duration`) to avoid loading full scenes for list views.

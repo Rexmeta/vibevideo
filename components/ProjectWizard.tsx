@@ -15,9 +15,9 @@ import {
 } from '../services/storageService';
 import { saveMedia, getMedia, saveProjectMeta, getProjectMeta } from '../services/mediaCache';
 import { getModels, getModelsByType } from '../services/modelService';
-import { mergeAllScenes, MergeInput } from '../services/videoMergeService';
+import { mergeAllScenes, MergeInput, renderPresentationVideo, PresentationSceneInput } from '../services/videoMergeService';
 import { Icons } from './Icons';
-import { Scene, Project, ProjectStatus, ViewState, AIModel } from '../types';
+import { Scene, Project, ProjectStatus, ViewState, AIModel, VideoMode, TransitionType, MotionPreset, PresentationConfig, TextOverlay } from '../types';
 
 interface ProjectWizardProps {
   userId: string;
@@ -40,6 +40,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [sceneDurationMode, setSceneDurationMode] = useState<'time' | 'scenes'>('time');
   const [targetSceneCount, setTargetSceneCount] = useState(4);
   const [useVeoAudio, setUseVeoAudio] = useState(true);
+  const [videoMode, setVideoMode] = useState<VideoMode>('ai');
   const [scenes, setScenes] = useState<Partial<Scene>[]>([]);
   const [thumbnail, setThumbnail] = useState<string | undefined>(undefined);
   
@@ -138,6 +139,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           scene_duration_mode: sceneDurationMode,
           target_scene_count: targetSceneCount,
           use_veo_audio: useVeoAudio,
+          video_mode: videoMode,
           ...params.extraData
         };
         const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
@@ -248,6 +250,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           if (p.scene_duration_mode) setSceneDurationMode(p.scene_duration_mode);
           if (p.target_scene_count) setTargetSceneCount(p.target_scene_count);
           if (p.use_veo_audio !== undefined) setUseVeoAudio(p.use_veo_audio);
+          if (p.video_mode) setVideoMode(p.video_mode);
           if (p.selected_image_model) setSelectedImageModel(p.selected_image_model);
           if (p.selected_video_model) setSelectedVideoModel(p.selected_video_model);
 
@@ -355,6 +358,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         scene_duration_mode: sceneDurationMode,
         target_scene_count: targetSceneCount,
         use_veo_audio: useVeoAudio,
+        video_mode: videoMode,
         ...params.extraData
       };
 
@@ -899,6 +903,118 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const isProcessing = processingSet.size > 0;
   const isImagesReady = scenes.length > 0 && scenes.every(s => !!s.image_path);
   const isVideosReady = scenes.length > 0 && scenes.every(s => !!s.video_path);
+  const isPresentationMode = videoMode === 'presentation';
+
+  const TRANSITION_OPTIONS: { value: TransitionType; label: string }[] = [
+    { value: 'none', label: '없음' },
+    { value: 'fade', label: '페이드' },
+    { value: 'fadeblack', label: '페이드 (블랙)' },
+    { value: 'fadewhite', label: '페이드 (화이트)' },
+    { value: 'wipeleft', label: '와이프 ←' },
+    { value: 'wiperight', label: '와이프 →' },
+    { value: 'wipeup', label: '와이프 ↑' },
+    { value: 'wipedown', label: '와이프 ↓' },
+    { value: 'slideleft', label: '슬라이드 ←' },
+    { value: 'slideright', label: '슬라이드 →' },
+    { value: 'slideup', label: '슬라이드 ↑' },
+    { value: 'slidedown', label: '슬라이드 ↓' },
+    { value: 'circleopen', label: '서클 열기' },
+    { value: 'circleclose', label: '서클 닫기' },
+    { value: 'smoothleft', label: '스무스 ←' },
+    { value: 'smoothright', label: '스무스 →' },
+  ];
+
+  const MOTION_OPTIONS: { value: MotionPreset; label: string }[] = [
+    { value: 'none', label: '정지' },
+    { value: 'zoom-in', label: '줌 인' },
+    { value: 'zoom-out', label: '줌 아웃' },
+    { value: 'pan-left', label: '팬 ←' },
+    { value: 'pan-right', label: '팬 →' },
+    { value: 'pan-up', label: '팬 ↑' },
+    { value: 'pan-down', label: '팬 ↓' },
+  ];
+
+  const getDefaultPresentation = (idx: number): PresentationConfig => ({
+    transition: idx === 0 ? 'none' : 'fade',
+    transitionDuration: 1,
+    motion: 'zoom-in',
+  });
+
+  const updateScenePresentation = (idx: number, updates: Partial<PresentationConfig>) => {
+    setScenes(prev => {
+      const next = [...prev];
+      const current = next[idx]?.presentation || getDefaultPresentation(idx);
+      next[idx] = { ...next[idx], presentation: { ...current, ...updates } };
+      return next;
+    });
+  };
+
+  const updateSceneTextOverlay = (idx: number, updates: Partial<TextOverlay> | null) => {
+    setScenes(prev => {
+      const next = [...prev];
+      const pres = next[idx]?.presentation || getDefaultPresentation(idx);
+      if (updates === null) {
+        next[idx] = { ...next[idx], presentation: { ...pres, textOverlay: undefined } };
+      } else {
+        const current = pres.textOverlay || { text: '', position: 'bottom' as const, fontSize: 32, color: '#ffffff', backgroundColor: 'rgba(0,0,0,0.6)' };
+        next[idx] = { ...next[idx], presentation: { ...pres, textOverlay: { ...current, ...updates } } };
+      }
+      return next;
+    });
+  };
+
+  const applyDefaultTransitions = (transitionType: TransitionType = 'fade') => {
+    setScenes(prev => prev.map((s, i) => ({
+      ...s,
+      presentation: {
+        ...(s.presentation || getDefaultPresentation(i)),
+        transition: i === 0 ? 'none' : transitionType,
+      }
+    })));
+  };
+
+  const applyDefaultMotion = (motion: MotionPreset) => {
+    setScenes(prev => prev.map((s, i) => ({
+      ...s,
+      presentation: {
+        ...(s.presentation || getDefaultPresentation(i)),
+        motion,
+      }
+    })));
+  };
+
+  const handleRenderPresentation = async () => {
+    setMerging(true);
+    setMergeProgress('프레젠테이션 비디오 렌더링 준비 중...');
+    setMergePercent(0);
+    setMergedVideoUrl(null);
+    try {
+      const inputs: PresentationSceneInput[] = scenes.map((s, i) => {
+        const pres = s.presentation || getDefaultPresentation(i);
+        return {
+          imageUrl: s.image_path || '',
+          audioUrl: s.audio_path || undefined,
+          duration: s.audio_duration || (duration / scenes.length) || 6,
+          transition: pres.transition,
+          transitionDuration: pres.transitionDuration,
+          motion: pres.motion,
+          textOverlay: pres.textOverlay,
+        };
+      });
+      const blob = await renderPresentationVideo(inputs, aspectRatio, (stage, pct) => {
+        setMergeProgress(stage);
+        setMergePercent(pct);
+      });
+      const url = URL.createObjectURL(blob);
+      trackBlobUrl(url);
+      setMergedVideoUrl(url);
+    } catch (err: any) {
+      console.error('[Presentation Render] Failed:', err);
+      setMergeProgress(`오류: ${err?.message || '렌더링 실패'}`);
+    } finally {
+      setMerging(false);
+    }
+  };
   const failedCount = (type: string) => Array.from(failedScenes.keys()).filter(k => k.startsWith(type)).length;
 
   return (
@@ -918,7 +1034,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
 
       {/* Stepper */}
       <div className="flex justify-between mb-16 relative max-w-5xl mx-auto">
-        {['Vibe', 'Script', 'Audio', 'Storyboard', 'Motion', 'Preview', 'Export'].map((l, i) => (
+        {['Vibe', 'Script', 'Audio', 'Storyboard', isPresentationMode ? 'Transitions' : 'Motion', 'Preview', 'Export'].map((l, i) => (
           <div key={l} onClick={() => i+1 <= maxStep && !syncing && !loading && !isProcessing && setStep((i+1) as any)} className={`flex flex-col items-center z-10 transition-all ${i+1 <= maxStep ? 'cursor-pointer' : 'cursor-not-allowed'} ${i+1 <= maxStep ? 'opacity-100' : 'opacity-20'}`}>
             <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black border-4 transition-all ${step === i+1 ? 'bg-brand-cyan border-white shadow-2xl scale-110' : i+1 <= maxStep ? 'bg-white border-brand-cyan/30' : 'bg-white border-gray-100'}`}>
               {i+1 < maxStep ? <Icons.Check size={20} /> : i+1}
@@ -1059,6 +1175,32 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                 </div>
               </section>
             </div>
+            <div className="space-y-16">
+              <section>
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
+                  <Icons.Film size={14} /> Video Creation Mode
+                </h3>
+                <p className="text-xs text-gray-400 mb-4 italic">비디오 제작 방식을 선택하세요.</p>
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => setVideoMode('ai')}
+                    className={`flex-1 p-5 rounded-[2rem] border-4 text-left transition-all ${videoMode === 'ai' ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}
+                  >
+                    <span className="text-xs font-black uppercase block mb-1">AI Video (Veo)</span>
+                    <span className="text-[10px] text-gray-400 leading-relaxed block">AI가 각 씬을 동영상으로 직접 생성합니다. 가장 자연스러운 움직임과 애니메이션을 제공합니다.</span>
+                    <span className="inline-block mt-2 text-[9px] bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full font-bold">고품질 AI 영상</span>
+                  </button>
+                  <button
+                    onClick={() => setVideoMode('presentation')}
+                    className={`flex-1 p-5 rounded-[2rem] border-4 text-left transition-all ${videoMode === 'presentation' ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}
+                  >
+                    <span className="text-xs font-black uppercase block mb-1">Presentation Mode</span>
+                    <span className="text-[10px] text-gray-400 leading-relaxed block">이미지에 전환 효과(페이드, 슬라이드, 와이프 등), 모션(줌/팬), 텍스트 오버레이를 적용하여 프레젠테이션 스타일 영상을 만듭니다.</span>
+                    <span className="inline-block mt-2 text-[9px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-bold">전환 효과 · 텍스트 · 빠른 생성</span>
+                  </button>
+                </div>
+              </section>
+            </div>
             <button onClick={() => { const ns = 2; setStep(ns); setMaxStep(prev => Math.max(prev, ns)); sync(ns); }} className="mt-20 bg-brand-dark text-white py-8 rounded-full font-black text-2xl shadow-2xl hover:brightness-110 transition-all">
               Initialize Vibe Script <Icons.ChevronRight className="inline" size={28} />
             </button>
@@ -1138,11 +1280,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             <div className="flex justify-between items-center mb-10">
               <div>
                 <h2 className="text-4xl font-black tracking-tight">
-                  {step === 3 ? 'AI Audio Synthesis' : step === 4 ? 'Visual Storyboard' : 'AI Motion Engine'}
+                  {step === 3 ? 'AI Audio Synthesis' : step === 4 ? 'Visual Storyboard' : (isPresentationMode ? 'Presentation Config' : 'AI Motion Engine')}
                 </h2>
                 <p className="text-gray-400 font-medium italic">
                   {step === 3 && useVeoAudio ? 'Veo 3.1 내장 오디오를 사용 중입니다. 아래에서 TTS 나레이션을 추가로 생성하거나 건너뛸 수 있습니다.' :
-                   step === 4 ? '모든 이미지가 생성되어야 다음 단계로 진행할 수 있습니다.' : '오토 제너레이트 버튼을 클릭하여 모든 씬을 한 번에 완성하세요.'}
+                   step === 4 ? '모든 이미지가 생성되어야 다음 단계로 진행할 수 있습니다.' :
+                   isPresentationMode ? '각 씬의 전환 효과, 모션, 텍스트 오버레이를 설정하세요.' :
+                   '오토 제너레이트 버튼을 클릭하여 모든 씬을 한 번에 완성하세요.'}
                 </p>
                 {failedCount(step === 3 ? 'audio' : step === 4 ? 'image' : 'video') > 0 && !isProcessing && (
                   <p className="text-red-500 text-sm font-bold mt-1">
@@ -1150,21 +1294,46 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                   </p>
                 )}
               </div>
-              <button 
-                disabled={isProcessing}
-                onClick={step === 3 ? handleBatchAudio : step === 4 ? handleBatchImages : handleBatchVideos} 
-                className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all ${isProcessing ? 'bg-gray-100 text-gray-300' : 'bg-brand-cyan text-black hover:scale-105 active:scale-95'}`}
-              >
-                {isProcessing ? (
-                  <span className="flex items-center gap-3">
-                    <Icons.Loader2 className="animate-spin" size={20} />
-                    {loadingMessage || `처리 중... (${processingSet.size}개 동시)`}
-                  </span>
-                ) : `Auto-Generate All`}
-              </button>
+              {step === 5 && isPresentationMode ? (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <select
+                    onChange={(e) => applyDefaultTransitions(e.target.value as TransitionType)}
+                    className="px-5 py-3 rounded-2xl border-2 border-gray-200 text-sm font-bold bg-white"
+                    defaultValue=""
+                  >
+                    <option value="" disabled>전체 전환 효과 일괄 적용</option>
+                    {TRANSITION_OPTIONS.map(o => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                  <select
+                    onChange={(e) => applyDefaultMotion(e.target.value as MotionPreset)}
+                    className="px-5 py-3 rounded-2xl border-2 border-gray-200 text-sm font-bold bg-white"
+                    defaultValue=""
+                  >
+                    <option value="" disabled>전체 모션 일괄 적용</option>
+                    {MOTION_OPTIONS.map(o => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <button 
+                  disabled={isProcessing}
+                  onClick={step === 3 ? handleBatchAudio : step === 4 ? handleBatchImages : handleBatchVideos} 
+                  className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all ${isProcessing ? 'bg-gray-100 text-gray-300' : 'bg-brand-cyan text-black hover:scale-105 active:scale-95'}`}
+                >
+                  {isProcessing ? (
+                    <span className="flex items-center gap-3">
+                      <Icons.Loader2 className="animate-spin" size={20} />
+                      {loadingMessage || `처리 중... (${processingSet.size}개 동시)`}
+                    </span>
+                  ) : `Auto-Generate All`}
+                </button>
+              )}
             </div>
 
-            {(step === 4 || step === 5) && (
+            {(step === 4 || (step === 5 && !isPresentationMode)) && (
               <div className="mb-6">
                 <div className="flex items-center gap-3 mb-3">
                   <span className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">
@@ -1242,6 +1411,115 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                     <p className="text-brand-dark text-sm font-medium leading-relaxed italic mb-3">"{s.script_segment}"</p>
                     {isFailed && <p className="text-red-500 text-xs mb-3 font-medium">{failMsg}</p>}
                     
+                    {step === 5 && isPresentationMode ? (() => {
+                      const pres = s.presentation || getDefaultPresentation(i);
+                      return (
+                        <div className="space-y-4 w-full">
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div>
+                              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1 block">
+                                <Icons.Layers size={10} className="inline mr-1" />전환 효과
+                              </label>
+                              <select
+                                value={pres.transition}
+                                onChange={(e) => updateScenePresentation(i, { transition: e.target.value as TransitionType })}
+                                className="w-full px-3 py-2 rounded-xl border-2 border-gray-200 text-xs font-bold bg-white"
+                              >
+                                {i === 0 ? (
+                                  <option value="none">없음 (첫 번째 씬)</option>
+                                ) : (
+                                  TRANSITION_OPTIONS.map(o => (
+                                    <option key={o.value} value={o.value}>{o.label}</option>
+                                  ))
+                                )}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1 block">
+                                <Icons.Move size={10} className="inline mr-1" />모션
+                              </label>
+                              <select
+                                value={pres.motion}
+                                onChange={(e) => updateScenePresentation(i, { motion: e.target.value as MotionPreset })}
+                                className="w-full px-3 py-2 rounded-xl border-2 border-gray-200 text-xs font-bold bg-white"
+                              >
+                                {MOTION_OPTIONS.map(o => (
+                                  <option key={o.value} value={o.value}>{o.label}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1 block">
+                                <Icons.Clock size={10} className="inline mr-1" />전환 시간
+                              </label>
+                              <select
+                                value={pres.transitionDuration}
+                                onChange={(e) => updateScenePresentation(i, { transitionDuration: Number(e.target.value) })}
+                                className="w-full px-3 py-2 rounded-xl border-2 border-gray-200 text-xs font-bold bg-white"
+                                disabled={i === 0}
+                              >
+                                {[0.5, 1, 1.5, 2, 2.5, 3].map(v => (
+                                  <option key={v} value={v}>{v}초</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+                                <Icons.Type size={10} className="inline mr-1" />텍스트 오버레이
+                              </label>
+                              {!pres.textOverlay ? (
+                                <button onClick={() => updateSceneTextOverlay(i, { text: s.script_segment || '' })} className="text-[10px] font-bold text-brand-cyan hover:underline">
+                                  + 추가
+                                </button>
+                              ) : (
+                                <button onClick={() => updateSceneTextOverlay(i, null)} className="text-[10px] font-bold text-red-400 hover:underline">
+                                  삭제
+                                </button>
+                              )}
+                            </div>
+                            {pres.textOverlay && (
+                              <div className="space-y-2 p-3 bg-white rounded-xl border border-gray-100">
+                                <textarea
+                                  value={pres.textOverlay.text}
+                                  onChange={(e) => updateSceneTextOverlay(i, { text: e.target.value })}
+                                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-xs font-medium resize-none h-16"
+                                  placeholder="표시할 텍스트..."
+                                />
+                                <div className="flex gap-2 flex-wrap">
+                                  {(['top', 'center', 'bottom'] as const).map(pos => (
+                                    <button
+                                      key={pos}
+                                      onClick={() => updateSceneTextOverlay(i, { position: pos })}
+                                      className={`px-3 py-1 rounded-lg text-[10px] font-bold border transition-all ${pres.textOverlay?.position === pos ? 'border-brand-cyan bg-brand-cyan/10 text-brand-dark' : 'border-gray-200 text-gray-400 hover:border-gray-300'}`}
+                                    >
+                                      {pos === 'top' ? '상단' : pos === 'center' ? '중앙' : '하단'}
+                                    </button>
+                                  ))}
+                                  <select
+                                    value={pres.textOverlay.fontSize}
+                                    onChange={(e) => updateSceneTextOverlay(i, { fontSize: Number(e.target.value) })}
+                                    className="px-2 py-1 rounded-lg border border-gray-200 text-[10px] font-bold bg-white"
+                                  >
+                                    {[20, 24, 28, 32, 40, 48, 56].map(sz => (
+                                      <option key={sz} value={sz}>{sz}px</option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    type="color"
+                                    value={pres.textOverlay.color}
+                                    onChange={(e) => updateSceneTextOverlay(i, { color: e.target.value })}
+                                    className="w-7 h-7 rounded-lg border border-gray-200 cursor-pointer"
+                                    title="텍스트 색상"
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })() : (
                     <div className="flex flex-wrap gap-3">
                       {!isProcessing && (
                         <>
@@ -1275,12 +1553,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                               <Icons.Wand2 size={12} /> Regenerate Image
                             </button>
                           )}
-                          {step === 5 && (isFailed || !s.video_path) && (
+                          {step === 5 && !isPresentationMode && (isFailed || !s.video_path) && (
                             <button onClick={() => handleSingleVideo(i)} className="flex items-center gap-2 px-6 py-2.5 bg-red-500 text-white rounded-full text-[11px] font-black uppercase hover:scale-105 transition-all shadow-md">
                               <Icons.RefreshCw size={12} /> {isFailed ? '재시도' : '비디오 생성'}
                             </button>
                           )}
-                          {step === 5 && s.video_path && !isFailed && (
+                          {step === 5 && !isPresentationMode && s.video_path && !isFailed && (
                             <button onClick={() => handleSingleVideo(i)} className="flex items-center gap-2 px-6 py-2.5 bg-white border-2 border-brand-dark text-black rounded-full text-[11px] font-black uppercase hover:bg-brand-dark hover:text-white transition-all shadow-sm">
                                <Icons.Video size={12} /> Re-Motion Scene
                             </button>
@@ -1288,7 +1566,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                         </>
                       )}
                     </div>
-                    {step === 5 && selectedVideoIdx === i && s.video_path && (
+                    )}
+                    {step === 5 && !isPresentationMode && selectedVideoIdx === i && s.video_path && (
                       <div className="mt-4 rounded-2xl overflow-hidden bg-black shadow-lg border-2 border-purple-400/30">
                         <video
                           key={`inline-preview-${i}-${s.video_path}`}
@@ -1352,12 +1631,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             <div className="flex gap-4 mt-10">
                <button disabled={isProcessing} onClick={() => setStep((step - 1) as any)} className="px-10 py-6 rounded-full font-black text-gray-400 hover:text-black disabled:opacity-0 transition-all">Back</button>
                <button 
-                  disabled={isProcessing || (step === 4 && !isImagesReady) || (step === 5 && !isVideosReady)} 
+                  disabled={isProcessing || (step === 4 && !isImagesReady) || (step === 5 && !isPresentationMode && !isVideosReady)} 
                   onClick={() => { const ns = (step + 1) as any; setStep(ns); setMaxStep(prev => Math.max(prev, ns)); sync(ns); }} 
-                  className={`flex-1 py-6 rounded-full font-black text-2xl shadow-2xl transition-all ${isProcessing || (step === 4 && !isImagesReady) || (step === 5 && !isVideosReady) ? 'bg-gray-100 text-gray-300 cursor-not-allowed scale-95' : 'bg-brand-dark text-white hover:scale-[1.02] shadow-brand-cyan/20'}`}
+                  className={`flex-1 py-6 rounded-full font-black text-2xl shadow-2xl transition-all ${isProcessing || (step === 4 && !isImagesReady) || (step === 5 && !isPresentationMode && !isVideosReady) ? 'bg-gray-100 text-gray-300 cursor-not-allowed scale-95' : 'bg-brand-dark text-white hover:scale-[1.02] shadow-brand-cyan/20'}`}
                >
                 {step === 4 && !isImagesReady ? '이미지를 모두 생성하세요' : 
-                 step === 5 && !isVideosReady ? '비디오를 모두 생성하세요' : 
+                 step === 5 && !isPresentationMode && !isVideosReady ? '비디오를 모두 생성하세요' : 
                  'Proceed to Final Assembly'}
               </button>
             </div>
@@ -1390,27 +1669,73 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                  <div className="lg:col-span-2 bg-brand-dark rounded-[3.5rem] overflow-hidden shadow-[0_40px_100px_rgba(0,0,0,0.5)] relative border-[12px] border-white group">
                     {scenes.length > 0 && scenes[activePreviewIdx] ? (
                        <div className="w-full h-full bg-black relative">
-                         <video 
-                            key={`preview-${activePreviewIdx}-${scenes[activePreviewIdx]?.video_path || 'loading'}`} 
-                            src={scenes[activePreviewIdx]?.video_path} 
-                            poster={scenes[activePreviewIdx]?.image_path}
-                            autoPlay 
-                            playsInline
-                            controls 
-                            className="w-full h-full object-contain" 
-                            ref={(el) => { if (el && scenes[activePreviewIdx]?.audio_path && !useVeoAudio) syncAudioWithVideo(el, scenes[activePreviewIdx].audio_path); }}
-                            onEnded={() => {
-                              if (activePreviewIdx < scenes.length - 1) {
-                                setActivePreviewIdx(activePreviewIdx + 1);
-                              }
-                            }}
-                          />
-                          {!scenes[activePreviewIdx]?.video_path && (
-                             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-none">
-                                <Icons.Loader2 className="animate-spin text-brand-cyan mb-4" size={48} />
-                                <span className="text-white font-black uppercase tracking-widest text-xs">Video Loading...</span>
+                         {isPresentationMode ? (
+                           <>
+                             {scenes[activePreviewIdx]?.image_path ? (
+                               <img
+                                 key={`pres-preview-${activePreviewIdx}`}
+                                 src={scenes[activePreviewIdx]?.image_path}
+                                 className="w-full h-full object-contain animate-in fade-in duration-700"
+                                 alt={`Scene ${activePreviewIdx + 1}`}
+                               />
+                             ) : (
+                               <div className="w-full h-full flex items-center justify-center">
+                                 <Icons.ImageIcon className="text-white/20" size={60} />
+                               </div>
+                             )}
+                             <div className="absolute bottom-4 left-4 right-4">
+                               {scenes[activePreviewIdx]?.presentation?.textOverlay?.text && (
+                                 <div className="bg-black/60 rounded-xl px-4 py-2 text-white text-sm font-medium text-center">
+                                   {scenes[activePreviewIdx].presentation!.textOverlay!.text}
+                                 </div>
+                               )}
+                               <div className="flex justify-center gap-2 mt-2">
+                                 {(() => {
+                                   const pres = scenes[activePreviewIdx]?.presentation;
+                                   if (!pres) return null;
+                                   return (
+                                     <>
+                                       {pres.transition !== 'none' && (
+                                         <span className="bg-blue-500/80 text-white text-[9px] px-2 py-0.5 rounded-full font-bold">
+                                           {TRANSITION_OPTIONS.find(t => t.value === pres.transition)?.label}
+                                         </span>
+                                       )}
+                                       {pres.motion !== 'none' && (
+                                         <span className="bg-purple-500/80 text-white text-[9px] px-2 py-0.5 rounded-full font-bold">
+                                           {MOTION_OPTIONS.find(m => m.value === pres.motion)?.label}
+                                         </span>
+                                       )}
+                                     </>
+                                   );
+                                 })()}
+                               </div>
                              </div>
-                          )}
+                           </>
+                         ) : (
+                           <>
+                             <video 
+                                key={`preview-${activePreviewIdx}-${scenes[activePreviewIdx]?.video_path || 'loading'}`} 
+                                src={scenes[activePreviewIdx]?.video_path} 
+                                poster={scenes[activePreviewIdx]?.image_path}
+                                autoPlay 
+                                playsInline
+                                controls 
+                                className="w-full h-full object-contain" 
+                                ref={(el) => { if (el && scenes[activePreviewIdx]?.audio_path && !useVeoAudio) syncAudioWithVideo(el, scenes[activePreviewIdx].audio_path); }}
+                                onEnded={() => {
+                                  if (activePreviewIdx < scenes.length - 1) {
+                                    setActivePreviewIdx(activePreviewIdx + 1);
+                                  }
+                                }}
+                              />
+                              {!scenes[activePreviewIdx]?.video_path && (
+                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-none">
+                                    <Icons.Loader2 className="animate-spin text-brand-cyan mb-4" size={48} />
+                                    <span className="text-white font-black uppercase tracking-widest text-xs">Video Loading...</span>
+                                 </div>
+                              )}
+                           </>
+                         )}
                        </div>
                     ) : (
                        <div className="w-full h-full flex flex-col items-center justify-center text-white/10 gap-6">
@@ -1481,17 +1806,31 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
              </div>
 
              <div className="mb-8 flex flex-col items-center gap-4">
-                <button
-                  onClick={handleMergeExport}
-                  disabled={merging || scenes.every(s => !s.video_path)}
-                  className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${merging ? 'bg-gray-100 text-gray-400' : 'bg-gradient-to-r from-purple-600 to-brand-cyan text-white hover:scale-105 active:scale-95'}`}
-                >
-                  {merging ? (
-                    <><Icons.Loader2 className="animate-spin" size={20} /> {mergeProgress}</>
-                  ) : (
-                    <><Icons.Film size={20} /> 하나의 비디오로 합치기</>
-                  )}
-                </button>
+                {isPresentationMode ? (
+                  <button
+                    onClick={handleRenderPresentation}
+                    disabled={merging || !isImagesReady}
+                    className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${merging ? 'bg-gray-100 text-gray-400' : 'bg-gradient-to-r from-blue-600 to-brand-cyan text-white hover:scale-105 active:scale-95'}`}
+                  >
+                    {merging ? (
+                      <><Icons.Loader2 className="animate-spin" size={20} /> {mergeProgress}</>
+                    ) : (
+                      <><Icons.Presentation size={20} /> 프레젠테이션 비디오 렌더링</>
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleMergeExport}
+                    disabled={merging || scenes.every(s => !s.video_path)}
+                    className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${merging ? 'bg-gray-100 text-gray-400' : 'bg-gradient-to-r from-purple-600 to-brand-cyan text-white hover:scale-105 active:scale-95'}`}
+                  >
+                    {merging ? (
+                      <><Icons.Loader2 className="animate-spin" size={20} /> {mergeProgress}</>
+                    ) : (
+                      <><Icons.Film size={20} /> 하나의 비디오로 합치기</>
+                    )}
+                  </button>
+                )}
                 {merging && (
                   <div className="w-64 h-2 bg-gray-200 rounded-full overflow-hidden">
                     <div className="h-full bg-gradient-to-r from-purple-600 to-brand-cyan rounded-full transition-all duration-500" style={{ width: `${mergePercent}%` }}></div>
