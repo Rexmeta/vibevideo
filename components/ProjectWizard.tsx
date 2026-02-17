@@ -698,8 +698,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             return;
           }
           const vidModel = allModels.find(m => m.id === selectedVideoModel);
-          const seedImage = (useReferenceImage && idx > 0 && sceneSnapshot[0]?.image_path) ? sceneSnapshot[0].image_path : s.image_path;
-          const videoUrl = await generateSceneVideo(s.visual_prompt!, seedImage, aspectRatio, vidModel?.modelId, vidModel?.provider, s.script_segment || s.audio_script, characterProfile || undefined);
+          const seedImage = s.image_path;
+          const prevContext = idx > 0 ? sceneSnapshot[idx - 1]?.visual_prompt : undefined;
+          const videoUrl = await generateSceneVideo(s.visual_prompt!, seedImage, aspectRatio, vidModel?.modelId, vidModel?.provider, s.script_segment || s.audio_script, characterProfile || undefined, prevContext, idx);
           if (videoUrl) {
             const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
             updateSceneAt(idx, { video_path: blobUrl });
@@ -760,8 +761,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     const fKey = `video-${idx}`;
     try {
       const vidModel = allModels.find(m => m.id === selectedVideoModel);
-      const seedImage = (useReferenceImage && idx > 0 && scenes[0]?.image_path) ? scenes[0].image_path : currentScene.image_path;
-      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, seedImage, aspectRatio, vidModel?.modelId, vidModel?.provider, currentScene.script_segment || currentScene.audio_script, characterProfile || undefined);
+      const seedImage = currentScene.image_path;
+      const prevContext = idx > 0 ? scenes[idx - 1]?.visual_prompt : undefined;
+      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, seedImage, aspectRatio, vidModel?.modelId, vidModel?.provider, currentScene.script_segment || currentScene.audio_script, characterProfile || undefined, prevContext, idx);
       if (videoUrl) {
         const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
         updateSceneAt(idx, { video_path: blobUrl });

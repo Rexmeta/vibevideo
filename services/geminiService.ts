@@ -381,7 +381,7 @@ const VEO_MODEL = 'veo-3.1-fast-generate-preview';
 
 const GOOGLE_VIDEO_PROVIDERS = ['Google'];
 
-export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, audioScript?: string, characterProfile?: string): Promise<string | null> => {
+export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, audioScript?: string, characterProfile?: string, previousSceneContext?: string, sceneIndex?: number): Promise<string | null> => {
   const validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('API_KEY가 설정되지 않았습니다.');
@@ -423,8 +423,12 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
 
   const charPart = characterProfile ? `\n\n[Main character - must match exactly]: ${characterProfile}` : '';
   const audioPart = audioScript ? `\n\n[Narration/dialogue for this scene]: ${audioScript}` : '';
-  const fullPrompt = `${prompt}${charPart}${audioPart}`;
-  console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}`);
+  let continuityPart = '';
+  if (previousSceneContext && sceneIndex !== undefined && sceneIndex > 0) {
+    continuityPart = `\n\n[Scene continuity - Scene ${sceneIndex + 1}]: This scene follows directly from the previous scene. Previous scene: "${previousSceneContext}". Start this scene as a natural continuation — maintain visual flow, environment consistency, and smooth transition from the previous action. Do NOT reset or repeat the opening of the previous scene.`;
+  }
+  const fullPrompt = `${prompt}${continuityPart}${charPart}${audioPart}`;
+  console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}, continuity: ${!!continuityPart}`);
 
   return withRetry(async () => {
     if (imageData) {
