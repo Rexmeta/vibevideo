@@ -580,6 +580,13 @@ export interface GenerateVideoResult {
   videoUrl: string;
   seedSource: SeedSource;
   stats: GenerationStats & { videosGenerated: number };
+  // Named cast that was surfaced to the video model on this call. Empty
+  // array means no named cast was sent.
+  videoCast: string[];
+  // True if the cast names were attached as multi-image references on the
+  // API call. False = text-only naming in the prompt. Currently always
+  // false because the Veo wrapper only accepts a single seed image.
+  videoCastAttached: boolean;
 }
 
 async function callImageModel(
@@ -1047,5 +1054,13 @@ export const generateSceneVideo = async (
     }
     return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt', actualModel);
   }, 3, '비디오 생성');
-  return { videoUrl, seedSource: actualSeedSource, stats: { imagesGenerated: 0, criticCalls: 0, refineCalls: 0, videosGenerated: 1 } };
+  return {
+    videoUrl,
+    seedSource: actualSeedSource,
+    stats: { imagesGenerated: 0, criticCalls: 0, refineCalls: 0, videosGenerated: 1 },
+    videoCast: namedCharactersForPrompt.map(c => c.name),
+    // See top-of-file note: every currently integrated video model only accepts
+    // a single seed image, so multi-image cast attachment is not wired yet.
+    videoCastAttached: false,
+  };
 }

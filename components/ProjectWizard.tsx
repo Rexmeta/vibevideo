@@ -944,7 +944,12 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           if (videoResult?.videoUrl) {
             addStats(videoResult.stats);
             const { blobUrl, blob } = await fetchVideoAsBlob(videoResult.videoUrl, idx);
-            updateSceneAt(idx, { video_path: blobUrl, seedSource: videoResult.seedSource });
+            updateSceneAt(idx, {
+              video_path: blobUrl,
+              seedSource: videoResult.seedSource,
+              videoCast: videoResult.videoCast,
+              videoCastAttached: videoResult.videoCastAttached,
+            });
             try {
               const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
               updateSceneAt(idx, { video_path: url });
@@ -1019,8 +1024,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       if (videoResult?.videoUrl) {
         addStats(videoResult.stats);
         const { blobUrl, blob } = await fetchVideoAsBlob(videoResult.videoUrl, idx);
-        updateSceneAt(idx, { video_path: blobUrl, seedSource: videoResult.seedSource });
-        console.log(`[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.modelId || 'default'}, seed: ${videoResult.seedSource})`);
+        updateSceneAt(idx, {
+          video_path: blobUrl,
+          seedSource: videoResult.seedSource,
+          videoCast: videoResult.videoCast,
+          videoCastAttached: videoResult.videoCastAttached,
+        });
+        console.log(`[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.modelId || 'default'}, seed: ${videoResult.seedSource}, cast: [${videoResult.videoCast.join(', ')}], attached: ${videoResult.videoCastAttached})`);
         try {
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
           updateSceneAt(idx, { video_path: url });
@@ -2287,6 +2297,57 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                       })()}
                     </div>
                     <p className="text-brand-dark text-sm font-medium leading-relaxed italic mb-3">"{s.script_segment}"</p>
+                    {step === 5 && !isPresentationMode && s.video_path && Array.isArray(s.videoCast) && (() => {
+                      const cast = s.videoCast!.filter((n): n is string => typeof n === 'string' && n.trim().length > 0);
+                      const attached = !!s.videoCastAttached;
+                      const containerCls = attached
+                        ? 'bg-emerald-50 border border-emerald-200'
+                        : 'bg-amber-50 border border-amber-200';
+                      const labelCls = attached ? 'text-emerald-700' : 'text-amber-700';
+                      const modeBadgeCls = attached
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-amber-500 text-white';
+                      const modeLabel = attached ? '참조 첨부' : '텍스트만';
+                      const modeTitle = attached
+                        ? '비디오 모델에 명명된 캐릭터의 참조 이미지가 첨부되어 전송됨'
+                        : '비디오 모델은 단일 시드 이미지만 받기 때문에, 명명된 캐릭터는 프롬프트 텍스트로만 전달됨';
+                      if (cast.length === 0) {
+                        return (
+                          <div className={`flex items-center gap-2 mb-3 flex-wrap px-3 py-1.5 rounded-2xl ${containerCls}`}>
+                            <span className={`text-[10px] font-black uppercase tracking-widest ${labelCls}`}>Video Cast</span>
+                            <span className="text-[10px] text-gray-400 italic">명명된 캐릭터 없음 — 프롬프트만 전송됨</span>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className={`flex items-center gap-2 mb-3 flex-wrap px-3 py-1.5 rounded-2xl ${containerCls}`} title={modeTitle}>
+                          <span className={`text-[10px] font-black uppercase tracking-widest ${labelCls}`}>Video Cast</span>
+                          {cast.map(name => {
+                            const ref = characterReferences.find(c => c.name.toLowerCase() === name.toLowerCase());
+                            return (
+                              <span
+                                key={`vidcast-${name}`}
+                                className={`flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full bg-white border ${attached ? 'border-emerald-300' : 'border-amber-300'}`}
+                                title={ref?.description || name}
+                              >
+                                {ref?.imageUrl ? (
+                                  <img src={ref.imageUrl} alt="" className="w-5 h-5 rounded-full object-cover" />
+                                ) : (
+                                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black ${attached ? 'bg-emerald-200 text-emerald-800' : 'bg-amber-200 text-amber-800'}`}>{name.charAt(0).toUpperCase()}</span>
+                                )}
+                                <span className="text-[11px] font-bold text-brand-dark">{name}</span>
+                              </span>
+                            );
+                          })}
+                          <span
+                            className={`ml-auto px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider ${modeBadgeCls}`}
+                            title={modeTitle}
+                          >
+                            {modeLabel}
+                          </span>
+                        </div>
+                      );
+                    })()}
                     {(step === 3 || step === 4 || step === 5) && characterReferences.length > 0 && (() => {
                       const tagged = (s.characters || []).filter((t): t is string => typeof t === 'string' && t.trim().length > 0);
                       const taggedLower = new Set(tagged.map(t => t.trim().toLowerCase()));

@@ -179,6 +179,15 @@ export interface Scene {
   // 'reference' forces the character reference even if a scene image
   // exists. 'text-only' suppresses any seed image.
   videoSeedPreference?: SeedSource;
+  // Names of cast that were actually passed into the video model on the last
+  // generation. Mirrors `characters` in normal cases but persists what the
+  // model was actually told (e.g. the AI may strip a name from `characters`
+  // later via re-segmentation). Empty array means "no named cast passed".
+  videoCast?: string[];
+  // True if the named cast was attached to the video model as actual reference
+  // images (multi-image-capable model). False means cast was surfaced only as
+  // text in the prompt — current Veo path is always text-only.
+  videoCastAttached?: boolean;
 }
 
 export type ModelType = 'image' | 'video' | 'audio';
