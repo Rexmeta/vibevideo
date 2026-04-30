@@ -17,6 +17,17 @@ export interface User {
   tier: 'Free' | 'Pro' | 'Enterprise';
 }
 
+export type GenreId = 'ad' | 'explainer' | 'story' | 'vlog' | 'social-hook';
+export type PlatformId = 'youtube-shorts' | 'tiktok' | 'reels' | 'youtube-16-9' | 'instagram-1-1';
+
+export interface StyleSheet {
+  palette: string[];
+  lighting: string;
+  mood: string;
+  tone?: string;
+  refImageUrl?: string;
+}
+
 export interface Project {
   id: string;
   user_id: string;
@@ -44,6 +55,12 @@ export interface Project {
   target_scene_count?: number;
   use_veo_audio?: boolean;
   video_mode?: VideoMode;
+  // Director Pipeline (Task #6)
+  genre?: GenreId;
+  platform?: PlatformId;
+  style_sheet?: StyleSheet;
+  vision_critic_enabled?: boolean;
+  negative_prompt?: string;
 }
 
 export interface Script {
@@ -76,6 +93,20 @@ export interface PresentationConfig {
 
 export type VideoMode = 'ai' | 'presentation';
 
+// Director Pipeline shotlist roles
+export type ShotType = 'wide' | 'medium' | 'close-up' | 'extreme-close-up' | 'over-shoulder' | 'pov' | 'aerial' | 'establishing';
+export type CameraMovement = 'static' | 'pan-left' | 'pan-right' | 'tilt-up' | 'tilt-down' | 'dolly-in' | 'dolly-out' | 'tracking' | 'handheld' | 'crane';
+export type BeatRole = 'hook' | 'setup' | 'development' | 'payoff' | 'cta';
+
+export interface QualityScore {
+  characterConsistency: number;
+  compositionQuality: number;
+  intentAlignment: number;
+  overall: number;
+  issues: string[];
+  refined?: boolean;
+}
+
 export interface Scene {
   id: string;
   project_id: string;
@@ -90,6 +121,16 @@ export interface Scene {
   audio_script?: string;
   scene_number?: number;
   presentation?: PresentationConfig;
+  // Director Pipeline shot list fields
+  shotType?: ShotType;
+  cameraMovement?: CameraMovement;
+  lighting?: string;
+  durationSec?: number;
+  beatRole?: BeatRole;
+  transitionTo?: TransitionType;
+  negativePrompt?: string;
+  qualityScore?: QualityScore;
+  qualityNotes?: string;
 }
 
 export type ModelType = 'image' | 'video' | 'audio';

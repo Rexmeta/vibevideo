@@ -1,7 +1,11 @@
 
 import { GoogleGenAI, Modality, Type } from "@google/genai";
-import { Scene } from "../types";
+import { Scene, StyleSheet, GenreId } from "../types";
 import { getEffectiveApiKey, getGoogleApiKey } from "./apiKeyService";
+import { getGenre, getPlatform, type PlatformPreset } from "./presets";
+import { buildPrompt as buildModelPrompt } from "./promptAdapter";
+import { critiqueImage, buildRefineHint } from "./visionCritic";
+import type { QualityScore, PlatformId } from "../types";
 
 const MISSING_API_KEY_MESSAGE = 'API 키가 설정되지 않았습니다. 관리 페이지에서 API 키를 설정해주세요.';
 
@@ -155,56 +159,288 @@ async function pcmToWav(pcmBase64: string, sampleRate: number = 24000): Promise<
   }
 }
 
-export const generateScript = async (topic: string, style: string, lengthSeconds: number = 60, sceneCount?: number): Promise<string> => {
+export interface ScriptOutline {
+  hook: string;
+  beats: string[];
+  cta?: string;
+}
+
+export interface GenerateScriptOptions {
+  genre?: GenreId;
+  platform?: PlatformId;
+}
+
+const OUTLINE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    hook: { type: Type.STRING },
+    beats: { type: Type.ARRAY, items: { type: Type.STRING } },
+    cta: { type: Type.STRING },
+  },
+  required: ['hook', 'beats'],
+} as const;
+
+function describePlatform(p?: PlatformPreset): string {
+  if (!p) return '';
+  return `Target platform: ${p.label} (${p.aspectRatio}, ~${p.recommendedDurationSec}s, hook intensity: ${p.hookIntensity}).`;
+}
+
+export const generateScriptOutline = async (
+  topic: string,
+  style: string,
+  lengthSeconds: number,
+  sceneCount: number,
+  options: GenerateScriptOptions = {},
+): Promise<ScriptOutline> => {
   const ai = new GoogleGenAI({ apiKey: requireApiKey() });
-  const sceneHint = sceneCount ? ` The script should be structured for exactly ${sceneCount} scenes (each scene is approximately 8 seconds of video).` : '';
+  const genre = getGenre(options.genre);
+  const platform = getPlatform(options.platform);
+
+  const sys = [
+    'You are a video script director. Output a tight outline as JSON.',
+    genre ? genre.systemHint : 'Default to a clear story arc.',
+    `Structure: ${genre?.structure || 'Hook → Body → Close'}.`,
+    describePlatform(platform),
+    `Beats: produce exactly ${sceneCount} beats (one per ~8s scene).`,
+    `Hook strategy: ${genre?.hookStrategy || 'Open with a curiosity-inducing line.'} The hook MUST be a single, attention-grabbing sentence (a question, shocking stat, or bold claim).`,
+    genre?.hasCTA ? 'Include a single concrete CTA at the end.' : 'CTA is optional; only include if it strengthens the close.',
+  ].filter(Boolean).join(' ');
+
+  const prompt = `Topic: "${topic}"\nVisual style hint: ${style}\nGoal duration: ${lengthSeconds}s.\n\nReturn JSON: { hook: string, beats: string[${sceneCount}], cta?: string }. The first beat must implement the hook.`;
+
   const response = await withTimeout(
     ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Generate a full video script about "${topic}". Style: ${style}. Goal duration: ${lengthSeconds} seconds.${sceneHint} Output only the spoken text.`,
+      model: 'gemini-2.5-flash',
+      contents: `${sys}\n\n${prompt}`,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: OUTLINE_SCHEMA as any,
+      },
     }),
     60000,
-    '스크립트 생성'
+    '스크립트 아웃라인 생성',
   );
-  return response.text || "Script generation failed.";
+  try {
+    const parsed = JSON.parse(response.text || '{}');
+    return {
+      hook: String(parsed.hook || '').trim(),
+      beats: Array.isArray(parsed.beats) ? parsed.beats.map((b: any) => String(b).trim()).filter(Boolean) : [],
+      cta: parsed.cta ? String(parsed.cta).trim() : undefined,
+    };
+  } catch (e) {
+    console.warn('[Outline] JSON parse failed, returning empty outline');
+    return { hook: '', beats: [] };
+  }
 };
 
-export const segmentScriptIntoScenes = async (script: string, style: string, ratio: string, characterProfile?: string, sceneCount?: number): Promise<Partial<Scene>[]> => {
+export const generateScript = async (
+  topic: string,
+  style: string,
+  lengthSeconds: number = 60,
+  sceneCount?: number,
+  options: GenerateScriptOptions = {},
+): Promise<string> => {
   const ai = new GoogleGenAI({ apiKey: requireApiKey() });
-  const charInstruction = characterProfile 
+  const targetSceneCount = sceneCount && sceneCount > 0 ? sceneCount : Math.max(2, Math.round(lengthSeconds / 8));
+  const genre = getGenre(options.genre);
+  const platform = getPlatform(options.platform);
+
+  // Pass 1: outline
+  let outline: ScriptOutline | null = null;
+  try {
+    outline = await generateScriptOutline(topic, style, lengthSeconds, targetSceneCount, options);
+  } catch (e) {
+    console.warn('[Script] Outline generation failed, falling back to single-pass:', e);
+  }
+
+  // Pass 2: full script grounded in the outline
+  const sys = [
+    'You are an expert video script writer. Produce ONLY the spoken script — no scene numbers, no stage directions, no markdown.',
+    genre ? genre.systemHint : '',
+    describePlatform(platform),
+    'The very first sentence MUST be a strong hook that pattern-interrupts the viewer (a question, surprising fact, or bold claim).',
+    `Plan exactly ${targetSceneCount} scenes (~8 seconds of spoken text per scene). Pace the language so it can be cleanly split scene-by-scene.`,
+  ].filter(Boolean).join(' ');
+
+  let outlineBlock = '';
+  if (outline && outline.beats.length > 0) {
+    outlineBlock = `\n\nOutline to follow strictly:\n- HOOK: ${outline.hook}\n${outline.beats.map((b, i) => `- Beat ${i + 1}: ${b}`).join('\n')}${outline.cta ? `\n- CTA: ${outline.cta}` : ''}`;
+  }
+
+  const userPrompt = `Topic: "${topic}". Visual style cue: ${style}. Goal duration: ${lengthSeconds}s.${outlineBlock}\n\nWrite the spoken script now. The first sentence is the hook.`;
+
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: `${sys}\n\n${userPrompt}`,
+    }),
+    60000,
+    '스크립트 생성',
+  );
+  return response.text || 'Script generation failed.';
+};
+
+const SHOT_TYPES = ['wide', 'medium', 'close-up', 'extreme-close-up', 'over-shoulder', 'pov', 'aerial', 'establishing'] as const;
+const CAMERA_MOVEMENTS = ['static', 'pan-left', 'pan-right', 'tilt-up', 'tilt-down', 'dolly-in', 'dolly-out', 'tracking', 'handheld', 'crane'] as const;
+const BEAT_ROLES = ['hook', 'setup', 'development', 'payoff', 'cta'] as const;
+
+const SHOTLIST_SCHEMA = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      script_segment: { type: Type.STRING },
+      visual_prompt: { type: Type.STRING },
+      shotType: { type: Type.STRING },
+      cameraMovement: { type: Type.STRING },
+      lighting: { type: Type.STRING },
+      durationSec: { type: Type.NUMBER },
+      beatRole: { type: Type.STRING },
+      transitionTo: { type: Type.STRING },
+    },
+    required: ['script_segment', 'visual_prompt'],
+  },
+} as const;
+
+function pickEnum<T extends string>(value: any, allowed: readonly T[], fallback: T): T {
+  if (typeof value !== 'string') return fallback;
+  const v = value.trim().toLowerCase();
+  const hit = allowed.find(a => a === v);
+  return (hit as T) || fallback;
+}
+
+export const segmentScriptIntoScenes = async (
+  script: string,
+  style: string,
+  ratio: string,
+  characterProfile?: string,
+  sceneCount?: number,
+  options: { genre?: GenreId; platform?: PlatformId } = {},
+): Promise<Partial<Scene>[]> => {
+  const ai = new GoogleGenAI({ apiKey: requireApiKey() });
+  const charInstruction = characterProfile
     ? `\n\nIMPORTANT - Main Character Description (must appear consistently in EVERY scene's visual_prompt): ${characterProfile}. Always describe this exact same character in each visual_prompt to maintain visual consistency across all scenes.`
     : '';
   const sceneCountInstruction = sceneCount ? `exactly ${sceneCount}` : '3-5';
-  const prompt = `Segment this script into ${sceneCountInstruction} visual scenes for a ${ratio} video. Each scene will be approximately 8 seconds of video. Style: ${style}.${charInstruction} Output JSON array. Script: "${script}"`;
+  const genre = getGenre(options.genre);
+  const platform = getPlatform(options.platform);
+
+  const prompt = `Segment this script into ${sceneCountInstruction} cinematic shots for a ${ratio} video. Each shot is approximately 8 seconds. Style: ${style}.${charInstruction}
+
+For EACH shot output a full shot card with:
+- script_segment: the spoken text in this shot
+- visual_prompt: a vivid one-paragraph description of what we see
+- shotType: one of ${SHOT_TYPES.join(' | ')}
+- cameraMovement: one of ${CAMERA_MOVEMENTS.join(' | ')}
+- lighting: short phrase (e.g. "soft golden hour", "neon backlight")
+- durationSec: approximate seconds (default 8)
+- beatRole: one of ${BEAT_ROLES.join(' | ')} — the FIRST shot MUST be "hook"${genre?.hasCTA ? ', the LAST shot SHOULD be "cta"' : ''}
+- transitionTo: one of none|fade|fadeblack|wipeleft|wiperight|slideleft|slideright|circleopen|smoothleft|smoothright (transition INTO the next shot; use "none" for the last shot)
+
+Vary shotType across shots to keep visual rhythm. ${platform ? `Target platform ${platform.label} (${platform.aspectRatio}).` : ''}
+
+Output JSON array. Script: "${script}"`;
+
   const response = await withTimeout(
     ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-2.5-flash',
       contents: prompt,
-      config: { 
+      config: {
         responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              script_segment: { type: Type.STRING },
-              visual_prompt: { type: Type.STRING }
-            },
-            required: ['script_segment', 'visual_prompt']
-          }
-        }
-      }
+        responseSchema: SHOTLIST_SCHEMA as any,
+      },
     }),
     60000,
-    '씬 분석'
+    '씬 분석',
   );
-  const data = JSON.parse(response.text || "[]");
-  return data.map((item: any, index: number) => ({
-    id: `scene-${index}`,
-    script_segment: item.script_segment,
-    visual_prompt: item.visual_prompt
-  }));
+
+  const data = JSON.parse(response.text || '[]');
+  return (Array.isArray(data) ? data : []).map((item: any, index: number) => {
+    const beatRole = pickEnum(item.beatRole, BEAT_ROLES, index === 0 ? 'hook' : 'development');
+    const out: Partial<Scene> = {
+      id: `scene-${index}`,
+      script_segment: String(item.script_segment || '').trim(),
+      visual_prompt: String(item.visual_prompt || '').trim(),
+      shotType: pickEnum(item.shotType, SHOT_TYPES, index === 0 ? 'wide' : 'medium'),
+      cameraMovement: pickEnum(item.cameraMovement, CAMERA_MOVEMENTS, 'static'),
+      lighting: typeof item.lighting === 'string' ? item.lighting : 'natural cinematic lighting',
+      durationSec: typeof item.durationSec === 'number' && item.durationSec > 0 ? Math.round(item.durationSec) : 8,
+      beatRole: index === 0 ? 'hook' : beatRole,
+      transitionTo: typeof item.transitionTo === 'string' ? (item.transitionTo as any) : 'fade',
+    };
+    return out;
+  });
 };
+
+const STYLE_SHEET_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    palette: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+    },
+    lighting: { type: Type.STRING },
+    mood: { type: Type.STRING },
+    tone: { type: Type.STRING },
+  },
+  required: ['palette', 'lighting', 'mood'],
+} as const;
+
+export const generateStyleSheet = async (
+  topic: string,
+  script: string,
+  visualStyle: string,
+  options: { genre?: GenreId } = {},
+): Promise<StyleSheet> => {
+  const ai = new GoogleGenAI({ apiKey: requireApiKey() });
+  const genre = getGenre(options.genre);
+  const sys = `You are an art director defining the visual style sheet for a short video. Output a tight JSON object. Palette must be exactly 5 hex colors (#RRGGBB) that look harmonious together. Lighting and mood are short phrases (max 8 words each).`;
+  const user = `Topic: "${topic}"\nGenre: ${genre?.label || 'general'}\nVisual style: ${visualStyle}\nScript excerpt: ${script.slice(0, 600)}\n\nReturn JSON: { palette: string[5], lighting: string, mood: string, tone?: string }.`;
+
+  try {
+    const response = await withTimeout(
+      ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: `${sys}\n\n${user}`,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: STYLE_SHEET_SCHEMA as any,
+        },
+      }),
+      45000,
+      'StyleSheet 생성',
+    );
+    const parsed = JSON.parse(response.text || '{}');
+    const palette = Array.isArray(parsed.palette) ? parsed.palette.map((c: any) => String(c)).filter((c: string) => /^#?[0-9a-fA-F]{6}$/.test(c.replace('#', ''))).map((c: string) => c.startsWith('#') ? c : `#${c}`).slice(0, 5) : [];
+    return {
+      palette: palette.length === 5 ? palette : ['#1a1a2e', '#16213e', '#0f3460', '#e94560', '#f5f5f5'].slice(0, palette.length || 5),
+      lighting: String(parsed.lighting || 'cinematic key light with soft fill').trim(),
+      mood: String(parsed.mood || 'modern, polished').trim(),
+      tone: parsed.tone ? String(parsed.tone).trim() : undefined,
+    };
+  } catch (e) {
+    console.warn('[StyleSheet] generation failed, using defaults:', e);
+    return {
+      palette: ['#1a1a2e', '#16213e', '#0f3460', '#e94560', '#f5f5f5'],
+      lighting: 'cinematic key light with soft fill',
+      mood: 'modern, polished',
+    };
+  }
+};
+
+// Legacy compatibility shim: ensure scenes loaded from old projects have the
+// new shot-list fields without breaking anything.
+export function migrateSceneFields(scenes: Partial<Scene>[]): Partial<Scene>[] {
+  return (scenes || []).map((s, i) => ({
+    ...s,
+    shotType: s.shotType || (i === 0 ? 'wide' : 'medium'),
+    cameraMovement: s.cameraMovement || 'static',
+    lighting: s.lighting || 'natural cinematic lighting',
+    durationSec: s.durationSec || 8,
+    beatRole: s.beatRole || (i === 0 ? 'hook' : 'development'),
+    transitionTo: s.transitionTo || (i === 0 ? 'fade' : 'fade'),
+  }));
+}
 
 export const generateSceneAudio = async (text: string, style: string): Promise<{ audio_path: string, duration: number } | null> => {
   const voiceMap: Record<string, string> = { 'Cute Stickman': 'Puck', 'Japanese Anime': 'Kore' };
@@ -249,7 +485,55 @@ const NANO_BANANA_ALIASES: Record<string, string> = {
   'nano-banana': 'gemini-2.5-flash-image',
 };
 
-export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, characterProfile?: string): Promise<{ base64: string; mimeType: string } | null> => {
+export interface GenerateImageOptions {
+  scene?: Partial<Scene>;
+  styleSheet?: StyleSheet;
+  negativePrompt?: string;
+  visionCritic?: boolean;
+  qualityThreshold?: number;
+}
+
+export interface GenerateImageResult {
+  base64: string;
+  mimeType: string;
+  qualityScore?: QualityScore;
+}
+
+async function callImageModel(
+  apiKey: string,
+  actualModel: string,
+  promptText: string,
+): Promise<{ base64: string; mimeType: string }> {
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model: actualModel,
+      contents: [{ parts: [{ text: promptText }] }],
+      config: {
+        responseModalities: [Modality.IMAGE, Modality.TEXT],
+      },
+    }),
+    60000,
+    '이미지 생성',
+  );
+  for (const part of response.candidates?.[0]?.content?.parts || []) {
+    if (part.inlineData && part.inlineData.data) {
+      const mimeType = part.inlineData.mimeType || 'image/png';
+      return { base64: part.inlineData.data, mimeType };
+    }
+  }
+  throw new Error('이미지 데이터가 생성되지 않았습니다.');
+}
+
+export const generateSceneImage = async (
+  prompt: string,
+  style: string,
+  aspectRatio: string = '16:9',
+  modelId?: string,
+  provider?: string,
+  characterProfile?: string,
+  options: GenerateImageOptions = {},
+): Promise<GenerateImageResult | null> => {
   const isGeminiCompatible = !provider || GOOGLE_IMAGE_PROVIDERS.includes(provider);
   let actualModel = (modelId && isGeminiCompatible) ? modelId : GEMINI_IMAGE_MODEL;
   const isFallback = !isGeminiCompatible;
@@ -269,29 +553,76 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
     console.warn(`[Image] Provider "${provider}" (model: ${modelId}) is not yet integrated. Using Gemini fallback: ${GEMINI_IMAGE_MODEL}`);
   }
 
-  console.log(`[Image] 이미지 생성 시작 - requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}, prompt: ${prompt.length}chars, style: ${style}, ratio: ${aspectRatio}`);
+  // Build adapter input
+  const sceneShot: Partial<Scene> = options.scene
+    ? { ...options.scene, visual_prompt: options.scene.visual_prompt || prompt }
+    : { visual_prompt: prompt };
+  const adapter = buildModelPrompt(
+    {
+      shot: sceneShot,
+      styleSheet: options.styleSheet,
+      characterProfile,
+      negativePrompt: options.negativePrompt,
+      visualStyle: style,
+      aspectRatio,
+    },
+    provider,
+    modelId,
+  );
+  let promptText = adapter.prompt;
+  if (adapter.negativePrompt) {
+    promptText += `\n\nAvoid (negative prompt): ${adapter.negativePrompt}.`;
+  }
+
+  console.log(`[Image] 이미지 생성 시작 - requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}, prompt: ${promptText.length}chars`);
 
   return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await withTimeout(
-      ai.models.generateContent({
-        model: actualModel,
-        contents: [{ parts: [{ text: `Generate an image. High quality cinematic digital art, 8k, detailed textures. Scene: ${prompt}. Style: ${style}. Aspect ratio: ${aspectRatio}.${characterProfile ? ` Main character (must match exactly): ${characterProfile}.` : ''}` }] }],
-        config: {
-          responseModalities: [Modality.IMAGE, Modality.TEXT],
-        }
-      }),
-      60000,
-      '이미지 생성'
-    );
+    const first = await callImageModel(apiKey, actualModel, promptText);
 
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData && part.inlineData.data) {
-        const mimeType = part.inlineData.mimeType || 'image/png';
-        return { base64: part.inlineData.data, mimeType };
-      }
+    const useCritic = options.visionCritic !== false; // default ON
+    const threshold = typeof options.qualityThreshold === 'number' ? options.qualityThreshold : 6;
+    if (!useCritic) {
+      return { base64: first.base64, mimeType: first.mimeType };
     }
-    throw new Error('이미지 데이터가 생성되지 않았습니다.');
+
+    let score: QualityScore | null = null;
+    try {
+      score = await critiqueImage({
+        imageBase64: first.base64,
+        mimeType: first.mimeType,
+        intentPrompt: prompt,
+        characterProfile,
+        styleSheet: options.styleSheet,
+      });
+    } catch (e) {
+      console.warn('[Image] Critic call failed, returning first image:', e);
+    }
+
+    if (!score || score.overall >= threshold) {
+      return { base64: first.base64, mimeType: first.mimeType, qualityScore: score || undefined };
+    }
+
+    console.log(`[Image] Quality score ${score.overall}/10 below threshold ${threshold}, refining...`);
+    const refinePrompt = `${promptText}\n\n[Director note] ${buildRefineHint(score)}`;
+    try {
+      const refined = await callImageModel(apiKey, actualModel, refinePrompt);
+      let refinedScore: QualityScore | null = null;
+      try {
+        refinedScore = await critiqueImage({
+          imageBase64: refined.base64,
+          mimeType: refined.mimeType,
+          intentPrompt: prompt,
+          characterProfile,
+          styleSheet: options.styleSheet,
+        });
+      } catch {}
+      const finalScore = refinedScore && refinedScore.overall >= score.overall ? refinedScore : score;
+      const better = refinedScore && refinedScore.overall >= score.overall ? refined : first;
+      return { base64: better.base64, mimeType: better.mimeType, qualityScore: { ...finalScore!, refined: true } };
+    } catch (refineErr) {
+      console.warn('[Image] Refine generation failed, returning first:', refineErr);
+      return { base64: first.base64, mimeType: first.mimeType, qualityScore: score };
+    }
   }, 1, '이미지 생성');
 };
 
@@ -414,7 +745,24 @@ const VEO_MODEL = 'veo-3.1-fast-generate-preview';
 
 const GOOGLE_VIDEO_PROVIDERS = ['Google'];
 
-export const generateSceneVideo = async (prompt: string, imageSource?: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, audioScript?: string, characterProfile?: string, previousSceneContext?: string, sceneIndex?: number): Promise<string | null> => {
+export interface GenerateVideoOptions {
+  scene?: Partial<Scene>;
+  styleSheet?: StyleSheet;
+  negativePrompt?: string;
+}
+
+export const generateSceneVideo = async (
+  prompt: string,
+  imageSource?: string,
+  aspectRatio: string = '16:9',
+  modelId?: string,
+  provider?: string,
+  audioScript?: string,
+  characterProfile?: string,
+  previousSceneContext?: string,
+  sceneIndex?: number,
+  options: GenerateVideoOptions = {},
+): Promise<string | null> => {
   const validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
   const isGoogleProvider = !provider || GOOGLE_VIDEO_PROVIDERS.includes(provider);
   const actualModel = (modelId && isGoogleProvider) ? modelId : VEO_MODEL;
@@ -455,14 +803,28 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
     }
   }
 
-  const charPart = characterProfile ? `\n\n[Main character - must match exactly]: ${characterProfile}` : '';
-  const audioPart = audioScript ? `\n\n[Narration/dialogue for this scene]: ${audioScript}` : '';
-  let continuityPart = '';
-  if (previousSceneContext && sceneIndex !== undefined && sceneIndex > 0) {
-    continuityPart = `\n\n[Scene continuity - Scene ${sceneIndex + 1}]: This scene follows directly from the previous scene. Previous scene: "${previousSceneContext}". Start this scene as a natural continuation — maintain visual flow, environment consistency, and smooth transition from the previous action. Do NOT reset or repeat the opening of the previous scene.`;
+  const sceneShot: Partial<Scene> = options.scene
+    ? { ...options.scene, visual_prompt: options.scene.visual_prompt || prompt }
+    : { visual_prompt: prompt };
+  const adapter = buildModelPrompt(
+    {
+      shot: sceneShot,
+      styleSheet: options.styleSheet,
+      characterProfile,
+      negativePrompt: options.negativePrompt,
+      audioScript,
+      previousSceneContext,
+      sceneIndex,
+      aspectRatio,
+    },
+    provider,
+    modelId,
+  );
+  let fullPrompt = adapter.prompt;
+  if (adapter.negativePrompt) {
+    fullPrompt += `\n\n[Negative prompt — strictly avoid]: ${adapter.negativePrompt}`;
   }
-  const fullPrompt = `${prompt}${continuityPart}${charPart}${audioPart}`;
-  console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}, continuity: ${!!continuityPart}`);
+  console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}, continuity: ${!!previousSceneContext}, negative: ${!!adapter.negativePrompt}`);
 
   return withRetry(async () => {
     if (imageData) {

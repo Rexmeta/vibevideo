@@ -5,7 +5,9 @@ import {
   segmentScriptIntoScenes, 
   generateSceneAudio, 
   generateSceneImage, 
-  generateSceneVideo 
+  generateSceneVideo,
+  generateStyleSheet,
+  migrateSceneFields,
 } from '../services/geminiService';
 import { 
   saveProjectToCloud, 
@@ -16,8 +18,9 @@ import {
 import { saveMedia, getMedia, saveProjectMeta, getProjectMeta } from '../services/mediaCache';
 import { getModels, getModelsByType } from '../services/modelService';
 import { mergeAllScenes, MergeInput, renderPresentationVideo, PresentationSceneInput } from '../services/videoMergeService';
+import { GENRES, PLATFORMS, applyPlatformDefaults } from '../services/presets';
 import { Icons } from './Icons';
-import { Scene, Project, ProjectStatus, ViewState, AIModel, VideoMode, TransitionType, MotionPreset, PresentationConfig, TextOverlay } from '../types';
+import { Scene, Project, ProjectStatus, ViewState, AIModel, VideoMode, TransitionType, MotionPreset, PresentationConfig, TextOverlay, GenreId, PlatformId, StyleSheet } from '../types';
 
 interface ProjectWizardProps {
   userId: string;
@@ -43,6 +46,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [videoMode, setVideoMode] = useState<VideoMode>('ai');
   const [scenes, setScenes] = useState<Partial<Scene>[]>([]);
   const [thumbnail, setThumbnail] = useState<string | undefined>(undefined);
+  // Director Pipeline state
+  const [genre, setGenre] = useState<GenreId | undefined>(undefined);
+  const [platform, setPlatform] = useState<PlatformId | undefined>(undefined);
+  const [styleSheet, setStyleSheet] = useState<StyleSheet | undefined>(undefined);
+  const [visionCriticEnabled, setVisionCriticEnabled] = useState<boolean>(true);
+  const [negativePrompt, setNegativePrompt] = useState<string>('');
+  const [generatingStyleSheet, setGeneratingStyleSheet] = useState<boolean>(false);
   
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
@@ -140,6 +150,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           target_scene_count: targetSceneCount,
           use_veo_audio: useVeoAudio,
           video_mode: videoMode,
+          genre,
+          platform,
+          style_sheet: styleSheet,
+          vision_critic_enabled: visionCriticEnabled,
+          negative_prompt: negativePrompt || undefined,
           ...params.extraData
         };
         const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
@@ -253,8 +268,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           if (p.video_mode) setVideoMode(p.video_mode);
           if (p.selected_image_model) setSelectedImageModel(p.selected_image_model);
           if (p.selected_video_model) setSelectedVideoModel(p.selected_video_model);
+          if (p.genre) setGenre(p.genre);
+          if (p.platform) setPlatform(p.platform);
+          if (p.style_sheet) setStyleSheet(p.style_sheet);
+          if (p.vision_critic_enabled !== undefined) setVisionCriticEnabled(p.vision_critic_enabled);
+          if (p.negative_prompt) setNegativePrompt(p.negative_prompt);
 
-          const restoredScenes = p.saved_scenes || [];
+          const restoredScenes = migrateSceneFields(p.saved_scenes || []);
           const maxForRestore = Math.max(restoredMaxStep, restoredStep);
           const recoveredScenes = await Promise.all(restoredScenes.map(async (s, i) => {
             const sc = { ...s };
@@ -359,6 +379,11 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         target_scene_count: targetSceneCount,
         use_veo_audio: useVeoAudio,
         video_mode: videoMode,
+        genre,
+        platform,
+        style_sheet: styleSheet,
+        vision_critic_enabled: visionCriticEnabled,
+        negative_prompt: negativePrompt || undefined,
         ...params.extraData
       };
 
@@ -591,10 +616,18 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             return;
           }
           const imgModel = allModels.find(m => m.id === selectedImageModel);
-          const result = await generateSceneImage(s.visual_prompt!, videoStyle, aspectRatio, imgModel?.modelId, imgModel?.provider, characterProfile || undefined);
+          const result = await generateSceneImage(
+            s.visual_prompt!,
+            videoStyle,
+            aspectRatio,
+            imgModel?.modelId,
+            imgModel?.provider,
+            characterProfile || undefined,
+            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt, visionCritic: visionCriticEnabled },
+          );
           if (result) {
             const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
-            updateSceneAt(idx, { image_path: previewUrl });
+            updateSceneAt(idx, { image_path: previewUrl, qualityScore: result.qualityScore });
             saveMedia(projectId, idx, 'image', previewUrl);
             const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
             const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.${ext}`, result.base64, 'base64');
@@ -640,10 +673,18 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         return;
       }
       const imgModel = allModels.find(m => m.id === selectedImageModel);
-      const result = await generateSceneImage(currentScene.visual_prompt!, videoStyle, aspectRatio, imgModel?.modelId, imgModel?.provider, characterProfile || undefined);
+      const result = await generateSceneImage(
+        currentScene.visual_prompt!,
+        videoStyle,
+        aspectRatio,
+        imgModel?.modelId,
+        imgModel?.provider,
+        characterProfile || undefined,
+        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled },
+      );
       if (result) {
         const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
-        updateSceneAt(idx, { image_path: previewUrl });
+        updateSceneAt(idx, { image_path: previewUrl, qualityScore: result.qualityScore });
         saveMedia(projectId, idx, 'image', previewUrl);
         const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
         const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.${ext}`, result.base64, 'base64');
@@ -704,7 +745,18 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           const vidModel = allModels.find(m => m.id === selectedVideoModel);
           const seedImage = s.image_path;
           const prevContext = idx > 0 ? sceneSnapshot[idx - 1]?.visual_prompt : undefined;
-          const videoUrl = await generateSceneVideo(s.visual_prompt!, seedImage, aspectRatio, vidModel?.modelId, vidModel?.provider, s.script_segment || s.audio_script, characterProfile || undefined, prevContext, idx);
+          const videoUrl = await generateSceneVideo(
+            s.visual_prompt!,
+            seedImage,
+            aspectRatio,
+            vidModel?.modelId,
+            vidModel?.provider,
+            s.script_segment || s.audio_script,
+            characterProfile || undefined,
+            prevContext,
+            idx,
+            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt },
+          );
           if (videoUrl) {
             const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
             updateSceneAt(idx, { video_path: blobUrl });
@@ -767,7 +819,18 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       const vidModel = allModels.find(m => m.id === selectedVideoModel);
       const seedImage = currentScene.image_path;
       const prevContext = idx > 0 ? scenes[idx - 1]?.visual_prompt : undefined;
-      const videoUrl = await generateSceneVideo(currentScene.visual_prompt!, seedImage, aspectRatio, vidModel?.modelId, vidModel?.provider, currentScene.script_segment || currentScene.audio_script, characterProfile || undefined, prevContext, idx);
+      const videoUrl = await generateSceneVideo(
+        currentScene.visual_prompt!,
+        seedImage,
+        aspectRatio,
+        vidModel?.modelId,
+        vidModel?.provider,
+        currentScene.script_segment || currentScene.audio_script,
+        characterProfile || undefined,
+        prevContext,
+        idx,
+        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt },
+      );
       if (videoUrl) {
         const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
         updateSceneAt(idx, { video_path: blobUrl });
@@ -1066,6 +1129,51 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             </div>
             <div className="space-y-16">
               <section>
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
+                  <Icons.Film size={14} /> Genre <span className="text-gray-300 normal-case font-medium">(선택사항)</span>
+                </h3>
+                <p className="text-xs text-gray-400 mb-4 italic">장르를 선택하면 AI가 적절한 구조와 후크 전략으로 스크립트를 작성합니다.</p>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  {GENRES.map(g => (
+                    <button
+                      key={g.id}
+                      onClick={() => setGenre(genre === g.id ? undefined : g.id)}
+                      className={`p-4 rounded-[1.5rem] border-4 text-left transition-all ${genre === g.id ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}
+                    >
+                      <span className="text-xs font-black block mb-1">{g.label}</span>
+                      <span className="text-[10px] text-gray-400 leading-tight block">{g.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+              <section>
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
+                  <Icons.Layers size={14} /> Platform <span className="text-gray-300 normal-case font-medium">(선택사항 · 비율·길이 자동 설정)</span>
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  {PLATFORMS.map(pl => (
+                    <button
+                      key={pl.id}
+                      onClick={() => {
+                        const next = platform === pl.id ? undefined : pl.id;
+                        setPlatform(next);
+                        if (next) {
+                          const def = applyPlatformDefaults(next);
+                          if (def.aspectRatio) setAspectRatio(def.aspectRatio as any);
+                          if (def.duration) setDuration(def.duration);
+                          if (def.targetSceneCount) setTargetSceneCount(def.targetSceneCount);
+                        }
+                      }}
+                      className={`p-4 rounded-[1.5rem] border-4 text-left transition-all ${platform === pl.id ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}
+                    >
+                      <span className="text-xs font-black block mb-1">{pl.label}</span>
+                      <span className="text-[10px] text-gray-400 block">{pl.aspectRatio} · ~{pl.recommendedDurationSec}초</span>
+                      <span className="text-[9px] text-gray-300 block mt-0.5">Hook: {pl.hookIntensity}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+              <section>
                 <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-8 flex items-center gap-2">Aspect Ratio</h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
                   {['16:9', '9:16', '1:1', '3:4'].map(r => (
@@ -1153,6 +1261,36 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               </section>
               <section>
                 <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
+                  <Icons.Wand2 size={14} /> Director Pipeline
+                </h3>
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setVisionCriticEnabled(!visionCriticEnabled)}
+                      className={`w-12 h-7 rounded-full transition-all relative ${visionCriticEnabled ? 'bg-brand-cyan' : 'bg-gray-200'}`}
+                    >
+                      <div className={`w-5 h-5 bg-white rounded-full absolute top-1 transition-all shadow-sm ${visionCriticEnabled ? 'left-6' : 'left-1'}`} />
+                    </button>
+                    <div className="flex-1">
+                      <span className="text-xs font-bold text-gray-700 block">Vision Critic 자동 품질 검수</span>
+                      <span className="text-[10px] text-gray-400 italic">생성된 이미지를 AI가 채점하고 6점 미만이면 1회 자동 재생성합니다 (생성 시간 약 2배).</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 block mb-2">
+                      Negative Prompt <span className="text-gray-300 normal-case font-medium">(피하고 싶은 요소)</span>
+                    </label>
+                    <input
+                      value={negativePrompt}
+                      onChange={e => setNegativePrompt(e.target.value)}
+                      placeholder="예: blurry, low quality, distorted hands, watermark, text"
+                      className="w-full p-4 bg-gray-50 rounded-2xl outline-none text-xs font-medium shadow-inner"
+                    />
+                  </div>
+                </div>
+              </section>
+              <section>
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
                   <Icons.Mic size={14} /> Audio Source
                 </h3>
                 <div className="flex gap-4">
@@ -1214,7 +1352,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               <button onClick={async () => {
                 setLoading(true); setLoadingMessage("AI가 창의적인 스크립트를 빌드 중입니다...");
                 try {
-                  const result = await generateScript(topic, videoStyle, duration, targetSceneCount);
+                  const result = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform });
                   setScript(result);
                 } catch (e: any) {
                   console.error("Script generation failed:", e);
@@ -1232,8 +1370,18 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                <button onClick={async () => {
                   setLoading(true); setLoadingMessage("스크립트를 씬 단위로 분석하고 있습니다...");
                   try {
-                    const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio, characterProfile || undefined, targetSceneCount);
-                    setScenes(s); setStep(3); setMaxStep(prev => Math.max(prev, 3)); setLoading(false);
+                    const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio, characterProfile || undefined, targetSceneCount, { genre, platform });
+                    setScenes(s);
+                    if (!styleSheet) {
+                      try {
+                        setLoadingMessage('비주얼 스타일 시트를 추출하는 중...');
+                        const sheet = await generateStyleSheet(topic, script, videoStyle, { genre });
+                        setStyleSheet(sheet);
+                      } catch (sheetErr) {
+                        console.warn('[StyleSheet] auto-generation failed, continuing:', sheetErr);
+                      }
+                    }
+                    setStep(3); setMaxStep(prev => Math.max(prev, 3)); setLoading(false);
                     await sync(3, s, {}, { script, topic, maxStep: Math.max(maxStep, 3) });
                   } catch (e) {
                     console.error("Scene segmentation failed:", e);
@@ -1394,21 +1542,100 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               </div>
             )}
 
+            {step === 4 && styleSheet && (
+              <div className="mb-6 p-6 bg-gradient-to-br from-purple-50 to-blue-50 rounded-[2rem] border-2 border-purple-100">
+                <div className="flex items-start justify-between gap-4 mb-3">
+                  <div>
+                    <h4 className="text-xs font-black uppercase tracking-[0.2em] text-purple-700 flex items-center gap-2">
+                      <Icons.Palette size={14} /> Style Sheet
+                    </h4>
+                    <p className="text-[10px] text-purple-500 mt-1 italic">전 씬에 자동 적용되는 비주얼 가이드 — 일관된 색감·조명·무드를 보장합니다.</p>
+                  </div>
+                  <button
+                    disabled={generatingStyleSheet || !script}
+                    onClick={async () => {
+                      setGeneratingStyleSheet(true);
+                      try {
+                        const sheet = await generateStyleSheet(topic, script, videoStyle, { genre });
+                        setStyleSheet(sheet);
+                      } catch (e: any) {
+                        alert(`Style Sheet 재생성 실패: ${e?.message || ''}`);
+                      } finally {
+                        setGeneratingStyleSheet(false);
+                      }
+                    }}
+                    className="px-4 py-2 bg-white border border-purple-200 rounded-full text-[10px] font-bold text-purple-700 hover:bg-purple-50 disabled:opacity-50"
+                  >
+                    {generatingStyleSheet ? '재생성 중…' : '재생성'}
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex gap-1">
+                    {styleSheet.palette.map((color, ci) => (
+                      <input
+                        key={ci}
+                        type="color"
+                        value={color}
+                        onChange={(e) => {
+                          const next = [...styleSheet.palette];
+                          next[ci] = e.target.value;
+                          setStyleSheet({ ...styleSheet, palette: next });
+                        }}
+                        className="w-8 h-8 rounded-lg border-2 border-white shadow cursor-pointer"
+                        title={color}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex-1 min-w-[200px] grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <input
+                      value={styleSheet.mood}
+                      onChange={(e) => setStyleSheet({ ...styleSheet, mood: e.target.value })}
+                      placeholder="Mood"
+                      className="px-3 py-2 bg-white rounded-xl border border-purple-100 text-xs font-medium"
+                    />
+                    <input
+                      value={styleSheet.lighting}
+                      onChange={(e) => setStyleSheet({ ...styleSheet, lighting: e.target.value })}
+                      placeholder="Lighting"
+                      className="px-3 py-2 bg-white rounded-xl border border-purple-100 text-xs font-medium"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto pr-4 space-y-6 hide-scrollbar">
               {scenes.map((s, i) => {
                 const mediaType = step === 3 ? 'audio' : step === 4 ? 'image' : 'video';
                 const isFailed = failedScenes.has(`${mediaType}-${i}`);
                 const failMsg = failedScenes.get(`${mediaType}-${i}`);
                 const isActive = processingSet.has(i);
+                const qs = s.qualityScore;
+                const qsBadgeColor = !qs ? '' : qs.overall >= 8 ? 'bg-green-100 text-green-700' : qs.overall >= 6 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700';
                 return (
                 <div key={i} className={`p-8 rounded-[3.5rem] flex flex-col md:flex-row gap-8 items-center border transition-all duration-500 relative ${isActive ? 'bg-brand-cyan/10 border-brand-cyan scale-[1.01] shadow-2xl' : isFailed ? 'bg-red-50 border-red-300 shadow-md' : 'bg-gray-50 border-gray-100 shadow-sm'}`}>
                   <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-3">
+                    <div className="flex items-center gap-2 mb-3 flex-wrap">
                       <span className="bg-brand-dark/5 text-brand-dark/40 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest">Scene {i+1}</span>
+                      {s.beatRole && <span className="bg-purple-50 text-purple-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">{s.beatRole}</span>}
+                      {s.shotType && <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[10px] font-bold">{s.shotType}</span>}
+                      {s.cameraMovement && s.cameraMovement !== 'static' && <span className="bg-cyan-50 text-cyan-600 px-3 py-1 rounded-full text-[10px] font-bold">{s.cameraMovement}</span>}
+                      {qs && (
+                        <span
+                          className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${qsBadgeColor}`}
+                          title={`Character: ${qs.characterConsistency}/10 · Composition: ${qs.compositionQuality}/10 · Intent: ${qs.intentAlignment}/10${qs.refined ? ' · refined' : ''}${qs.issues?.length ? '\nIssues: ' + qs.issues.join('; ') : ''}`}
+                        >
+                          ★ {qs.overall}/10{qs.refined ? ' ↻' : ''}
+                        </span>
+                      )}
                       {isFailed && <span className="bg-red-100 text-red-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">Failed</span>}
                       {isActive && <span className="bg-brand-cyan/20 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-black uppercase animate-pulse">Processing</span>}
                     </div>
                     <p className="text-brand-dark text-sm font-medium leading-relaxed italic mb-3">"{s.script_segment}"</p>
+                    {step === 4 && (s.lighting || s.durationSec) && (
+                      <p className="text-[10px] text-gray-400 mb-3 font-medium">
+                        {s.lighting && <>💡 {s.lighting}</>}{s.lighting && s.durationSec ? ' · ' : ''}{s.durationSec ? `⏱ ${s.durationSec}s` : ''}
+                      </p>
+                    )}
                     {isFailed && <p className="text-red-500 text-xs mb-3 font-medium">{failMsg}</p>}
                     
                     {step === 5 && isPresentationMode ? (() => {
