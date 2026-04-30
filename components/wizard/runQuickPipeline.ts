@@ -5,11 +5,22 @@ import {
   generateStyleSheet,
 } from '../../services/geminiService';
 
+export type QuickPipelineStage =
+  | 'script'
+  | 'segment'
+  | 'style'
+  | 'audio'
+  | 'images'
+  | 'videos'
+  | 'done';
+
 export interface QuickPipelineProgress {
-  stage: 'script' | 'segment' | 'style' | 'audio' | 'images' | 'videos' | 'done';
+  stage: QuickPipelineStage;
   label: string;
   percent: number;
   detail?: string;
+  /** Total number of scenes the pipeline is operating on (after segmentation). */
+  totalScenes?: number;
 }
 
 export interface QuickPipelineResult {
@@ -54,6 +65,7 @@ export const runQuickPipeline = async (
 
   // STEP 2: Script
   let scriptText = '';
+  let totalScenes = 0;
   try {
     onProgress({ stage: 'script', label: '스크립트 생성 중...', percent: 5 });
     scriptText = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform });
@@ -70,11 +82,17 @@ export const runQuickPipeline = async (
     );
     setScenes(segScenes);
     scenesRef.current = segScenes;
+    totalScenes = segScenes.length;
     await wait(50);
 
     if (!styleSheet) {
       try {
-        onProgress({ stage: 'style', label: '스타일 시트 추출 중...', percent: 25 });
+        onProgress({
+          stage: 'style',
+          label: '스타일 시트 추출 중...',
+          percent: 25,
+          totalScenes,
+        });
         const sheet = await generateStyleSheet(topic, scriptText, videoStyle, { genre });
         setStyleSheet(sheet);
       } catch (sheetErr) {
@@ -92,7 +110,12 @@ export const runQuickPipeline = async (
   // STEP 3: Audio (skip if Veo handles it)
   if (!useVeoAudio) {
     try {
-      onProgress({ stage: 'audio', label: '오디오 생성 중... (병렬 처리)', percent: 35 });
+      onProgress({
+        stage: 'audio',
+        label: `오디오 생성 중... (${totalScenes}개 씬 병렬 처리)`,
+        percent: 35,
+        totalScenes,
+      });
       await handleBatchAudio();
       const allAudio = scenesRef.current.every(s => !!s.audio_path);
       if (!allAudio) {
@@ -106,7 +129,12 @@ export const runQuickPipeline = async (
 
   // STEP 4: Images
   try {
-    onProgress({ stage: 'images', label: '이미지 생성 중... (병렬 처리)', percent: 55 });
+    onProgress({
+      stage: 'images',
+      label: `이미지 생성 중... (${totalScenes}개 씬 병렬 처리)`,
+      percent: 55,
+      totalScenes,
+    });
     setStep(4);
     setMaxStep(prev => Math.max(prev, 4));
     await handleBatchImages();
@@ -122,7 +150,12 @@ export const runQuickPipeline = async (
   // STEP 5: Videos (skip if presentation mode)
   if (!isPresentationMode) {
     try {
-      onProgress({ stage: 'videos', label: '비디오 생성 중... (씬당 약 1분 + 60초 대기)', percent: 75 });
+      onProgress({
+        stage: 'videos',
+        label: `비디오 생성 중... (씬당 약 1분 + 60초 대기)`,
+        percent: 75,
+        totalScenes,
+      });
       setStep(5);
       setMaxStep(prev => Math.max(prev, 5));
       await handleBatchVideos();
@@ -139,7 +172,7 @@ export const runQuickPipeline = async (
     setMaxStep(prev => Math.max(prev, 5));
   }
 
-  onProgress({ stage: 'done', label: '완료! Preview 단계로 이동합니다...', percent: 100 });
+  onProgress({ stage: 'done', label: '완료! Preview 단계로 이동합니다...', percent: 100, totalScenes });
   setStep(6);
   setMaxStep(prev => Math.max(prev, 6));
   sync(6);

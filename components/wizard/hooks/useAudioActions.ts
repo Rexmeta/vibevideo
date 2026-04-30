@@ -114,7 +114,6 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
   const handleBatchAudio = async () => {
     setProcessingType('audio');
     const sceneSnapshot = [...scenes];
-    const newFailed = new Map(failedScenes);
 
     const tasks = sceneSnapshot
       .map((s, i) => ({ idx: i, s }))
@@ -155,18 +154,24 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
       tasks,
       CONCURRENCY,
       idx => setProcessingSet(prev => new Set(prev).add(idx)),
-      idx =>
+      (idx, error) => {
         setProcessingSet(prev => {
           const n = new Set(prev);
           n.delete(idx);
           return n;
-        })
+        });
+        // Surface per-scene status as soon as it settles so live progress UIs
+        // (Quick mode grid) can show failed scenes mid-batch.
+        setFailedScenes(prev => {
+          const n = new Map(prev);
+          if (error) n.set(`audio-${idx}`, error?.message || '오류');
+          else n.delete(`audio-${idx}`);
+          return n;
+        });
+      }
     );
 
     const errors = results.filter(r => r.error);
-    errors.forEach(r => newFailed.set(`audio-${r.idx}`, r.error?.message || '오류'));
-    results.filter(r => !r.error).forEach(r => newFailed.delete(`audio-${r.idx}`));
-    setFailedScenes(newFailed);
     setProcessingSet(new Set());
     setProcessingType(null);
     setLoadingMessage('');

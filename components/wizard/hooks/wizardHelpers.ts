@@ -26,7 +26,7 @@ export const runParallel = async <T,>(
   tasks: { idx: number; fn: () => Promise<T> }[],
   concurrency: number,
   onStart: (idx: number) => void,
-  onDone: (idx: number) => void
+  onDone: (idx: number, error?: any) => void
 ): Promise<{ idx: number; result?: T; error?: any }[]> => {
   const results: { idx: number; result?: T; error?: any }[] = [];
   let cursor = 0;
@@ -34,13 +34,15 @@ export const runParallel = async <T,>(
     while (cursor < tasks.length) {
       const task = tasks[cursor++];
       onStart(task.idx);
+      let lastError: any = undefined;
       try {
         const result = await task.fn();
         results.push({ idx: task.idx, result });
       } catch (error) {
+        lastError = error;
         results.push({ idx: task.idx, error });
       }
-      onDone(task.idx);
+      onDone(task.idx, lastError);
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => run()));

@@ -84,7 +84,6 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
   const handleBatchVideos = async () => {
     setProcessingType('video');
     const sceneSnapshot = [...scenes];
-    const newFailed = new Map(failedScenes);
 
     const tasks = sceneSnapshot
       .map((s, i) => ({ idx: i, s }))
@@ -169,7 +168,9 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
     const results: { idx: number; error?: any }[] = [];
     for (let ti = 0; ti < tasks.length; ti++) {
       const task = tasks[ti];
-      setProcessingSet(new Set([task.idx]));
+      // Run the API rate-limit wait *before* marking the scene as in-progress
+      // so the per-scene UI doesn't claim generation has started while we're
+      // still waiting for the previous call's quota window to close.
       if (ti > 0) {
         const waitSec = 60;
         for (let w = waitSec; w > 0; w--) {
@@ -179,6 +180,7 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
           await new Promise(r => setTimeout(r, 1000));
         }
       }
+      setProcessingSet(new Set([task.idx]));
       const vidModelName = allModels.find(m => m.id === selectedVideoModel)?.name || '';
       setLoadingMessage(
         `비디오 생성 중... (${vidModelName} | ${ti + 1}/${tasks.length}개 씬) — 최대 5분 소요`
@@ -186,20 +188,27 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
       try {
         await task.fn();
         results.push({ idx: task.idx });
-        newFailed.delete(`video-${task.idx}`);
+        // Commit success state immediately so live progress UIs reflect it
+        // before the next scene's 60s rate-limit wait begins.
+        setFailedScenes(prev => {
+          const n = new Map(prev);
+          n.delete(`video-${task.idx}`);
+          return n;
+        });
         sync();
         console.log(`[Batch Video] Scene ${task.idx + 1} completed successfully`);
       } catch (error: any) {
         const errMsg = error?.message || String(error);
         console.error(`[Batch Video] Scene ${task.idx + 1} FAILED:`, errMsg);
         results.push({ idx: task.idx, error });
-        newFailed.set(`video-${task.idx}`, errMsg);
+        // Commit failure state immediately so the Quick mode grid can render
+        // the failed badge mid-batch.
+        setFailedScenes(prev => new Map(prev).set(`video-${task.idx}`, errMsg));
       }
       setProcessingSet(new Set());
     }
 
     const errors = results.filter(r => r.error);
-    setFailedScenes(newFailed);
     setProcessingSet(new Set());
     setProcessingType(null);
     setLoadingMessage('');

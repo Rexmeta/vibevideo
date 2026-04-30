@@ -1,12 +1,46 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import type { LucideIcon } from 'lucide-react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
-import { runQuickPipeline, QuickPipelineProgress } from './runQuickPipeline';
+import { runQuickPipeline, QuickPipelineProgress, QuickPipelineStage } from './runQuickPipeline';
 import { setStoredMode, type WizardMode } from './ModeGate';
+import type { Scene } from '../../types';
 
 interface Props {
   onSwitchMode: (mode: WizardMode) => void;
 }
+
+type SceneStageStatus = 'queued' | 'waiting' | 'in-progress' | 'done' | 'failed';
+
+interface SceneStageView {
+  idx: number;
+  status: SceneStageStatus;
+  thumbnail?: string;
+  errorMessage?: string;
+  label: string;
+}
+
+const STAGE_META: Record<QuickPipelineStage, { label: string; Icon: LucideIcon }> = {
+  script: { label: '스크립트', Icon: Icons.Type },
+  segment: { label: '씬 분석', Icon: Icons.Layers },
+  style: { label: '스타일 시트', Icon: Icons.Palette },
+  audio: { label: '오디오', Icon: Icons.Mic },
+  images: { label: '이미지', Icon: Icons.ImageIcon },
+  videos: { label: '비디오', Icon: Icons.Film },
+  done: { label: '완료', Icon: Icons.Check },
+};
+
+const PER_SCENE_STAGES: QuickPipelineStage[] = ['audio', 'images', 'videos'];
+
+const formatDuration = (seconds: number): string => {
+  if (!isFinite(seconds) || seconds <= 0) return '곧 완료';
+  const s = Math.round(seconds);
+  if (s < 60) return `약 ${s}초`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (r === 0) return `약 ${m}분`;
+  return `약 ${m}분 ${r}초`;
+};
 
 export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
   const ctx = useWizard();
@@ -29,11 +63,38 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     syncAudioRef,
     setPlayingAudioIdx,
     projectId,
+    scenes,
+    processingSet,
+    processingType,
+    failedScenes,
+    isPresentationMode,
   } = ctx;
 
   const [progress, setProgress] = useState<QuickPipelineProgress | null>(null);
   const [running, setRunning] = useState(false);
   const [failure, setFailure] = useState<{ step: number; error: string } | null>(null);
+
+  // Track when each per-scene stage started, plus a rolling estimate of how long
+  // each scene takes so we can surface an "estimated time remaining" hint.
+  const stageStartedRef = useRef<Map<QuickPipelineStage, number>>(new Map());
+  const [now, setNow] = useState<number>(Date.now());
+
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+
+  useEffect(() => {
+    if (!progress) return;
+    const stage = progress.stage;
+    if (PER_SCENE_STAGES.includes(stage) && !stageStartedRef.current.has(stage)) {
+      stageStartedRef.current.set(stage, Date.now());
+    }
+    if (stage === 'done') {
+      stageStartedRef.current.clear();
+    }
+  }, [progress]);
 
   const handleStart = async () => {
     if (!topic.trim()) {
@@ -42,6 +103,7 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     }
     setFailure(null);
     setRunning(true);
+    stageStartedRef.current = new Map();
     setProgress({ stage: 'script', label: '시작합니다...', percent: 1 });
 
     const result = await runQuickPipeline(ctx, topic, p => setProgress(p));
@@ -81,6 +143,137 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
   };
 
   const canShowSwitch = !running && !syncing;
+
+  const activeStage = progress?.stage;
+  const totalScenes = progress?.totalScenes ?? scenes.length;
+
+  // Build per-scene status entries for the currently active per-scene stage.
+  const sceneViews: SceneStageView[] = useMemo(() => {
+    if (!activeStage || !PER_SCENE_STAGES.includes(activeStage)) return [];
+    const stageProcessingType: Record<QuickPipelineStage, 'audio' | 'image' | 'video' | null> = {
+      script: null,
+      segment: null,
+      style: null,
+      audio: 'audio',
+      images: 'image',
+      videos: 'video',
+      done: null,
+    };
+    const failKeyPrefix: Record<QuickPipelineStage, string> = {
+      script: '',
+      segment: '',
+      style: '',
+      audio: 'audio-',
+      images: 'image-',
+      videos: 'video-',
+      done: '',
+    };
+    const expectedType = stageProcessingType[activeStage];
+    const list: Partial<Scene>[] =
+      scenes.length > 0
+        ? scenes
+        : Array.from<unknown, Partial<Scene>>({ length: totalScenes }, () => ({}));
+    // Pre-compute which scenes are still pending. For the videos stage the
+    // batch handler runs scenes sequentially with a 60s rate-limit wait
+    // *before* the next scene is marked as in-progress. During that wait
+    // `processingSet` is empty, so the very next un-finished scene is shown
+    // as "waiting" instead of plain "queued" to set accurate expectations.
+    const pendingIndices: number[] = [];
+    list.forEach((s, idx) => {
+      const isDone =
+        activeStage === 'audio'
+          ? !!s.audio_path
+          : activeStage === 'images'
+          ? !!s.image_path
+          : !!s.video_path;
+      const failKey = `${failKeyPrefix[activeStage]}${idx}`;
+      if (!isDone && !failedScenes.get(failKey)) pendingIndices.push(idx);
+    });
+    const isVideoWaiting =
+      activeStage === 'videos' &&
+      processingType === 'video' &&
+      processingSet.size === 0 &&
+      pendingIndices.length > 0;
+    const nextWaitingIdx = isVideoWaiting ? pendingIndices[0] : -1;
+    return list.map((s, idx) => {
+      const isProcessing = processingType === expectedType && processingSet.has(idx);
+      const failKey = `${failKeyPrefix[activeStage]}${idx}`;
+      const failed = failedScenes.get(failKey);
+      let done = false;
+      if (activeStage === 'audio') done = !!s.audio_path;
+      else if (activeStage === 'images') done = !!s.image_path;
+      else if (activeStage === 'videos') done = !!s.video_path;
+      let status: SceneStageStatus = 'queued';
+      if (failed) status = 'failed';
+      else if (done) status = 'done';
+      else if (isProcessing) status = 'in-progress';
+      else if (idx === nextWaitingIdx) status = 'waiting';
+      const label =
+        status === 'done'
+          ? '완료'
+          : status === 'in-progress'
+          ? '생성 중...'
+          : status === 'failed'
+          ? '실패'
+          : status === 'waiting'
+          ? '대기열 대기 중'
+          : '대기 중';
+      return {
+        idx,
+        status,
+        // Use the scene image as the thumbnail for done scenes when available
+        // (works for the images and videos stages; audio stage falls back to a number badge).
+        thumbnail: s.image_path || undefined,
+        errorMessage: failed,
+        label,
+      };
+    });
+  }, [activeStage, scenes, processingSet, processingType, failedScenes, totalScenes]);
+
+  const completedCount = sceneViews.filter(v => v.status === 'done').length;
+  const inProgressCount = sceneViews.filter(v => v.status === 'in-progress').length;
+  const failedCount = sceneViews.filter(v => v.status === 'failed').length;
+  const remainingCount = Math.max(0, sceneViews.length - completedCount - failedCount);
+
+  // Estimated time remaining: extrapolate from how long completed scenes took
+  // in the current stage. Falls back to a per-stage default when nothing has
+  // finished yet.
+  const estimatedRemainingMs = useMemo(() => {
+    if (!activeStage || !PER_SCENE_STAGES.includes(activeStage) || sceneViews.length === 0)
+      return null;
+    if (remainingCount === 0 && inProgressCount === 0) return null;
+    const startedAt = stageStartedRef.current.get(activeStage);
+    if (!startedAt) return null;
+    const elapsed = now - startedAt;
+    if (completedCount > 0) {
+      const perScene = elapsed / completedCount;
+      // remainingCount already includes both queued and in-progress scenes,
+      // so multiply once — adding inProgressCount again would double-count.
+      return perScene * remainingCount;
+    }
+    // No scenes finished yet — use rough defaults so we still show *something*.
+    const defaults: Partial<Record<QuickPipelineStage, number>> = {
+      audio: 8_000,
+      images: 25_000,
+      videos: 90_000,
+    };
+    const perScene = defaults[activeStage] ?? 15_000;
+    return perScene * sceneViews.length;
+  }, [activeStage, sceneViews.length, completedCount, inProgressCount, remainingCount, now]);
+
+  const stageList: QuickPipelineStage[] = useMemo(() => {
+    const base: QuickPipelineStage[] = ['script', 'segment', 'style'];
+    if (!useVeoAudio) base.push('audio');
+    base.push('images');
+    if (!isPresentationMode) base.push('videos');
+    return base;
+  }, [useVeoAudio, isPresentationMode]);
+
+  const stageReached = (stage: QuickPipelineStage): boolean => {
+    if (!activeStage) return false;
+    if (activeStage === 'done') return true;
+    return stageList.indexOf(stage) <= stageList.indexOf(activeStage);
+  };
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12 relative">
@@ -214,33 +407,192 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
           </div>
         )}
 
-        {(running || (progress && progress.percent > 0)) && !failure && (
-          <div className="py-8 text-center">
-            <div className="relative inline-block mb-10">
-              <div className="w-32 h-32 border-8 border-gray-100 border-t-brand-cyan rounded-full animate-spin"></div>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-2xl font-black text-brand-dark tabular-nums">{progress?.percent ?? 0}%</span>
+        {(running || (progress && progress.percent > 0)) && (
+          <div className="py-8">
+            <div className="text-center">
+              <div className="relative inline-block mb-8">
+                {failure ? (
+                  <div className="w-32 h-32 border-8 border-red-100 border-t-red-400 rounded-full"></div>
+                ) : (
+                  <div className="w-32 h-32 border-8 border-gray-100 border-t-brand-cyan rounded-full animate-spin"></div>
+                )}
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className={`text-2xl font-black tabular-nums ${failure ? 'text-red-500' : 'text-brand-dark'}`}>
+                    {failure ? '!' : `${progress?.percent ?? 0}%`}
+                  </span>
+                </div>
+              </div>
+              <p className="text-2xl font-black text-brand-dark mb-2">
+                {failure ? '생성 중단됨' : progress?.label || '진행 중...'}
+              </p>
+              {activeStage && PER_SCENE_STAGES.includes(activeStage) && sceneViews.length > 0 ? (
+                <p className="text-sm text-gray-500 font-bold mb-2">
+                  씬 {completedCount} / {sceneViews.length} 완료
+                  {inProgressCount > 0 ? ` · 진행 ${inProgressCount}` : ''}
+                  {failedCount > 0 ? ` · 실패 ${failedCount}` : ''}
+                </p>
+              ) : null}
+              {!failure && estimatedRemainingMs !== null && (
+                <p className="text-xs text-gray-400 mb-6">
+                  예상 남은 시간: {formatDuration(estimatedRemainingMs / 1000)}
+                </p>
+              )}
+              {!failure && estimatedRemainingMs === null && (
+                <p className="text-sm text-gray-400 italic mb-6">잠시만 기다려주세요. 비디오 단계는 씬당 약 1분 + 60초 대기가 필요합니다.</p>
+              )}
+              <div className="max-w-md mx-auto h-3 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-700 ${
+                    failure
+                      ? 'bg-gradient-to-r from-red-300 to-red-500'
+                      : 'bg-gradient-to-r from-brand-cyan to-emerald-400'
+                  }`}
+                  style={{ width: `${progress?.percent ?? 0}%` }}
+                />
               </div>
             </div>
-            <p className="text-2xl font-black text-brand-dark mb-3">{progress?.label || '진행 중...'}</p>
-            <p className="text-sm text-gray-400 italic mb-8">잠시만 기다려주세요. 비디오 단계는 씬당 약 1분 + 60초 대기가 필요합니다.</p>
-            <div className="max-w-md mx-auto h-3 bg-gray-100 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-brand-cyan to-emerald-400 rounded-full transition-all duration-700"
-                style={{ width: `${progress?.percent ?? 0}%` }}
-              />
+
+            {/* Stage timeline */}
+            <div className="mt-10 flex items-center justify-center gap-2 flex-wrap">
+              {stageList.map((stage, i) => {
+                const reached = stageReached(stage);
+                const current = stage === activeStage && !failure;
+                const meta = STAGE_META[stage];
+                const StageIcon = meta.Icon;
+                return (
+                  <React.Fragment key={stage}>
+                    {i > 0 && (
+                      <span
+                        className={`h-[2px] w-6 ${
+                          reached ? 'bg-brand-cyan' : 'bg-gray-200'
+                        }`}
+                      />
+                    )}
+                    <div
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-black uppercase tracking-widest border-2 transition-colors ${
+                        current
+                          ? 'border-brand-cyan bg-brand-cyan/10 text-brand-dark'
+                          : reached
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                          : 'border-gray-100 bg-gray-50 text-gray-400'
+                      }`}
+                    >
+                      {current ? (
+                        <Icons.Loader2 size={12} className="animate-spin" />
+                      ) : reached ? (
+                        <Icons.Check size={12} />
+                      ) : (
+                        <StageIcon size={12} />
+                      )}
+                      {meta.label}
+                    </div>
+                  </React.Fragment>
+                );
+              })}
             </div>
+
+            {/* Per-scene grid */}
+            {activeStage && PER_SCENE_STAGES.includes(activeStage) && sceneViews.length > 0 && (
+              <div className="mt-8">
+                <div className="flex items-center justify-between mb-4 px-1">
+                  <h3 className="text-xs font-black uppercase tracking-[0.2em] text-gray-500">
+                    씬별 상태 ({STAGE_META[activeStage].label})
+                  </h3>
+                  <span className="text-[11px] font-bold text-gray-400">
+                    {completedCount}/{sceneViews.length} 완료
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                  {sceneViews.map(view => {
+                    const borderClass =
+                      view.status === 'done'
+                        ? 'border-emerald-300'
+                        : view.status === 'in-progress'
+                        ? 'border-brand-cyan animate-pulse'
+                        : view.status === 'waiting'
+                        ? 'border-amber-300'
+                        : view.status === 'failed'
+                        ? 'border-red-300'
+                        : 'border-gray-200';
+                    const statusBadgeClass =
+                      view.status === 'done'
+                        ? 'bg-emerald-500 text-white'
+                        : view.status === 'in-progress'
+                        ? 'bg-brand-cyan text-brand-dark'
+                        : view.status === 'waiting'
+                        ? 'bg-amber-400 text-white'
+                        : view.status === 'failed'
+                        ? 'bg-red-500 text-white'
+                        : 'bg-gray-200 text-gray-500';
+                    const isImageStage = activeStage === 'images';
+                    const showThumb =
+                      view.thumbnail && (activeStage === 'videos' || (isImageStage && view.status === 'done'));
+                    return (
+                      <div
+                        key={view.idx}
+                        className={`relative rounded-2xl overflow-hidden border-2 ${borderClass} bg-gray-50 aspect-video transition-colors`}
+                        title={view.errorMessage || `씬 ${view.idx + 1} — ${view.label}`}
+                      >
+                        {showThumb ? (
+                          <img
+                            src={view.thumbnail}
+                            alt={`Scene ${view.idx + 1}`}
+                            className="absolute inset-0 w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="text-3xl font-black text-gray-300 tabular-nums">
+                              {view.idx + 1}
+                            </span>
+                          </div>
+                        )}
+                        {/* Overlay for in-progress / waiting / failed */}
+                        {view.status === 'in-progress' && (
+                          <div className="absolute inset-0 bg-brand-cyan/30 flex items-center justify-center">
+                            <Icons.Loader2 className="animate-spin text-white" size={24} />
+                          </div>
+                        )}
+                        {view.status === 'waiting' && (
+                          <div className="absolute inset-0 bg-amber-400/30 flex items-center justify-center">
+                            <Icons.Clock className="text-white" size={20} />
+                          </div>
+                        )}
+                        {view.status === 'failed' && (
+                          <div className="absolute inset-0 bg-red-500/40 flex items-center justify-center">
+                            <Icons.AlertCircle className="text-white" size={20} />
+                          </div>
+                        )}
+                        {/* Bottom label */}
+                        <div className="absolute bottom-0 left-0 right-0 px-2 py-1.5 bg-black/60 backdrop-blur-sm flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-white/90">
+                            씬 {view.idx + 1}
+                          </span>
+                          <span
+                            className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full ${statusBadgeClass}`}
+                          >
+                            {view.label}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {failedCount > 0 && (
+                  <p className="text-[11px] text-red-500 font-bold mt-3 text-center">
+                    {failedCount}개 씬에서 오류가 발생했습니다. 단계 종료 후 재시도할 수 있습니다.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
 
         {failure && (
-          <div className="py-8 text-center">
-            <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-red-100 flex items-center justify-center">
-              <Icons.AlertCircle size={36} className="text-red-500" />
+          <div className="pt-2 pb-8 text-center">
+            <div className="max-w-xl mx-auto px-6 py-4 rounded-2xl bg-red-50 border-2 border-red-100 mb-6">
+              <p className="text-sm font-bold text-red-700 mb-1">단계 {failure.step}에서 문제가 발생했습니다.</p>
+              <p className="text-xs text-red-500">{failure.error}</p>
             </div>
-            <h3 className="text-3xl font-black text-brand-dark mb-2">생성 중단됨</h3>
-            <p className="text-gray-500 mb-2">단계 {failure.step}에서 문제가 발생했습니다.</p>
-            <p className="text-sm text-red-500 font-bold mb-8 max-w-md mx-auto">{failure.error}</p>
             <div className="flex gap-3 justify-center flex-wrap">
               <button
                 onClick={handleHandoff}
