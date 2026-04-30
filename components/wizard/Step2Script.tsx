@@ -3,6 +3,17 @@ import { Icons } from '../Icons';
 import { generateScript, segmentScriptIntoScenes, generateStyleSheet } from '../../services/geminiService';
 import { useWizard } from './WizardContext';
 
+function alertGeminiError(prefix: string, e: any) {
+  const msg = String(e?.message || '');
+  if (msg.includes('API key') || msg.includes('API 키가 설정되지 않았습니다')) {
+    alert('API 키가 설정되지 않았습니다. 관리 페이지에서 Gemini API 키를 설정해주세요.');
+  } else if (msg.startsWith('Gemini ')) {
+    alert(msg);
+  } else {
+    alert(`${prefix}: ${msg || '알 수 없는 오류'}`);
+  }
+}
+
 export const Step2Script: React.FC = () => {
   const w = useWizard();
   const {
@@ -47,11 +58,7 @@ export const Step2Script: React.FC = () => {
               setScript(result);
             } catch (e: any) {
               console.error('Script generation failed:', e);
-              alert(
-                e?.message?.includes('API key')
-                  ? 'API 키가 설정되지 않았습니다. Gemini API 키(API_KEY)를 환경 변수에 설정해주세요.'
-                  : `스크립트 생성 실패: ${e?.message || '알 수 없는 오류'}`
-              );
+              alertGeminiError('스크립트 생성 실패', e);
             } finally {
               setLoading(false);
             }
@@ -98,8 +105,9 @@ export const Step2Script: React.FC = () => {
               setMaxStep(prev => Math.max(prev, 3));
               setLoading(false);
               await sync(3, s, {}, { script, topic, maxStep: Math.max(maxStep, 3) });
-            } catch (e) {
+            } catch (e: any) {
               console.error('Scene segmentation failed:', e);
+              alertGeminiError('스토리보드 구성 실패', e);
               setLoading(false);
             }
           }}

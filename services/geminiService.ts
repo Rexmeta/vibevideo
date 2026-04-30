@@ -58,13 +58,17 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 1, label:
     } catch (e: any) {
       lastError = e;
       const errStr = String(e?.message || '') + String(e?.status || '');
-      const is429 = errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED');
+      const errLower = errStr.toLowerCase();
+      const is429 = errLower.includes('429') || errLower.includes('resource_exhausted');
       const isRetryable = is429 ||
-                          errStr.includes('시간 초과') || 
-                          errStr.includes('timeout') ||
-                          errStr.includes('DEADLINE_EXCEEDED') ||
-                          errStr.includes('503') ||
-                          errStr.includes('500');
+                          errStr.includes('시간 초과') ||
+                          errLower.includes('timeout') ||
+                          errLower.includes('deadline_exceeded') ||
+                          errLower.includes('503') ||
+                          errLower.includes('unavailable') ||
+                          errLower.includes('high demand') ||
+                          errLower.includes('overloaded') ||
+                          errLower.includes('500');
       if (attempt < maxRetries && isRetryable) {
         let retryAfter = 0;
         if (e?.headers?.get) {
@@ -72,7 +76,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 1, label:
         }
         const baseDelay = is429 ? 60000 : 5000;
         const delay = retryAfter || Math.min(baseDelay * Math.pow(2, attempt), 180000);
-        console.log(`[Retry] ${label} attempt ${attempt + 1} failed (${is429 ? '429 rate limit' : errStr.slice(0, 50)}), retrying in ${delay / 1000}s...`);
+        console.log(`[Retry] ${label} attempt ${attempt + 1} failed (${is429 ? '429 rate limit' : errStr.slice(0, 80)}), retrying in ${delay / 1000}s...`);
         await new Promise(r => setTimeout(r, delay));
       } else {
         break;
@@ -80,6 +84,32 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 1, label:
     }
   }
   throw lastError;
+}
+
+function normalizeGeminiError(e: any, label: string): Error {
+  const raw = String(e?.message || '') + ' ' + String(e?.status || '');
+  const lower = raw.toLowerCase();
+  console.warn(`[${label}] raw error:`, e);
+
+  if (raw.includes('API 키가 설정되지 않았습니다') || lower.includes('api key') || lower.includes('api_key')) {
+    return e instanceof Error ? e : new Error(String(e?.message || raw));
+  }
+
+  let friendly = '';
+  if (raw.includes('503') || lower.includes('unavailable') || lower.includes('high demand') || lower.includes('overloaded')) {
+    friendly = 'Gemini 서버가 일시적으로 혼잡합니다. 잠시 후 다시 시도해 주세요.';
+  } else if (raw.includes('429') || lower.includes('resource_exhausted') || lower.includes('rate limit')) {
+    friendly = 'Gemini 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.';
+  } else if (raw.includes('시간 초과') || lower.includes('timeout') || lower.includes('deadline_exceeded')) {
+    friendly = 'Gemini 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.';
+  } else if (raw.includes('500') || lower.includes('internal')) {
+    friendly = 'Gemini 서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
+  }
+
+  if (friendly) {
+    return new Error(friendly);
+  }
+  return e instanceof Error ? e : new Error(String(e?.message || raw || '알 수 없는 오류'));
 }
 
 async function urlToBase64(url: string): Promise<string> {
@@ -208,18 +238,27 @@ export const generateScriptOutline = async (
 
   const prompt = `Topic: "${topic}"\nVisual style hint: ${style}\nGoal duration: ${lengthSeconds}s.\n\nReturn JSON: { hook: string, beats: string[${sceneCount}], cta?: string }. The first beat must implement the hook.`;
 
-  const response = await withTimeout(
-    ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: `${sys}\n\n${prompt}`,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: OUTLINE_SCHEMA as any,
-      },
-    }),
-    60000,
-    '스크립트 아웃라인 생성',
-  );
+  let response;
+  try {
+    response = await withRetry(
+      () => withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: `${sys}\n\n${prompt}`,
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: OUTLINE_SCHEMA as any,
+          },
+        }),
+        60000,
+        '스크립트 아웃라인 생성',
+      ),
+      1,
+      'generateScriptOutline',
+    );
+  } catch (e) {
+    throw normalizeGeminiError(e, 'generateScriptOutline');
+  }
   try {
     const parsed = JSON.parse(response.text || '{}');
     return {
@@ -269,14 +308,23 @@ export const generateScript = async (
 
   const userPrompt = `Topic: "${topic}". Visual style cue: ${style}. Goal duration: ${lengthSeconds}s.${outlineBlock}\n\nWrite the spoken script now. The first sentence is the hook.`;
 
-  const response = await withTimeout(
-    ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: `${sys}\n\n${userPrompt}`,
-    }),
-    60000,
-    '스크립트 생성',
-  );
+  let response;
+  try {
+    response = await withRetry(
+      () => withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: `${sys}\n\n${userPrompt}`,
+        }),
+        60000,
+        '스크립트 생성',
+      ),
+      1,
+      'generateScript',
+    );
+  } catch (e) {
+    throw normalizeGeminiError(e, 'generateScript');
+  }
   return response.text || 'Script generation failed.';
 };
 
@@ -348,18 +396,27 @@ Vary shotType across shots to keep visual rhythm. ${platform ? `Target platform 
 
 Output JSON array. Script: "${script}"`;
 
-  const response = await withTimeout(
-    ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: SHOTLIST_SCHEMA as any,
-      },
-    }),
-    60000,
-    '씬 분석',
-  );
+  let response;
+  try {
+    response = await withRetry(
+      () => withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: SHOTLIST_SCHEMA as any,
+          },
+        }),
+        60000,
+        '씬 분석',
+      ),
+      1,
+      'segmentScriptIntoScenes',
+    );
+  } catch (e) {
+    throw normalizeGeminiError(e, 'segmentScriptIntoScenes');
+  }
 
   const data = JSON.parse(response.text || '[]');
   const validCastNames = new Set(castNames);
@@ -422,17 +479,21 @@ export const generateStyleSheet = async (
   const user = `Topic: "${topic}"\nGenre: ${genre?.label || 'general'}\nVisual style: ${visualStyle}\nScript excerpt: ${script.slice(0, 600)}\n\nReturn JSON: { palette: string[5], lighting: string, mood: string, tone?: string }.`;
 
   try {
-    const response = await withTimeout(
-      ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: `${sys}\n\n${user}`,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: STYLE_SHEET_SCHEMA as any,
-        },
-      }),
-      45000,
-      'StyleSheet 생성',
+    const response = await withRetry(
+      () => withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: `${sys}\n\n${user}`,
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: STYLE_SHEET_SCHEMA as any,
+          },
+        }),
+        45000,
+        'StyleSheet 생성',
+      ),
+      1,
+      'generateStyleSheet',
     );
     const parsed = JSON.parse(response.text || '{}');
     const palette = Array.isArray(parsed.palette) ? parsed.palette.map((c: any) => String(c)).filter((c: string) => /^#?[0-9a-fA-F]{6}$/.test(c.replace('#', ''))).map((c: string) => c.startsWith('#') ? c : `#${c}`).slice(0, 5) : [];
