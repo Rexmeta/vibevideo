@@ -886,6 +886,16 @@ export interface GenerateVideoOptions {
   negativePrompt?: string;
   referenceImage?: string; // project-level character reference (data URL, http URL, or raw base64)
   referenceImages?: NamedReferenceImage[]; // per-scene named character references
+  // Per-scene user preference for the Veo seed (Task #27). Defaults to
+  // 'scene-image' when unset, which means: prefer the per-scene image and
+  // fall back to the project-level character reference (Task #14 behavior).
+  //  - 'scene-image' → use per-scene image; fall back to reference if absent
+  //  - 'reference'   → force the project-level character reference image
+  //                    (ignores per-scene image even if present)
+  //  - 'text-only'   → no seed image; Veo runs purely from the text prompt
+  // The actual seed used is reported back via GenerateVideoResult.seedSource
+  // (which can downgrade to 'text-only' if image-based generation fails).
+  seedPreference?: SeedSource;
 }
 
 // NOTE: every video model currently integrated through this codebase
@@ -929,11 +939,24 @@ export const generateSceneVideo = async (
   }
   console.log(`[Video Gen] Requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}`);
 
-  // Prefer the per-scene generated image as seed. If absent, fall back to the
-  // project-level locked character reference image so Veo still locks identity
-  // instead of going text-only.
-  const effectiveSeedSource = imageSource || options.referenceImage;
-  const seedFromReference = !imageSource && !!options.referenceImage;
+  // Per-scene seed selection (Task #27). Default behaviour ('scene-image'):
+  // prefer the per-scene generated image, falling back to the project-level
+  // locked character reference image when the per-scene image is missing
+  // (Task #14). Users can also force 'reference' or 'text-only' per scene.
+  const seedMode: SeedSource = options.seedPreference || 'scene-image';
+  let effectiveSeedSource: string | undefined;
+  let seedFromReference = false;
+  if (seedMode === 'text-only') {
+    effectiveSeedSource = undefined;
+  } else if (seedMode === 'reference') {
+    effectiveSeedSource = options.referenceImage;
+    seedFromReference = !!options.referenceImage;
+  } else {
+    // 'scene-image' (default): scene image first, then reference fallback.
+    effectiveSeedSource = imageSource || options.referenceImage;
+    seedFromReference = !imageSource && !!options.referenceImage;
+  }
+  console.log(`[Video Gen] Seed preference: ${seedMode} (sceneImage=${!!imageSource}, refImage=${!!options.referenceImage}, using=${seedFromReference ? 'reference' : effectiveSeedSource ? 'scene-image' : 'text-only'})`);
 
   let imageData: { imageBytes: string; mimeType: string } | undefined;
   if (effectiveSeedSource) {

@@ -169,7 +169,16 @@ export interface Scene {
   qualityNotes?: string;
   captionWords?: CaptionWord[];
   characters?: string[]; // names of characters from project.character_references that appear in this scene
+  // Records the seed source that was actually used by the last video
+  // generation (could downgrade to 'text-only' if image-based generation
+  // failed and we fell back). Surfaced as a badge on the Step 5 card.
   seedSource?: SeedSource;
+  // User preference (Task #27) for which seed to feed Veo on the next
+  // generation. 'scene-image' (default) prefers the per-scene image and
+  // falls back to the project-level character reference when absent.
+  // 'reference' forces the character reference even if a scene image
+  // exists. 'text-only' suppresses any seed image.
+  videoSeedPreference?: SeedSource;
 }
 
 export type ModelType = 'image' | 'video' | 'audio';
