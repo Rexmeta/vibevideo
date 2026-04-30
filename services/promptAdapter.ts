@@ -110,7 +110,7 @@ function buildGeminiImagePrompt(input: AdapterInput): string {
 }
 
 function buildVeoPrompt(input: AdapterInput): string {
-  const { shot, styleSheet, characterProfile, audioScript, previousSceneContext, sceneIndex, hasReferenceImage } = input;
+  const { shot, styleSheet, characterProfile, audioScript, previousSceneContext, sceneIndex, hasReferenceImage, namedCharacters, attachedCharacterRefs } = input;
   const styleStr = serializeStyleSheet(styleSheet);
   const shotStr = serializeShot(shot);
   const visual = shot.visual_prompt || '';
@@ -121,11 +121,28 @@ function buildVeoPrompt(input: AdapterInput): string {
     styleStr ? `Style sheet — ${styleStr}.` : '',
   ];
 
-  if (hasReferenceImage) {
+  const named = (namedCharacters || []).filter(c => c && c.name);
+  if (named.length > 0) {
+    lines.push(
+      `[Cast in this scene]: ${named.map(c => `"${c.name}"${c.description ? ` — ${c.description}` : ''}`).join('; ')}. Each named character MUST keep the same face, hair, body type and clothing across every shot of this project. Do not swap, merge, or invent different people.`,
+    );
+  }
+
+  const attached = (attachedCharacterRefs || []).filter(r => r && r.name);
+  if (attached.length > 0) {
+    const list = attached.map((r, i) => `(${i + (hasReferenceImage ? 2 : 1)}) "${r.name}"${r.description ? ` — ${r.description}` : ''}`).join('; ');
+    const prefix = hasReferenceImage
+      ? '[Additional character reference images attached]: '
+      : '[Character reference images attached]: ';
+    lines.push(
+      `${prefix}${list}. Animate each named character so they match their attached model-sheet image exactly — identical face, hair, body type, clothing and overall identity.`,
+    );
+  } else if (hasReferenceImage) {
     lines.push(
       '[Character reference image attached]: The accompanying still image shows the locked main character. The animated subject MUST be the SAME person — identical face, hair, body type, clothing, and overall identity. Do not invent a different character.',
     );
   }
+
   if (previousSceneContext && sceneIndex !== undefined && sceneIndex > 0) {
     lines.push(
       `[Scene continuity - Scene ${sceneIndex + 1}]: This scene follows directly from the previous scene. Previous scene: "${previousSceneContext}". Start this scene as a natural continuation — maintain visual flow, environment consistency, and smooth transition from the previous action. Do NOT reset or repeat the opening of the previous scene.`,
@@ -138,7 +155,7 @@ function buildVeoPrompt(input: AdapterInput): string {
 }
 
 function buildGenericPrompt(input: AdapterInput): string {
-  const { shot, styleSheet, characterProfile, visualStyle } = input;
+  const { shot, styleSheet, characterProfile, visualStyle, namedCharacters } = input;
   const tags: string[] = [];
   if (shot.visual_prompt) tags.push(shot.visual_prompt);
   if (visualStyle) tags.push(visualStyle);
@@ -147,6 +164,11 @@ function buildGenericPrompt(input: AdapterInput): string {
   const styleStr = serializeStyleSheet(styleSheet);
   if (styleStr) tags.push(styleStr);
   if (characterProfile) tags.push(`character: ${characterProfile}`);
+  const named = (namedCharacters || []).filter(c => c && c.name);
+  if (named.length > 0) {
+    tags.push(`cast in this scene: ${named.map(c => `"${c.name}"${c.description ? ` (${c.description})` : ''}`).join(', ')}`);
+    tags.push('keep each named character visually consistent with prior scenes (same face, hair, body, clothing)');
+  }
   tags.push('cinematic', '8k', 'high detail');
   return tags.join(', ');
 }

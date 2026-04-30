@@ -891,7 +891,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             characterProfile || undefined,
             prevContext,
             idx,
-            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt, referenceImage: characterReferenceImage },
+            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt, referenceImage: characterReferenceImage, referenceImages: referenceImagesForScene(s) },
           );
           if (videoResult?.videoUrl) {
             addStats(videoResult.stats);
@@ -966,7 +966,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         characterProfile || undefined,
         prevContext,
         idx,
-        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, referenceImage: characterReferenceImage },
+        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, referenceImage: characterReferenceImage, referenceImages: referenceImagesForScene(currentScene) },
       );
       if (videoResult?.videoUrl) {
         addStats(videoResult.stats);

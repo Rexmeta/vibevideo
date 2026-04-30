@@ -885,7 +885,16 @@ export interface GenerateVideoOptions {
   styleSheet?: StyleSheet;
   negativePrompt?: string;
   referenceImage?: string; // project-level character reference (data URL, http URL, or raw base64)
+  referenceImages?: NamedReferenceImage[]; // per-scene named character references
 }
+
+// NOTE: every video model currently integrated through this codebase
+// (Google Veo via `attemptVideoGeneration`) only accepts a single seed image
+// in `payload.image`. So per-character references for video are forwarded as
+// text-only naming in the prompt for now. When a multi-image-capable video
+// model is added, also extend `attemptVideoGeneration` to send the extra
+// reference images on the request — flipping a flag here without wiring the
+// API call would be misleading.
 
 export const generateSceneVideo = async (
   prompt: string,
@@ -958,6 +967,14 @@ export const generateSceneVideo = async (
   // project-level reference exists OR whenever we're seeding from that reference.
   const hasReferenceImage = !!options.referenceImage || seedFromReference;
 
+  // Per-scene named character references — every currently integrated video
+  // model only accepts a single seed image, so we surface the named cast in
+  // the text prompt so the model still knows who appears in this shot. We do
+  // NOT claim attached refs to the prompt because we are not actually sending
+  // them on the API call. (See top-of-file note on multi-image wiring.)
+  const sceneNamedRefs = (options.referenceImages || []).filter(r => r && r.name && r.name.trim());
+  const namedCharactersForPrompt = sceneNamedRefs.map(r => ({ name: r.name!.trim(), description: r.description }));
+
   const sceneShot: Partial<Scene> = options.scene
     ? { ...options.scene, visual_prompt: options.scene.visual_prompt || prompt }
     : { visual_prompt: prompt };
@@ -972,6 +989,7 @@ export const generateSceneVideo = async (
       sceneIndex,
       aspectRatio,
       hasReferenceImage,
+      namedCharacters: namedCharactersForPrompt.length > 0 ? namedCharactersForPrompt : undefined,
     },
     provider,
     modelId,
@@ -980,7 +998,7 @@ export const generateSceneVideo = async (
   if (adapter.negativePrompt) {
     fullPrompt += `\n\n[Negative prompt — strictly avoid]: ${adapter.negativePrompt}`;
   }
-  console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}, continuity: ${!!previousSceneContext}, negative: ${!!adapter.negativePrompt}`);
+  console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}, continuity: ${!!previousSceneContext}, negative: ${!!adapter.negativePrompt}, namedCast: ${namedCharactersForPrompt.length} (text-only — single-image API)`);
 
   // Track which seed source actually got used (could downgrade to 'text-only'
   // if image-based generation fails and we fall back to text-only).
