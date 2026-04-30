@@ -584,6 +584,23 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     return matched.map(c => ({ name: c.name, description: c.description, image: c.imageUrl }));
   };
 
+  const toggleSceneCharacter = (idx: number, name: string) => {
+    if (!name) return;
+    setScenes(prev => {
+      const next = [...prev];
+      const old = next[idx];
+      if (!old) return prev;
+      const current = (old.characters || []).filter((c): c is string => typeof c === 'string' && c.length > 0);
+      const exists = current.some(c => c.toLowerCase() === name.toLowerCase());
+      const updated = exists
+        ? current.filter(c => c.toLowerCase() !== name.toLowerCase())
+        : [...current, name];
+      next[idx] = { ...old, characters: updated };
+      return next;
+    });
+    sync();
+  };
+
   const updateSceneAt = (idx: number, updates: Partial<Scene>) => {
     setScenes(prev => {
       const next = [...prev];
@@ -2180,6 +2197,55 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                       {isActive && <span className="bg-brand-cyan/20 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-black uppercase animate-pulse">Processing</span>}
                     </div>
                     <p className="text-brand-dark text-sm font-medium leading-relaxed italic mb-3">"{s.script_segment}"</p>
+                    {(step === 3 || step === 4) && characterReferences.length > 0 && (() => {
+                      const tagged = (s.characters || []).filter((t): t is string => typeof t === 'string' && t.length > 0);
+                      const taggedLower = new Set(tagged.map(t => t.toLowerCase()));
+                      const available = characterReferences.filter(c => c.name && !taggedLower.has(c.name.toLowerCase()));
+                      return (
+                        <div className="flex items-center gap-2 mb-3 flex-wrap">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 mr-1">Cast</span>
+                          {tagged.length === 0 && available.length > 0 && (
+                            <span className="text-[10px] text-gray-300 italic mr-1">캐릭터 없음 — 아래에서 추가</span>
+                          )}
+                          {tagged.map(name => {
+                            const ref = characterReferences.find(c => c.name.toLowerCase() === name.toLowerCase());
+                            return (
+                              <button
+                                key={`tagged-${name}`}
+                                type="button"
+                                onClick={() => toggleSceneCharacter(i, name)}
+                                className="group flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-red-50 hover:border-red-200 hover:text-red-700 transition-colors"
+                                title={`'${name}' 제거`}
+                              >
+                                {ref?.imageUrl ? (
+                                  <img src={ref.imageUrl} alt="" className="w-5 h-5 rounded-full object-cover" />
+                                ) : (
+                                  <span className="w-5 h-5 rounded-full bg-emerald-200 flex items-center justify-center text-[9px] font-black">{name.charAt(0).toUpperCase()}</span>
+                                )}
+                                <span className="text-[11px] font-bold">{name}</span>
+                                <Icons.X size={10} className="opacity-50 group-hover:opacity-100" />
+                              </button>
+                            );
+                          })}
+                          {available.map(c => (
+                            <button
+                              key={`avail-${c.name}`}
+                              type="button"
+                              onClick={() => toggleSceneCharacter(i, c.name)}
+                              className="flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full bg-white border border-dashed border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-700 hover:bg-emerald-50 transition-colors"
+                              title={`'${c.name}' 추가`}
+                            >
+                              {c.imageUrl ? (
+                                <img src={c.imageUrl} alt="" className="w-5 h-5 rounded-full object-cover opacity-60" />
+                              ) : (
+                                <span className="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center text-[9px] font-black">{c.name.charAt(0).toUpperCase()}</span>
+                              )}
+                              <span className="text-[11px] font-bold">+ {c.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
                     {step === 4 && (s.lighting || s.durationSec) && (
                       <p className="text-[10px] text-gray-400 mb-3 font-medium">
                         {s.lighting && <>💡 {s.lighting}</>}{s.lighting && s.durationSec ? ' · ' : ''}{s.durationSec ? `⏱ ${s.durationSec}s` : ''}
