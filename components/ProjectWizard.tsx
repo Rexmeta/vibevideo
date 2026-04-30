@@ -53,7 +53,7 @@ const WizardModeRouter: React.FC<{ initialProjectId?: string | null }> = ({ init
     return <QuickMode onSwitchMode={m => setMode(m)} />;
   }
 
-  return <WizardShell />;
+  return <WizardShell onSwitchMode={m => setMode(m)} />;
 };
 
 export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate, initialProjectId }) => {

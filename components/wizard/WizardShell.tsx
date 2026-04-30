@@ -6,8 +6,13 @@ import { Step2Script } from './Step2Script';
 import { StepsAudioImageVideo } from './StepsAudioImageVideo';
 import { Step6Preview } from './Step6Preview';
 import { Step7Export } from './Step7Export';
+import { setStoredMode, type WizardMode } from './ModeGate';
 
-export const WizardShell: React.FC = () => {
+interface WizardShellProps {
+  onSwitchMode?: (mode: WizardMode) => void;
+}
+
+export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode }) => {
   const w = useWizard();
   const {
     audioRef,
@@ -22,7 +27,11 @@ export const WizardShell: React.FC = () => {
     isProcessing,
     loading,
     loadingMessage,
+    scenes,
   } = w;
+
+  const projectHasProgress = (scenes && scenes.length > 0) || maxStep > 1 || step > 1;
+  const canSwitchToQuick = !!onSwitchMode && !projectHasProgress && !syncing && !loading && !isProcessing;
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 relative">
@@ -38,6 +47,23 @@ export const WizardShell: React.FC = () => {
           </span>
         </div>
       </div>
+
+      {/* Mode Toggle */}
+      {canSwitchToQuick && (
+        <div className="max-w-5xl mx-auto mb-6 flex justify-end">
+          <button
+            onClick={() => {
+              setStoredMode('quick');
+              onSwitchMode!('quick');
+            }}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border-2 border-gray-100 hover:border-brand-cyan hover:bg-brand-cyan/5 text-brand-dark text-[11px] font-black uppercase tracking-widest transition-all shadow-sm"
+            title="Quick Mode로 돌아가기"
+          >
+            <Icons.Wand2 size={14} className="text-brand-cyan" />
+            Quick Mode로 전환
+          </button>
+        </div>
+      )}
 
       {/* Stepper */}
       <div className="flex justify-between mb-16 relative max-w-5xl mx-auto">
