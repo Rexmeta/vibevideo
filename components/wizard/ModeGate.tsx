@@ -40,6 +40,36 @@ export const clearStoredMode = (projectId?: string | null) => {
   } catch {}
 };
 
+/**
+ * Remove `vibe_video_mode_pref_<projectId>` entries whose project id is not
+ * present in `validProjectIds`. Caller is responsible for only invoking this
+ * with an authoritative set (e.g. after a successful project-list load).
+ *
+ * Returns the number of entries removed.
+ */
+export const cleanupOrphanedModePrefs = (validProjectIds: Set<string>): number => {
+  let removed = 0;
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(MODE_KEY_PREFIX)) continue;
+      const projectId = key.slice(MODE_KEY_PREFIX.length);
+      if (!projectId) continue;
+      if (!validProjectIds.has(projectId)) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      try {
+        localStorage.removeItem(key);
+        removed++;
+      } catch {}
+    }
+  } catch {}
+  return removed;
+};
+
 interface Props {
   onSelect: (mode: WizardMode) => void;
   projectId?: string | null;

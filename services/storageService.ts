@@ -19,6 +19,7 @@ import {
   startAfter,
   deleteDoc,
   deleteField,
+  documentId,
   serverTimestamp,
   runTransaction,
   DocumentSnapshot,
@@ -525,6 +526,63 @@ export const getAllProjectsFromCloud = async (userId: string): Promise<Project[]
   const local = getLocalProjectsList(userId);
   const { projects } = await syncProjectsFromCloud(userId, local);
   return projects;
+};
+
+/**
+ * Fetch the full set of project ids belonging to `userId` from Firestore.
+ * Both the primary (ordered by `updated_at`) and fallback (ordered by
+ * document id) paths cursor-paginate exhaustively, so the returned set is
+ * always authoritative on success. Throws if Firestore is unreachable or
+ * any page fails; callers must treat a rejected promise as "do not trust"
+ * and skip destructive cleanup.
+ */
+export const getAllProjectIdsFromCloud = async (userId: string): Promise<Set<string>> => {
+  if (!userId || !db) throw new Error('Firestore unavailable');
+
+  const pageSize = 200;
+
+  const runPaginated = async (mode: 'updated_at' | 'doc_id'): Promise<Set<string>> => {
+    const collected = new Set<string>();
+    let cursor: QueryDocumentSnapshot | null = null;
+    while (true) {
+      const orderClause =
+        mode === 'updated_at'
+          ? orderBy('updated_at', 'desc')
+          : orderBy(documentId());
+      const q = cursor
+        ? query(
+            collection(db!, PROJECTS_COLLECTION),
+            where('user_id', '==', userId),
+            orderClause,
+            startAfter(cursor),
+            limit(pageSize)
+          )
+        : query(
+            collection(db!, PROJECTS_COLLECTION),
+            where('user_id', '==', userId),
+            orderClause,
+            limit(pageSize)
+          );
+
+      const snap = await withTimeout(getDocs(q), 15000, '프로젝트 ID 조회');
+      let last: QueryDocumentSnapshot | null = null;
+      snap.forEach(docSnap => {
+        collected.add(docSnap.id);
+        last = docSnap as QueryDocumentSnapshot;
+      });
+
+      if (snap.size < pageSize) return collected;
+      if (!last) return collected;
+      cursor = last;
+    }
+  };
+
+  try {
+    return await runPaginated('updated_at');
+  } catch (error: any) {
+    console.warn('[Database] updated_at id-scan 실패, document id로 재시도:', error?.message);
+    return await runPaginated('doc_id');
+  }
 };
 
 const deleteStorageFolder = async (folderPath: string): Promise<void> => {

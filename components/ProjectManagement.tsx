@@ -4,13 +4,16 @@ import { Project, ViewState } from '../types';
 import { 
   getLocalProjectsList,
   getProjectsPage,
+  getAllProjectIdsFromCloud,
   deleteProjectFromCloud, 
   duplicateProjectInCloud,
   PaginatedResult
 } from '../services/storageService';
 import { QueryDocumentSnapshot } from 'firebase/firestore';
 import { Icons } from './Icons';
-import { clearStoredMode } from './wizard/ModeGate';
+import { clearStoredMode, cleanupOrphanedModePrefs } from './wizard/ModeGate';
+
+const modePrefCleanupRanByUser = new Set<string>();
 
 interface ProjectManagementProps {
   userId: string;
@@ -46,6 +49,35 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
           return dateB - dateA;
         });
         setProjects(merged);
+
+        // Once per signed-in user per session: remove
+        // `vibe_video_mode_pref_<id>` entries for projects that no longer
+        // exist. Needs the full project id set (not just the first cloud
+        // page) so a pref on a later page is not mistakenly removed.
+        // `getAllProjectIdsFromCloud` paginates exhaustively and throws on
+        // failure; cleanup is skipped on rejection and the per-user guard
+        // is only marked after a successful authoritative scan, so a
+        // failed attempt is retried on the next mount.
+        if (!modePrefCleanupRanByUser.has(userId)) {
+          getAllProjectIdsFromCloud(userId)
+            .then(cloudIds => {
+              const validIds = new Set<string>(cloudIds);
+              // Re-read local projects right before deletion so any project
+              // created on this device while the cloud scan was in flight
+              // is still considered valid.
+              getLocalProjectsList(userId).forEach(p => {
+                if (p?.id) validIds.add(p.id);
+              });
+              modePrefCleanupRanByUser.add(userId);
+              const removed = cleanupOrphanedModePrefs(validIds);
+              if (removed > 0) {
+                console.log(`[ModeGate] 정리: 삭제된 프로젝트의 모드 설정 ${removed}개 제거`);
+              }
+            })
+            .catch(err => {
+              console.warn('[ModeGate] 정리 건너뜀: 전체 프로젝트 목록 조회 실패', err?.message);
+            });
+        }
       } else {
         setProjects(result.projects.length > 0 ? result.projects : localData);
       }
