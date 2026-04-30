@@ -1,13 +1,23 @@
 
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { Scene } from "../types";
-import { getEffectiveApiKey } from "./apiKeyService";
+import { getEffectiveApiKey, getGoogleApiKey } from "./apiKeyService";
 
-const getApiKey = () => {
-  const key = process.env.API_KEY;
+const MISSING_API_KEY_MESSAGE = 'API 키가 설정되지 않았습니다. 관리 페이지에서 API 키를 설정해주세요.';
+
+const getApiKey = (): string => {
+  const key = getGoogleApiKey();
   if (!key) {
-    console.warn("API_KEY is not defined in process.env. Using fallback/empty string.");
+    console.warn("[API Key] No Google API key configured (provider key missing and process.env.API_KEY not set).");
     return "";
+  }
+  return key;
+};
+
+const requireApiKey = (): string => {
+  const key = getApiKey();
+  if (!key) {
+    throw new Error(MISSING_API_KEY_MESSAGE);
   }
   return key;
 };
@@ -146,7 +156,7 @@ async function pcmToWav(pcmBase64: string, sampleRate: number = 24000): Promise<
 }
 
 export const generateScript = async (topic: string, style: string, lengthSeconds: number = 60, sceneCount?: number): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const ai = new GoogleGenAI({ apiKey: requireApiKey() });
   const sceneHint = sceneCount ? ` The script should be structured for exactly ${sceneCount} scenes (each scene is approximately 8 seconds of video).` : '';
   const response = await withTimeout(
     ai.models.generateContent({
@@ -160,7 +170,7 @@ export const generateScript = async (topic: string, style: string, lengthSeconds
 };
 
 export const segmentScriptIntoScenes = async (script: string, style: string, ratio: string, characterProfile?: string, sceneCount?: number): Promise<Partial<Scene>[]> => {
-  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const ai = new GoogleGenAI({ apiKey: requireApiKey() });
   const charInstruction = characterProfile 
     ? `\n\nIMPORTANT - Main Character Description (must appear consistently in EVERY scene's visual_prompt): ${characterProfile}. Always describe this exact same character in each visual_prompt to maintain visual consistency across all scenes.`
     : '';
@@ -202,10 +212,7 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
   const cleanText = sanitizeTextForTTS(text);
   if (!cleanText) return null;
 
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    throw new Error('API 키가 설정되지 않았습니다.');
-  }
+  const apiKey = requireApiKey();
 
   console.log(`[TTS] 오디오 생성 시작 - voice: ${selectedVoice}, text length: ${cleanText.length}`);
 
@@ -244,7 +251,7 @@ export const generateSceneImage = async (prompt: string, style: string, aspectRa
 
   const apiKey = isFallback ? getApiKey() : getApiKeyForModel(modelId, provider);
   if (!apiKey) {
-    throw new Error('API 키가 설정되지 않았습니다. 관리 페이지에서 API 키를 설정해주세요.');
+    throw new Error(MISSING_API_KEY_MESSAGE);
   }
 
   if (isFallback) {
@@ -403,7 +410,7 @@ export const generateSceneVideo = async (prompt: string, imageSource?: string, a
   const isFallback = !isGoogleProvider;
 
   const apiKey = isFallback ? getApiKey() : getApiKeyForModel(modelId, provider);
-  if (!apiKey) throw new Error('API 키가 설정되지 않았습니다. 관리 페이지에서 API 키를 설정해주세요.');
+  if (!apiKey) throw new Error(MISSING_API_KEY_MESSAGE);
 
   if (isFallback) {
     console.warn(`[Video Gen] Provider "${provider}" (model: ${modelId}) is not yet integrated. Using Google Veo fallback: ${VEO_MODEL}`);

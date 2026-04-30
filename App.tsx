@@ -13,6 +13,7 @@ import { Icons } from './components/Icons';
 import { auth, isFirebaseConfigured } from './services/firebaseConfig';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { isAdminUser } from './services/modelService';
+import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from './services/apiKeyService';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewState>('landing');
@@ -23,20 +24,46 @@ const App: React.FC = () => {
 
   // 1. Mandatory check for billing-enabled API key for Veo models
   useEffect(() => {
+    let cancelled = false;
+
     const checkKey = async () => {
       try {
+        if (hasAnyGoogleApiKey()) {
+          if (!cancelled) setHasApiKey(true);
+          return;
+        }
         if ((window as any).aistudio) {
           const selected = await (window as any).aistudio.hasSelectedApiKey();
-          setHasApiKey(selected);
+          if (!cancelled) setHasApiKey(!!selected || hasAnyGoogleApiKey());
         } else {
-          setHasApiKey(true);
+          if (!cancelled) setHasApiKey(false);
         }
       } catch (err) {
         console.error("API Key check failed:", err);
-        setHasApiKey(true); 
+        if (!cancelled) setHasApiKey(hasAnyGoogleApiKey());
       }
     };
+
     checkKey();
+
+    const handleKeyChange = () => {
+      if (hasAnyGoogleApiKey()) {
+        setHasApiKey(true);
+      } else {
+        checkKey();
+      }
+    };
+    const handleStorage = (e: StorageEvent) => {
+      if (!e.key || e.key === 'vibe_model_api_keys' || e.key === 'vibe_ai_models') handleKeyChange();
+    };
+    window.addEventListener(API_KEY_CHANGE_EVENT, handleKeyChange);
+    window.addEventListener('storage', handleStorage);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener(API_KEY_CHANGE_EVENT, handleKeyChange);
+      window.removeEventListener('storage', handleStorage);
+    };
   }, []);
 
   // 2. Track Authentication State
@@ -58,7 +85,14 @@ const App: React.FC = () => {
   const handleSelectKey = async () => {
     if ((window as any).aistudio) {
       await (window as any).aistudio.openSelectKey();
-      setHasApiKey(true);
+      try {
+        const selected = await (window as any).aistudio.hasSelectedApiKey();
+        setHasApiKey(!!selected || hasAnyGoogleApiKey());
+      } catch {
+        setHasApiKey(hasAnyGoogleApiKey());
+      }
+    } else {
+      setHasApiKey(hasAnyGoogleApiKey());
     }
   };
 

@@ -48,8 +48,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
       const keys: Record<string, string> = {};
       const endpoints: Record<string, string> = {};
       data.forEach(m => {
-        keys[m.id] = getModelApiKey(m.id) || '';
-        endpoints[m.id] = getModelEndpoint(m.id) || '';
+        keys[m.id] = getModelApiKey(m.id) || (m.modelId ? getModelApiKey(m.modelId) : '') || '';
+        endpoints[m.id] = getModelEndpoint(m.id) || (m.modelId ? getModelEndpoint(m.modelId) : '') || '';
       });
       setEditApiKeys(keys);
       setEditEndpoints(endpoints);
@@ -128,8 +128,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
   };
 
   const handleSaveModelApiKey = (modelId: string) => {
-    setModelApiKey(modelId, editApiKeys[modelId] || '');
-    setModelEndpoint(modelId, editEndpoints[modelId] || '');
+    const value = editApiKeys[modelId] || '';
+    const endpointValue = editEndpoints[modelId] || '';
+    setModelApiKey(modelId, value);
+    setModelEndpoint(modelId, endpointValue);
+    const target = models.find(m => m.id === modelId);
+    if (target?.modelId && target.modelId !== modelId) {
+      setModelApiKey(target.modelId, value);
+      setModelEndpoint(target.modelId, endpointValue);
+    }
     setApiSaveMsg(prev => ({ ...prev, [modelId]: '저장됨' }));
     setTimeout(() => setApiSaveMsg(prev => ({ ...prev, [modelId]: '' })), 2000);
   };

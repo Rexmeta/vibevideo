@@ -25,6 +25,7 @@ export function setModelApiKey(modelId: string, apiKey: string): void {
       delete store[modelId];
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    notifyApiKeyChange();
   } catch (e) {
     console.error('[ApiKeyService] Failed to save API key:', e);
   }
@@ -36,6 +37,7 @@ export function removeModelApiKey(modelId: string): void {
     const store: ApiKeyStore = raw ? JSON.parse(raw) : {};
     delete store[modelId];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    notifyApiKeyChange();
   } catch {}
 }
 
@@ -59,6 +61,7 @@ export function setModelEndpoint(modelId: string, endpoint: string): void {
       delete store[modelId];
     }
     localStorage.setItem(ENDPOINT_KEY, JSON.stringify(store));
+    notifyApiKeyChange();
   } catch (e) {
     console.error('[ApiKeyService] Failed to save endpoint:', e);
   }
@@ -88,6 +91,7 @@ export function setProviderApiKey(provider: string, apiKey: string): void {
       delete store[`provider_${provider}`];
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    notifyApiKeyChange();
   } catch (e) {
     console.error('[ApiKeyService] Failed to save provider API key:', e);
   }
@@ -95,4 +99,79 @@ export function setProviderApiKey(provider: string, apiKey: string): void {
 
 export function getEffectiveApiKey(modelId: string, provider: string): string | null {
   return getModelApiKey(modelId) || getProviderApiKey(provider) || null;
+}
+
+const GOOGLE_PROVIDERS = ['Google', 'NanoBanana'];
+const MODELS_STORAGE_KEY = 'vibe_ai_models';
+export const API_KEY_CHANGE_EVENT = 'vibe:apikey-change';
+
+function notifyApiKeyChange(): void {
+  try {
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent(API_KEY_CHANGE_EVENT));
+    }
+  } catch {}
+}
+
+function readEnvApiKey(): string {
+  try {
+    const key = process.env.API_KEY;
+    return typeof key === 'string' ? key : '';
+  } catch {
+    return '';
+  }
+}
+
+function readStore(): ApiKeyStore {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function readGoogleModelIdentifiers(): string[] {
+  try {
+    const raw = localStorage.getItem(MODELS_STORAGE_KEY);
+    if (!raw) return [];
+    const models = JSON.parse(raw);
+    if (!Array.isArray(models)) return [];
+    const ids: string[] = [];
+    for (const m of models) {
+      if (m && typeof m === 'object' && GOOGLE_PROVIDERS.includes(m.provider)) {
+        if (typeof m.id === 'string' && m.id) ids.push(m.id);
+        if (typeof m.modelId === 'string' && m.modelId) ids.push(m.modelId);
+      }
+    }
+    return ids;
+  } catch {
+    return [];
+  }
+}
+
+function findStoredGoogleModelKey(): string {
+  const store = readStore();
+  const ids = readGoogleModelIdentifiers();
+  for (const id of ids) {
+    const v = store[id];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return '';
+}
+
+export function getGoogleApiKey(): string {
+  for (const provider of GOOGLE_PROVIDERS) {
+    const k = getProviderApiKey(provider);
+    if (k && k.trim()) return k.trim();
+  }
+  const env = readEnvApiKey();
+  if (env && env.trim()) return env.trim();
+  const modelKey = findStoredGoogleModelKey();
+  if (modelKey) return modelKey;
+  return '';
+}
+
+export function hasAnyGoogleApiKey(): boolean {
+  return !!getGoogleApiKey();
 }
