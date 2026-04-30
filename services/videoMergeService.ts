@@ -1,6 +1,7 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile } from '@ffmpeg/util';
-import type { TransitionType, MotionPreset, TextOverlay } from '../types';
+import type { TransitionType, MotionPreset, TextOverlay, CaptionWord, CaptionStyle } from '../types';
+import { renderCaptionFrame } from './captionService';
 
 let ffmpegInstance: FFmpeg | null = null;
 let loadingPromise: Promise<FFmpeg> | null = null;
@@ -28,7 +29,103 @@ const getFFmpeg = async (): Promise<FFmpeg> => {
 export interface MergeInput {
   videoUrl: string;
   audioUrl?: string;
+  captionWords?: CaptionWord[];
+  captionDurationSec?: number;
 }
+
+const getResolution = (aspectRatio: string): { w: number; h: number } => {
+  switch (aspectRatio) {
+    case '9:16': return { w: 720, h: 1280 };
+    case '1:1': return { w: 720, h: 720 };
+    case '3:4': return { w: 540, h: 720 };
+    default: return { w: 1280, h: 720 };
+  }
+};
+
+export interface CaptionRenderOptions {
+  style: CaptionStyle;
+  width: number;
+  height: number;
+}
+
+/**
+ * Burn word-level captions onto an existing clip via chained FFmpeg overlay filters.
+ * Each caption keyframe is rendered as a transparent PNG and enabled only during its time window.
+ * No-op when style.preset === 'none' or words list is empty.
+ */
+const applyCaptionsToClip = async (
+  ffmpeg: FFmpeg,
+  inputClip: string,
+  outputClip: string,
+  words: CaptionWord[],
+  clipDurationSec: number,
+  opts: CaptionRenderOptions
+): Promise<boolean> => {
+  if (!words || words.length === 0 || opts.style.preset === 'none') return false;
+
+  const { width, height, style } = opts;
+  const blobs: Blob[] = [];
+  for (let i = 0; i < words.length; i++) {
+    try {
+      const blob = await renderCaptionFrame(words, i, { width, height, style });
+      blobs.push(blob);
+    } catch (e) {
+      console.warn(`[Captions] frame ${i} render failed:`, e);
+    }
+  }
+  if (blobs.length === 0) return false;
+
+  for (let k = 0; k < blobs.length; k++) {
+    const data = new Uint8Array(await blobs[k].arrayBuffer());
+    await ffmpeg.writeFile(`cap_${k}.png`, data);
+  }
+
+  const inputs: string[] = ['-i', inputClip];
+  for (let k = 0; k < blobs.length; k++) inputs.push('-i', `cap_${k}.png`);
+
+  let filter = '';
+  let prevLabel = '0:v';
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    const startSec = Math.max(0, w.startMs / 1000);
+    const endSec = Math.min(clipDurationSec, w.endMs / 1000);
+    if (endSec <= startSec) continue;
+    const idx = k + 1;
+    const nextLabel = k === words.length - 1 ? 'capped' : `cv${k}`;
+    filter += `[${prevLabel}][${idx}:v]overlay=(W-w)/2:(H-h)/2:enable='between(t,${startSec.toFixed(3)},${endSec.toFixed(3)})'[${nextLabel}]`;
+    if (k < words.length - 1) filter += ';';
+    prevLabel = nextLabel;
+  }
+  if (prevLabel !== 'capped') {
+    filter += `;[${prevLabel}]copy[capped]`;
+  }
+
+  try {
+    await ffmpeg.exec([
+      ...inputs,
+      '-filter_complex', filter,
+      '-map', '[capped]',
+      '-map', '0:a?',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'copy',
+      '-y',
+      outputClip,
+    ]);
+  } catch (e) {
+    console.warn('[Captions] overlay encode failed:', e);
+    for (let k = 0; k < blobs.length; k++) {
+      try { await ffmpeg.deleteFile(`cap_${k}.png`); } catch {}
+    }
+    return false;
+  }
+
+  for (let k = 0; k < blobs.length; k++) {
+    try { await ffmpeg.deleteFile(`cap_${k}.png`); } catch {}
+  }
+  return true;
+};
 
 const fetchAsUint8Array = async (url: string): Promise<Uint8Array> => {
   if (url.startsWith('data:')) {
@@ -80,7 +177,9 @@ export const mergeVideoWithAudio = async (
 
 export const mergeAllScenes = async (
   inputs: MergeInput[],
-  onProgress?: (stage: string, percent: number) => void
+  onProgress?: (stage: string, percent: number) => void,
+  captionStyle?: CaptionStyle,
+  aspectRatio?: string
 ): Promise<Blob> => {
   const ffmpeg = await getFFmpeg();
   const validInputs = inputs.filter(i => i.videoUrl);
@@ -88,6 +187,8 @@ export const mergeAllScenes = async (
   if (validInputs.length === 0) throw new Error('병합할 비디오가 없습니다.');
 
   onProgress?.('준비 중...', 0);
+
+  const captionRes = aspectRatio ? getResolution(aspectRatio) : { w: 1280, h: 720 };
 
   const mergedParts: string[] = [];
   for (let i = 0; i < validInputs.length; i++) {
@@ -132,6 +233,24 @@ export const mergeAllScenes = async (
       ]);
       mergedParts.push(tsFile);
       await ffmpeg.deleteFile(videoFile);
+    }
+
+    if (captionStyle && captionStyle.preset !== 'none' && input.captionWords && input.captionWords.length > 0) {
+      const sourceFile = mergedParts[mergedParts.length - 1];
+      const cappedFile = `capped_${i}.mp4`;
+      const dur = input.captionDurationSec || (input.captionWords[input.captionWords.length - 1].endMs / 1000) || 8;
+      const ok = await applyCaptionsToClip(
+        ffmpeg,
+        sourceFile,
+        cappedFile,
+        input.captionWords,
+        dur,
+        { style: captionStyle, width: captionRes.w, height: captionRes.h }
+      );
+      if (ok) {
+        try { await ffmpeg.deleteFile(sourceFile); } catch {}
+        mergedParts[mergedParts.length - 1] = cappedFile;
+      }
     }
   }
 
@@ -198,16 +317,8 @@ export interface PresentationSceneInput {
   transitionDuration: number;
   motion: MotionPreset;
   textOverlay?: TextOverlay;
+  captionWords?: CaptionWord[];
 }
-
-const getResolution = (aspectRatio: string): { w: number; h: number } => {
-  switch (aspectRatio) {
-    case '9:16': return { w: 720, h: 1280 };
-    case '1:1': return { w: 720, h: 720 };
-    case '3:4': return { w: 540, h: 720 };
-    default: return { w: 1280, h: 720 };
-  }
-};
 
 const renderTextOnImage = async (
   imageUrl: string,
@@ -321,7 +432,8 @@ const getZoomPanFilter = (motion: MotionPreset, frames: number, w: number, h: nu
 export const renderPresentationVideo = async (
   scenes: PresentationSceneInput[],
   aspectRatio: string,
-  onProgress?: (stage: string, percent: number) => void
+  onProgress?: (stage: string, percent: number) => void,
+  captionStyle?: CaptionStyle
 ): Promise<Blob> => {
   if (scenes.length === 0) throw new Error('렌더링할 씬이 없습니다.');
 
@@ -377,6 +489,23 @@ export const renderPresentationVideo = async (
       ]);
     }
     try { await ffmpeg.deleteFile(`img_${i}.jpg`); } catch {}
+
+    if (captionStyle && captionStyle.preset !== 'none' && scene.captionWords && scene.captionWords.length > 0) {
+      const cappedFile = `clip_${i}_capped.mp4`;
+      const ok = await applyCaptionsToClip(
+        ffmpeg,
+        `clip_${i}.mp4`,
+        cappedFile,
+        scene.captionWords,
+        dur,
+        { style: captionStyle, width: w, height: h }
+      );
+      if (ok) {
+        try { await ffmpeg.deleteFile(`clip_${i}.mp4`); } catch {}
+        await ffmpeg.exec(['-i', cappedFile, '-c', 'copy', '-y', `clip_${i}.mp4`]);
+        try { await ffmpeg.deleteFile(cappedFile); } catch {}
+      }
+    }
   }
 
   onProgress?.('전환 효과 적용 중...', 65);

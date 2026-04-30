@@ -63,6 +63,7 @@ export interface Project {
   quality_threshold?: number;
   negative_prompt?: string;
   stats?: ProjectStats;
+  caption_style?: CaptionStyle;
 }
 
 export interface ProjectStats {
@@ -102,6 +103,22 @@ export interface PresentationConfig {
 
 export type VideoMode = 'ai' | 'presentation';
 
+// Word-level caption (Submagic-style)
+export interface CaptionWord {
+  text: string;
+  startMs: number;
+  endMs: number;
+  emoji?: string;
+}
+
+export type CaptionPreset = 'none' | 'clean' | 'bold' | 'hype';
+
+export interface CaptionStyle {
+  preset: CaptionPreset;
+  emphasisColor: string;
+  enableEmoji: boolean;
+}
+
 // Director Pipeline shotlist roles
 export type ShotType = 'wide' | 'medium' | 'close-up' | 'extreme-close-up' | 'over-shoulder' | 'pov' | 'aerial' | 'establishing';
 export type CameraMovement = 'static' | 'pan-left' | 'pan-right' | 'tilt-up' | 'tilt-down' | 'dolly-in' | 'dolly-out' | 'tracking' | 'handheld' | 'crane';
@@ -140,6 +157,7 @@ export interface Scene {
   negativePrompt?: string;
   qualityScore?: QualityScore;
   qualityNotes?: string;
+  captionWords?: CaptionWord[];
 }
 
 export type ModelType = 'image' | 'video' | 'audio';

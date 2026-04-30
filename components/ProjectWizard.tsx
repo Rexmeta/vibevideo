@@ -19,8 +19,9 @@ import { saveMedia, getMedia, saveProjectMeta, getProjectMeta } from '../service
 import { getModels, getModelsByType } from '../services/modelService';
 import { mergeAllScenes, MergeInput, renderPresentationVideo, PresentationSceneInput } from '../services/videoMergeService';
 import { GENRES, PLATFORMS, applyPlatformDefaults } from '../services/presets';
+import { DEFAULT_CAPTION_STYLE, CAPTION_PRESETS, alignWordsToDuration } from '../services/captionService';
 import { Icons } from './Icons';
-import { Scene, Project, ProjectStatus, ViewState, AIModel, VideoMode, TransitionType, MotionPreset, PresentationConfig, TextOverlay, GenreId, PlatformId, StyleSheet, ProjectStats } from '../types';
+import { Scene, Project, ProjectStatus, ViewState, AIModel, VideoMode, TransitionType, MotionPreset, PresentationConfig, TextOverlay, GenreId, PlatformId, StyleSheet, ProjectStats, CaptionStyle, CaptionPreset } from '../types';
 
 interface ProjectWizardProps {
   userId: string;
@@ -73,6 +74,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [selectedImageModel, setSelectedImageModel] = useState<string>('');
   const [selectedVideoModel, setSelectedVideoModel] = useState<string>('');
   const [showModelSelector, setShowModelSelector] = useState<'image' | 'video' | null>(null);
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(DEFAULT_CAPTION_STYLE);
 
   const restoredRef = useRef(false);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -303,6 +305,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             setStats(restoredStats);
             statsRef.current = restoredStats;
           }
+          if (p.caption_style) setCaptionStyle({ ...DEFAULT_CAPTION_STYLE, ...p.caption_style });
 
           const restoredScenes = migrateSceneFields(p.saved_scenes || []);
           const maxForRestore = Math.max(restoredMaxStep, restoredStep);
@@ -416,6 +419,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         quality_threshold: qualityThreshold,
         negative_prompt: negativePrompt || undefined,
         stats: statsRef.current,
+        caption_style: captionStyle,
         ...params.extraData
       };
 
@@ -933,14 +937,24 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     setMergePercent(0);
     setMergedVideoUrl(null);
     try {
-      const inputs: MergeInput[] = scenes.map(s => ({
-        videoUrl: s.video_path || '',
-        audioUrl: useVeoAudio ? undefined : (s.audio_path || undefined),
-      }));
+      const captionsEnabled = captionStyle.preset !== 'none';
+      const inputs: MergeInput[] = scenes.map(s => {
+        const dur = s.audio_duration || (duration / Math.max(1, scenes.length)) || 6;
+        const text = (s.audio_script || s.script_segment || '').trim();
+        const captionWords = (captionsEnabled && text)
+          ? alignWordsToDuration(text, dur, captionStyle.enableEmoji)
+          : undefined;
+        return {
+          videoUrl: s.video_path || '',
+          audioUrl: useVeoAudio ? undefined : (s.audio_path || undefined),
+          captionWords,
+          captionDurationSec: dur,
+        };
+      });
       const blob = await mergeAllScenes(inputs, (stage, pct) => {
         setMergeProgress(stage);
         setMergePercent(pct);
-      });
+      }, captionsEnabled ? captionStyle : undefined, aspectRatio);
       const url = URL.createObjectURL(blob);
       trackBlobUrl(url);
       setMergedVideoUrl(url);
@@ -1088,22 +1102,29 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     setMergePercent(0);
     setMergedVideoUrl(null);
     try {
+      const captionsEnabled = captionStyle.preset !== 'none';
       const inputs: PresentationSceneInput[] = scenes.map((s, i) => {
         const pres = s.presentation || getDefaultPresentation(i);
+        const dur = s.audio_duration || (duration / scenes.length) || 6;
+        const text = (s.audio_script || s.script_segment || '').trim();
+        const captionWords = (captionsEnabled && text)
+          ? alignWordsToDuration(text, dur, captionStyle.enableEmoji)
+          : undefined;
         return {
           imageUrl: s.image_path || '',
           audioUrl: s.audio_path || undefined,
-          duration: s.audio_duration || (duration / scenes.length) || 6,
+          duration: dur,
           transition: pres.transition,
           transitionDuration: pres.transitionDuration,
           motion: pres.motion,
           textOverlay: pres.textOverlay,
+          captionWords,
         };
       });
       const blob = await renderPresentationVideo(inputs, aspectRatio, (stage, pct) => {
         setMergeProgress(stage);
         setMergePercent(pct);
-      });
+      }, captionsEnabled ? captionStyle : undefined);
       const url = URL.createObjectURL(blob);
       trackBlobUrl(url);
       setMergedVideoUrl(url);
@@ -1689,6 +1710,53 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                     />
                   </div>
                 </div>
+              </div>
+            )}
+            {step === 5 && (
+              <div className="mb-6 p-6 bg-gradient-to-br from-amber-50 to-pink-50 rounded-[2rem] border-2 border-amber-100">
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <div>
+                    <h4 className="text-xs font-black uppercase tracking-[0.2em] text-amber-700 flex items-center gap-2">
+                      <Icons.Type size={14} /> 자막 스타일 <span className="text-[9px] text-amber-500 font-bold normal-case">Submagic-style</span>
+                    </h4>
+                    <p className="text-[10px] text-amber-600 mt-1 italic">단어별로 강조되는 자막을 영상에 자동으로 입힙니다 (한국어 어절 단위, 이모지 강조).</p>
+                  </div>
+                  <label className="flex items-center gap-2 text-[10px] font-black uppercase tracking-wider text-amber-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={captionStyle.enableEmoji}
+                      onChange={(e) => { setCaptionStyle(cs => ({ ...cs, enableEmoji: e.target.checked })); sync(); }}
+                      className="w-4 h-4 accent-amber-500"
+                    />
+                    Emoji
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                  {CAPTION_PRESETS.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => { setCaptionStyle(cs => ({ ...cs, preset: p.id })); sync(); }}
+                      className={`p-4 rounded-2xl border-2 text-left transition-all ${captionStyle.preset === p.id ? 'border-amber-500 bg-white shadow-lg scale-[1.02]' : 'border-amber-100 bg-white/60 hover:border-amber-200'}`}
+                    >
+                      <span className="block text-sm font-black mb-1">{p.label}</span>
+                      <span className="block text-[10px] text-gray-500 leading-tight">{p.description}</span>
+                    </button>
+                  ))}
+                </div>
+                {captionStyle.preset !== 'none' && (
+                  <div className="flex flex-wrap items-center gap-4">
+                    <label className="flex items-center gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-amber-700">강조 색상</span>
+                      <input
+                        type="color"
+                        value={captionStyle.emphasisColor}
+                        onChange={(e) => { setCaptionStyle(cs => ({ ...cs, emphasisColor: e.target.value })); sync(); }}
+                        className="w-9 h-9 rounded-lg border-2 border-white shadow cursor-pointer"
+                      />
+                    </label>
+                    <span className="text-[10px] text-amber-600 italic ml-auto">자막은 내보내기 단계에서 영상에 입혀집니다.</span>
+                  </div>
+                )}
               </div>
             )}
             <div className="flex-1 overflow-y-auto pr-4 space-y-6 hide-scrollbar">
