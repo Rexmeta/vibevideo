@@ -491,6 +491,7 @@ export interface GenerateImageOptions {
   negativePrompt?: string;
   visionCritic?: boolean;
   qualityThreshold?: number;
+  extraHint?: string;
 }
 
 export interface GenerationStats {
@@ -584,6 +585,9 @@ export const generateSceneImage = async (
   let promptText = adapter.prompt;
   if (adapter.negativePrompt) {
     promptText += `\n\nAvoid (negative prompt): ${adapter.negativePrompt}.`;
+  }
+  if (options.extraHint) {
+    promptText += `\n\n[Director note] ${options.extraHint}`;
   }
 
   console.log(`[Image] 이미지 생성 시작 - requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}, prompt: ${promptText.length}chars`);

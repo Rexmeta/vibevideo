@@ -69,6 +69,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingAudioIdx, setPlayingAudioIdx] = useState<number | null>(null);
   const [activePreviewIdx, setActivePreviewIdx] = useState(0);
+  const [expandedQuality, setExpandedQuality] = useState<Set<number>>(new Set());
   const [selectedVideoIdx, setSelectedVideoIdx] = useState<number | null>(null);
 
   const [allModels, setAllModels] = useState<AIModel[]>([]);
@@ -694,6 +695,48 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     setLoadingMessage('');
     sync();
     if (errors.length > 0) alert(`이미지 생성 실패 (${errors.length}/${tasks.length}개 씬)\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`);
+  };
+
+  const handleRefineImage = async (idx: number) => {
+    const currentScene = scenes[idx];
+    const qs = currentScene?.qualityScore;
+    const issues = qs?.issues && qs.issues.length > 0 ? qs.issues.join('; ') : 'composition or character consistency';
+    const hint = qs
+      ? `Previous attempt scored ${qs.overall}/10 (character ${qs.characterConsistency}, composition ${qs.compositionQuality}, intent ${qs.intentAlignment}). Fix these issues: ${issues}. Strictly preserve the requested character and style sheet.`
+      : `Refine the image: improve composition, character consistency, and intent alignment.`;
+
+    setProcessingType('image');
+    setProcessingSet(new Set([idx]));
+    const fKey = `image-${idx}`;
+    try {
+      const imgModel = allModels.find(m => m.id === selectedImageModel);
+      const result = await generateSceneImage(
+        currentScene.visual_prompt!,
+        videoStyle,
+        aspectRatio,
+        imgModel?.modelId,
+        imgModel?.provider,
+        characterProfile || undefined,
+        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold, extraHint: hint },
+      );
+      if (result) {
+        addStats(result.stats);
+        const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
+        updateSceneAt(idx, { image_path: previewUrl, qualityScore: result.qualityScore });
+        saveMedia(projectId, idx, 'image', previewUrl);
+        const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
+        const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/images/s${idx}.${ext}`, result.base64, 'base64');
+        updateSceneAt(idx, { image_path: url });
+        if (idx === 0) setThumbnail(url);
+        setFailedScenes(prev => { const n = new Map(prev); n.delete(fKey); return n; });
+        sync();
+      }
+    } catch (e: any) {
+      console.error(e);
+      setFailedScenes(prev => new Map(prev).set(fKey, e?.message || '오류'));
+    }
+    setProcessingSet(new Set());
+    setProcessingType(null);
   };
 
   const handleSingleImage = async (idx: number) => {
@@ -1790,6 +1833,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                 const isActive = processingSet.has(i);
                 const qs = s.qualityScore;
                 const qsBadgeColor = !qs ? '' : qs.overall >= 8 ? 'bg-green-100 text-green-700' : qs.overall >= 6 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700';
+                const isQualityExpanded = expandedQuality.has(i);
+                const toggleQuality = () => setExpandedQuality(prev => {
+                  const n = new Set(prev);
+                  if (n.has(i)) n.delete(i); else n.add(i);
+                  return n;
+                });
+                const axisColor = (v: number) => v >= 8 ? 'bg-green-500' : v >= 6 ? 'bg-blue-500' : v >= 4 ? 'bg-amber-500' : 'bg-red-500';
                 return (
                 <div key={i} className={`p-8 rounded-[3.5rem] flex flex-col md:flex-row gap-8 items-center border transition-all duration-500 relative ${isActive ? 'bg-brand-cyan/10 border-brand-cyan scale-[1.01] shadow-2xl' : isFailed ? 'bg-red-50 border-red-300 shadow-md' : 'bg-gray-50 border-gray-100 shadow-sm'}`}>
                   <div className="flex-1">
@@ -1799,12 +1849,15 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                       {s.shotType && <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[10px] font-bold">{s.shotType}</span>}
                       {s.cameraMovement && s.cameraMovement !== 'static' && <span className="bg-cyan-50 text-cyan-600 px-3 py-1 rounded-full text-[10px] font-bold">{s.cameraMovement}</span>}
                       {qs && (
-                        <span
-                          className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${qsBadgeColor}`}
-                          title={`Character: ${qs.characterConsistency}/10 · Composition: ${qs.compositionQuality}/10 · Intent: ${qs.intentAlignment}/10${qs.refined ? ' · refined' : ''}${qs.issues?.length ? '\nIssues: ' + qs.issues.join('; ') : ''}`}
+                        <button
+                          type="button"
+                          onClick={toggleQuality}
+                          className={`px-3 py-1 rounded-full text-[10px] font-black uppercase ${qsBadgeColor} hover:opacity-80 transition-opacity flex items-center gap-1`}
+                          title="품질 점수 상세 보기"
                         >
                           ★ {qs.overall}/10{qs.refined ? ' ↻' : ''}
-                        </span>
+                          <Icons.ChevronDown size={10} className={`transition-transform ${isQualityExpanded ? 'rotate-180' : ''}`} />
+                        </button>
                       )}
                       {isFailed && <span className="bg-red-100 text-red-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">Failed</span>}
                       {isActive && <span className="bg-brand-cyan/20 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-black uppercase animate-pulse">Processing</span>}
@@ -1816,7 +1869,60 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                       </p>
                     )}
                     {isFailed && <p className="text-red-500 text-xs mb-3 font-medium">{failMsg}</p>}
-                    
+
+                    {step === 4 && qs && isQualityExpanded && (
+                      <div className="mb-4 p-4 rounded-2xl bg-white border border-gray-200 shadow-sm">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            <Icons.Sparkles size={12} className="text-brand-cyan" />
+                            <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">품질 점수 상세</span>
+                            {qs.refined && <span className="text-[9px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">↻ refined</span>}
+                          </div>
+                        </div>
+                        <div className="space-y-2 mb-3">
+                          {[
+                            { label: '캐릭터 일관성', value: qs.characterConsistency },
+                            { label: '구도', value: qs.compositionQuality },
+                            { label: '의도 일치', value: qs.intentAlignment },
+                            { label: '종합', value: qs.overall },
+                          ].map(axis => (
+                            <div key={axis.label} className="flex items-center gap-3">
+                              <span className="text-[11px] font-bold text-gray-700 w-24 shrink-0">{axis.label}</span>
+                              <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                                <div className={`h-full ${axisColor(axis.value)} transition-all`} style={{ width: `${(axis.value / 10) * 100}%` }} />
+                              </div>
+                              <span className="text-[11px] font-black text-gray-700 w-10 text-right">{axis.value}/10</span>
+                            </div>
+                          ))}
+                        </div>
+                        {qs.issues && qs.issues.length > 0 ? (
+                          <div className="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-100">
+                            <div className="flex items-center gap-1.5 mb-2">
+                              <Icons.AlertCircle size={11} className="text-amber-600" />
+                              <span className="text-[10px] font-black uppercase tracking-widest text-amber-700">AI가 지적한 이슈</span>
+                            </div>
+                            <ul className="space-y-1">
+                              {qs.issues.map((issue, k) => (
+                                <li key={k} className="text-[11px] text-amber-900 font-medium leading-relaxed pl-3 relative">
+                                  <span className="absolute left-0 top-0">•</span>{issue}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-gray-400 italic mb-3">지적된 이슈 없음</p>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRefineImage(i)}
+                          disabled={isActive || !s.image_path}
+                          className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-500 text-white rounded-full text-[10px] font-black uppercase hover:scale-105 transition-all shadow-md disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100"
+                        >
+                          <Icons.Wand2 size={11} /> Refine This Scene
+                        </button>
+                      </div>
+                    )}
+
                     {step === 5 && isPresentationMode ? (() => {
                       const pres = s.presentation || getDefaultPresentation(i);
                       return (
