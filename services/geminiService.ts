@@ -244,10 +244,21 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
 const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
 const GOOGLE_IMAGE_PROVIDERS = ['Google', 'NanoBanana'];
 
+const NANO_BANANA_ALIASES: Record<string, string> = {
+  'nano-banana-pro': 'gemini-3-pro-image-preview',
+  'nano-banana': 'gemini-2.5-flash-image',
+};
+
 export const generateSceneImage = async (prompt: string, style: string, aspectRatio: string = '16:9', modelId?: string, provider?: string, characterProfile?: string): Promise<{ base64: string; mimeType: string } | null> => {
   const isGeminiCompatible = !provider || GOOGLE_IMAGE_PROVIDERS.includes(provider);
-  const actualModel = (modelId && isGeminiCompatible) ? modelId : GEMINI_IMAGE_MODEL;
+  let actualModel = (modelId && isGeminiCompatible) ? modelId : GEMINI_IMAGE_MODEL;
   const isFallback = !isGeminiCompatible;
+
+  if (provider === 'NanoBanana' && modelId && NANO_BANANA_ALIASES[modelId]) {
+    const mapped = NANO_BANANA_ALIASES[modelId];
+    console.log(`[Image] NanoBanana alias resolved: ${modelId} → ${mapped}`);
+    actualModel = mapped;
+  }
 
   const apiKey = isFallback ? getApiKey() : getApiKeyForModel(modelId, provider);
   if (!apiKey) {

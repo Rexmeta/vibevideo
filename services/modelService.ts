@@ -7,9 +7,9 @@ const LOCAL_KEY = 'vibe_ai_models';
 const ADMIN_UIDS_KEY = 'vibe_admin_uids';
 
 const DEFAULT_MODELS: AIModel[] = [
-  { id: 'img-nano-banana-pro', name: 'Nano Banana Pro', type: 'image', provider: 'NanoBanana', description: '최고의 퀄리티와 일관성 유지가 가능한 나노바나나 프로', modelId: 'nano-banana-pro', isActive: true, sortOrder: 1, supportsKorean: true },
+  { id: 'img-nano-banana-pro', name: 'Nano Banana Pro', type: 'image', provider: 'NanoBanana', description: '최고의 퀄리티와 일관성 유지가 가능한 나노바나나 프로', modelId: 'gemini-3-pro-image-preview', isActive: true, sortOrder: 1, supportsKorean: true },
   { id: 'img-seedream-v45', name: 'Seedream V4.5', type: 'image', provider: 'ByteDance', description: '놀라운 연속성과 높은 퀄리티. 한글은 미지원', modelId: 'seedream-v4.5', isActive: true, sortOrder: 2, supportsKorean: false },
-  { id: 'img-nano-banana', name: 'Nano-Banana', type: 'image', provider: 'NanoBanana', description: '나노바나나 일반 버전', modelId: 'nano-banana', isActive: true, sortOrder: 3, supportsKorean: true },
+  { id: 'img-nano-banana', name: 'Nano-Banana', type: 'image', provider: 'NanoBanana', description: '나노바나나 일반 버전', modelId: 'gemini-2.5-flash-image', isActive: true, sortOrder: 3, supportsKorean: true },
   { id: 'img-seedream-v4', name: 'Seedream V4', type: 'image', provider: 'ByteDance', description: '가성비 최고의 이미지 생성/편집 AI 모델', modelId: 'seedream-v4', isActive: true, sortOrder: 4, supportsKorean: false },
   { id: 'img-midjourney', name: 'Midjourney', type: 'image', provider: 'Midjourney', description: '다양한 스타일과 고품질 AI 이미지 생성 가능', modelId: 'midjourney', isActive: true, sortOrder: 5, supportsKorean: true },
   { id: 'img-qwen', name: 'Qwen Image', type: 'image', provider: 'Alibaba', description: '알리바바가 만든 높은 퀄리티의 이미지 생성 AI', modelId: 'qwen-image', isActive: true, sortOrder: 6, supportsKorean: true },
@@ -35,6 +35,25 @@ const DEFAULT_MODELS: AIModel[] = [
   { id: 'vid-midjourney', name: 'Midjourney', type: 'video', provider: 'Midjourney', description: '예술적 감각이 뛰어난 이미지 영상 생성 AI', modelId: 'midjourney-video', isActive: true, sortOrder: 14, supportsKorean: true },
 ];
 
+const NANO_BANANA_ALIAS_TO_API_ID: Record<string, string> = {
+  'nano-banana-pro': 'gemini-3-pro-image-preview',
+  'nano-banana': 'gemini-2.5-flash-image',
+};
+
+function migrateNanoBananaModels(models: AIModel[]): { models: AIModel[]; changed: AIModel[] } {
+  const changed: AIModel[] = [];
+  const migrated = models.map(m => {
+    if (m.provider === 'NanoBanana' && m.modelId && NANO_BANANA_ALIAS_TO_API_ID[m.modelId]) {
+      const fixed: AIModel = { ...m, modelId: NANO_BANANA_ALIAS_TO_API_ID[m.modelId] };
+      console.log(`[ModelService] Migrating NanoBanana model "${m.name}" modelId: ${m.modelId} → ${fixed.modelId}`);
+      changed.push(fixed);
+      return fixed;
+    }
+    return m;
+  });
+  return { models: migrated, changed };
+}
+
 function getLocalModels(): AIModel[] {
   try {
     const raw = localStorage.getItem(LOCAL_KEY);
@@ -46,6 +65,21 @@ function setLocalModels(models: AIModel[]) {
   try { localStorage.setItem(LOCAL_KEY, JSON.stringify(models)); } catch {}
 }
 
+async function persistMigratedModels(changed: AIModel[]): Promise<void> {
+  if (!db || changed.length === 0) return;
+  try {
+    const batch = writeBatch(db);
+    const now = new Date().toISOString();
+    for (const m of changed) {
+      batch.set(doc(db, COLLECTION, m.id), { ...m, updated_at: now }, { merge: true });
+    }
+    await batch.commit();
+    console.log(`[ModelService] Persisted NanoBanana migration for ${changed.length} model(s) to Firestore`);
+  } catch (e) {
+    console.warn('[ModelService] Failed to persist NanoBanana migration to Firestore (in-memory still corrected):', e);
+  }
+}
+
 export async function getModels(): Promise<AIModel[]> {
   if (db) {
     try {
@@ -54,11 +88,15 @@ export async function getModels(): Promise<AIModel[]> {
       if (snap.empty) {
         await seedDefaultModels();
         const snap2 = await getDocs(q);
-        const models = snap2.docs.map(d => ({ ...d.data(), id: d.id } as AIModel));
+        const raw = snap2.docs.map(d => ({ ...d.data(), id: d.id } as AIModel));
+        const { models, changed } = migrateNanoBananaModels(raw);
+        if (changed.length > 0) await persistMigratedModels(changed);
         setLocalModels(models);
         return models;
       }
-      const models = snap.docs.map(d => ({ ...d.data(), id: d.id } as AIModel));
+      const raw = snap.docs.map(d => ({ ...d.data(), id: d.id } as AIModel));
+      const { models, changed } = migrateNanoBananaModels(raw);
+      if (changed.length > 0) await persistMigratedModels(changed);
       setLocalModels(models);
       return models;
     } catch (e) {
@@ -67,7 +105,11 @@ export async function getModels(): Promise<AIModel[]> {
   }
 
   const local = getLocalModels();
-  if (local.length > 0) return local;
+  if (local.length > 0) {
+    const { models, changed } = migrateNanoBananaModels(local);
+    if (changed.length > 0) setLocalModels(models);
+    return models;
+  }
   setLocalModels(DEFAULT_MODELS);
   return DEFAULT_MODELS;
 }
