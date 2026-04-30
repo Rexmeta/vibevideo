@@ -1,0 +1,181 @@
+import React from 'react';
+import { Scene } from '../../../types';
+import { generateSceneAudio } from '../../../services/geminiService';
+import { uploadFileToCloud } from '../../../services/storageService';
+import { saveMedia } from '../../../services/mediaCache';
+import {
+  CONCURRENCY,
+  hasMedia,
+  isMediaUploaded,
+  runParallel,
+  tryUploadExisting,
+} from './wizardHelpers';
+
+interface AudioActionsDeps {
+  userId: string;
+  projectId: string;
+  videoStyle: string;
+  scenes: Partial<Scene>[];
+  failedScenes: Map<string, string>;
+  audioRef: React.MutableRefObject<HTMLAudioElement | null>;
+  playingAudioIdx: number | null;
+  setPlayingAudioIdx: React.Dispatch<React.SetStateAction<number | null>>;
+  setProcessingType: React.Dispatch<React.SetStateAction<'audio' | 'image' | 'video' | null>>;
+  setProcessingSet: React.Dispatch<React.SetStateAction<Set<number>>>;
+  setFailedScenes: React.Dispatch<React.SetStateAction<Map<string, string>>>;
+  setLoadingMessage: React.Dispatch<React.SetStateAction<string>>;
+  updateSceneAt: (idx: number, updates: Partial<Scene>) => void;
+  sync: (
+    targetStep?: number,
+    scenesOverride?: Partial<Scene>[],
+    extraData?: any,
+    overrides?: any
+  ) => void;
+}
+
+export const useAudioActions = (deps: AudioActionsDeps) => {
+  const {
+    userId,
+    projectId,
+    videoStyle,
+    scenes,
+    failedScenes,
+    audioRef,
+    playingAudioIdx,
+    setPlayingAudioIdx,
+    setProcessingType,
+    setProcessingSet,
+    setFailedScenes,
+    setLoadingMessage,
+    updateSceneAt,
+    sync,
+  } = deps;
+
+  const handlePlayAudio = (url: string, idx: number) => {
+    if (playingAudioIdx === idx) {
+      audioRef.current?.pause();
+      setPlayingAudioIdx(null);
+    } else {
+      if (audioRef.current) {
+        audioRef.current.src = url;
+        audioRef.current.play();
+        setPlayingAudioIdx(idx);
+      }
+    }
+  };
+
+  const handleSingleAudio = async (idx: number) => {
+    setProcessingType('audio');
+    setProcessingSet(new Set([idx]));
+    const fKey = `audio-${idx}`;
+    try {
+      const currentScene = scenes[idx];
+      if (hasMedia(currentScene.audio_path) && !isMediaUploaded(currentScene.audio_path)) {
+        const url = await tryUploadExisting(
+          currentScene.audio_path!,
+          `users/${userId}/projects/${projectId}/audio/s${idx}.wav`,
+          'base64'
+        );
+        updateSceneAt(idx, { audio_path: url });
+        setFailedScenes(prev => {
+          const n = new Map(prev);
+          n.delete(fKey);
+          return n;
+        });
+        setProcessingSet(new Set());
+        setProcessingType(null);
+        return;
+      }
+      const res = await generateSceneAudio(currentScene.script_segment!, videoStyle);
+      if (res) {
+        updateSceneAt(idx, { audio_path: res.audio_path, audio_duration: res.duration });
+        saveMedia(projectId, idx, 'audio', res.audio_path);
+        const url = await uploadFileToCloud(
+          `users/${userId}/projects/${projectId}/audio/s${idx}.wav`,
+          res.audio_path,
+          'base64'
+        );
+        updateSceneAt(idx, { audio_path: url });
+        setFailedScenes(prev => {
+          const n = new Map(prev);
+          n.delete(fKey);
+          return n;
+        });
+        sync();
+      }
+    } catch (e: any) {
+      console.error(`Scene ${idx} audio retry error:`, e);
+      setFailedScenes(prev => new Map(prev).set(fKey, e?.message || '오류'));
+    }
+    setProcessingSet(new Set());
+    setProcessingType(null);
+  };
+
+  const handleBatchAudio = async () => {
+    setProcessingType('audio');
+    const sceneSnapshot = [...scenes];
+    const newFailed = new Map(failedScenes);
+
+    const tasks = sceneSnapshot
+      .map((s, i) => ({ idx: i, s }))
+      .filter(({ s }) => !isMediaUploaded(s.audio_path))
+      .map(({ idx, s }) => ({
+        idx,
+        fn: async () => {
+          if (hasMedia(s.audio_path)) {
+            const url = await tryUploadExisting(
+              s.audio_path!,
+              `users/${userId}/projects/${projectId}/audio/s${idx}.wav`,
+              'base64'
+            );
+            updateSceneAt(idx, { audio_path: url });
+            return;
+          }
+          const res = await generateSceneAudio(s.script_segment!, videoStyle);
+          if (res) {
+            updateSceneAt(idx, { audio_path: res.audio_path, audio_duration: res.duration });
+            saveMedia(projectId, idx, 'audio', res.audio_path);
+            const url = await uploadFileToCloud(
+              `users/${userId}/projects/${projectId}/audio/s${idx}.wav`,
+              res.audio_path,
+              'base64'
+            );
+            updateSceneAt(idx, { audio_path: url });
+          }
+        },
+      }));
+
+    if (tasks.length === 0) {
+      setProcessingType(null);
+      return;
+    }
+    setLoadingMessage(`오디오 생성 중... (${tasks.length}개 씬, 최대 ${CONCURRENCY}개 동시 처리)`);
+
+    const results = await runParallel(
+      tasks,
+      CONCURRENCY,
+      idx => setProcessingSet(prev => new Set(prev).add(idx)),
+      idx =>
+        setProcessingSet(prev => {
+          const n = new Set(prev);
+          n.delete(idx);
+          return n;
+        })
+    );
+
+    const errors = results.filter(r => r.error);
+    errors.forEach(r => newFailed.set(`audio-${r.idx}`, r.error?.message || '오류'));
+    results.filter(r => !r.error).forEach(r => newFailed.delete(`audio-${r.idx}`));
+    setFailedScenes(newFailed);
+    setProcessingSet(new Set());
+    setProcessingType(null);
+    setLoadingMessage('');
+    sync();
+    if (errors.length > 0)
+      alert(
+        `오디오 생성 실패 (${errors.length}/${tasks.length}개 씬)\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`
+      );
+  };
+
+  return { handlePlayAudio, handleSingleAudio, handleBatchAudio };
+};

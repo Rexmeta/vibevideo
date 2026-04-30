@@ -1,0 +1,180 @@
+import React from 'react';
+import { Scene, PresentationConfig, CaptionStyle } from '../../../types';
+import {
+  mergeAllScenes,
+  MergeInput,
+  renderPresentationVideo,
+  PresentationSceneInput,
+} from '../../../services/videoMergeService';
+import { alignWordsToDuration } from '../../../services/captionService';
+
+interface ExportActionsDeps {
+  scenes: Partial<Scene>[];
+  captionStyle: CaptionStyle;
+  useVeoAudio: boolean;
+  duration: number;
+  aspectRatio: '16:9' | '9:16' | '1:1' | '3:4';
+  topic: string;
+  mergedVideoUrl: string | null;
+  setMerging: React.Dispatch<React.SetStateAction<boolean>>;
+  setMergeProgress: React.Dispatch<React.SetStateAction<string>>;
+  setMergePercent: React.Dispatch<React.SetStateAction<number>>;
+  setMergedVideoUrl: React.Dispatch<React.SetStateAction<string | null>>;
+  setDownloadingAll: React.Dispatch<React.SetStateAction<boolean>>;
+  trackBlobUrl: (url: string) => void;
+  getDefaultPresentation: (idx: number) => PresentationConfig;
+}
+
+export const useExportActions = (deps: ExportActionsDeps) => {
+  const {
+    scenes,
+    captionStyle,
+    useVeoAudio,
+    duration,
+    aspectRatio,
+    topic,
+    mergedVideoUrl,
+    setMerging,
+    setMergeProgress,
+    setMergePercent,
+    setMergedVideoUrl,
+    setDownloadingAll,
+    trackBlobUrl,
+    getDefaultPresentation,
+  } = deps;
+
+  const downloadVideo = async (url: string, filename: string) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      console.error('Download failed:', e);
+      window.open(url, '_blank');
+    }
+  };
+
+  const handleDownloadAll = async () => {
+    setDownloadingAll(true);
+    for (let i = 0; i < scenes.length; i++) {
+      const s = scenes[i];
+      if (s.video_path) {
+        await downloadVideo(s.video_path, `scene_${i + 1}.mp4`);
+        if (i < scenes.length - 1) await new Promise(r => setTimeout(r, 500));
+      }
+    }
+    setDownloadingAll(false);
+  };
+
+  const handleMergeExport = async () => {
+    setMerging(true);
+    setMergeProgress('FFmpeg 로딩 중...');
+    setMergePercent(0);
+    setMergedVideoUrl(null);
+    try {
+      const captionsEnabled = captionStyle.preset !== 'none';
+      const inputs: MergeInput[] = scenes.map(s => {
+        const dur = s.audio_duration || duration / Math.max(1, scenes.length) || 6;
+        const text = (s.audio_script || s.script_segment || '').trim();
+        const captionWords =
+          captionsEnabled && text
+            ? alignWordsToDuration(text, dur, captionStyle.enableEmoji)
+            : undefined;
+        return {
+          videoUrl: s.video_path || '',
+          audioUrl: useVeoAudio ? undefined : s.audio_path || undefined,
+          captionWords,
+          captionDurationSec: dur,
+        };
+      });
+      const blob = await mergeAllScenes(
+        inputs,
+        (stage, pct) => {
+          setMergeProgress(stage);
+          setMergePercent(pct);
+        },
+        captionsEnabled ? captionStyle : undefined,
+        aspectRatio
+      );
+      const url = URL.createObjectURL(blob);
+      trackBlobUrl(url);
+      setMergedVideoUrl(url);
+    } catch (err: any) {
+      console.error('[Merge] Failed:', err);
+      setMergeProgress(`오류: ${err?.message || '합치기 실패'}`);
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  const handleDownloadMerged = async () => {
+    if (!mergedVideoUrl) return;
+    const a = document.createElement('a');
+    a.href = mergedVideoUrl;
+    a.download = `${topic || 'video'}_final.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleRenderPresentation = async () => {
+    setMerging(true);
+    setMergeProgress('프레젠테이션 비디오 렌더링 준비 중...');
+    setMergePercent(0);
+    setMergedVideoUrl(null);
+    try {
+      const captionsEnabled = captionStyle.preset !== 'none';
+      const inputs: PresentationSceneInput[] = scenes.map((s, i) => {
+        const pres = s.presentation || getDefaultPresentation(i);
+        const dur = s.audio_duration || duration / scenes.length || 6;
+        const text = (s.audio_script || s.script_segment || '').trim();
+        const captionWords =
+          captionsEnabled && text
+            ? alignWordsToDuration(text, dur, captionStyle.enableEmoji)
+            : undefined;
+        return {
+          imageUrl: s.image_path || '',
+          audioUrl: s.audio_path || undefined,
+          duration: dur,
+          transition: pres.transition,
+          transitionDuration: pres.transitionDuration,
+          motion: pres.motion,
+          textOverlay: pres.textOverlay,
+          captionWords,
+        };
+      });
+      const blob = await renderPresentationVideo(
+        inputs,
+        aspectRatio,
+        (stage, pct) => {
+          setMergeProgress(stage);
+          setMergePercent(pct);
+        },
+        captionsEnabled ? captionStyle : undefined
+      );
+      const url = URL.createObjectURL(blob);
+      trackBlobUrl(url);
+      setMergedVideoUrl(url);
+    } catch (err: any) {
+      console.error('[Presentation Render] Failed:', err);
+      setMergeProgress(`오류: ${err?.message || '렌더링 실패'}`);
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  return {
+    downloadVideo,
+    handleDownloadAll,
+    handleMergeExport,
+    handleDownloadMerged,
+    handleRenderPresentation,
+  };
+};
