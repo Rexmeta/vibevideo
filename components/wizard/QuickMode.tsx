@@ -42,6 +42,17 @@ const formatDuration = (seconds: number): string => {
   return `약 ${m}분 ${r}초`;
 };
 
+// Compact realized-duration formatter for the stage timeline ("24s", "1m 12s").
+const formatRealized = (ms: number | undefined): string | null => {
+  if (!ms || !isFinite(ms) || ms <= 0) return null;
+  const s = Math.max(1, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (r === 0) return `${m}m`;
+  return `${m}m ${r}s`;
+};
+
 export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
   const ctx = useWizard();
   const {
@@ -72,6 +83,9 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
 
   const [progress, setProgress] = useState<QuickPipelineProgress | null>(null);
   const [running, setRunning] = useState(false);
+  // True during the brief delay between the pipeline finishing successfully
+  // and the auto-handoff to Pro mode, while the timing summary is on screen.
+  const [handoffPending, setHandoffPending] = useState(false);
   const [failure, setFailure] = useState<{ step: number; error: string } | null>(null);
 
   // Track when each per-scene stage started, plus a rolling estimate of how long
@@ -113,6 +127,12 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     if (!result.success) {
       setFailure({ step: result.failedStep || 2, error: result.error || '알 수 없는 오류' });
     } else {
+      // Give the user a few seconds to read the per-stage timing summary
+      // before the auto-handoff to Pro mode swaps the screen out. The
+      // manual "Pro Mode로 전환" button is hidden during this window so
+      // it can't fight the auto-handoff or be clicked accidentally.
+      setHandoffPending(true);
+      await new Promise(r => setTimeout(r, 5000));
       setStoredMode('pro', projectId);
       onSwitchMode('pro');
     }
@@ -142,7 +162,7 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     onSwitchMode('pro');
   };
 
-  const canShowSwitch = !running && !syncing;
+  const canShowSwitch = !running && !syncing && !handoffPending;
 
   const activeStage = progress?.stage;
   const totalScenes = progress?.totalScenes ?? scenes.length;
@@ -459,6 +479,14 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
                 const current = stage === activeStage && !failure;
                 const meta = STAGE_META[stage];
                 const StageIcon = meta.Icon;
+                // Show realized duration once a stage has finished. The
+                // pipeline emits a `stageDurations` map as soon as each
+                // stage is closed out, so completed (non-current) stages
+                // get an annotation like "24s" or "1m 12s".
+                const realized =
+                  reached && !current
+                    ? formatRealized(progress?.stageDurations?.[stage])
+                    : null;
                 return (
                   <React.Fragment key={stage}>
                     {i > 0 && (
@@ -484,12 +512,62 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
                       ) : (
                         <StageIcon size={12} />
                       )}
-                      {meta.label}
+                      <span>{meta.label}</span>
+                      {realized && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-white/70 text-emerald-700 text-[9px] tabular-nums tracking-wider border border-emerald-100">
+                          {realized}
+                        </span>
+                      )}
                     </div>
                   </React.Fragment>
                 );
               })}
             </div>
+
+            {/* Final per-stage timing summary, shown briefly before the
+                auto-handoff to Pro mode. */}
+            {activeStage === 'done' && !failure && progress?.stageDurations && (
+              <div className="mt-8 max-w-xl mx-auto px-6 py-5 rounded-2xl bg-emerald-50 border-2 border-emerald-100">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-700">
+                    완료 — 단계별 소요 시간
+                  </span>
+                  {progress.totalMs && (
+                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-900 tabular-nums">
+                      Total {formatRealized(progress.totalMs)}
+                    </span>
+                  )}
+                </div>
+                <ul className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                  {stageList.map(stage => {
+                    const meta = STAGE_META[stage];
+                    const StageIcon = meta.Icon;
+                    const realized = formatRealized(progress.stageDurations?.[stage]);
+                    // The pipeline omits the 'style' stage when a stylesheet
+                    // already exists, so a missing duration here means the
+                    // stage was skipped, not that timing was lost.
+                    const skipped = !realized;
+                    return (
+                      <li
+                        key={stage}
+                        className="flex items-center justify-between text-[11px] font-bold text-emerald-900"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <StageIcon size={11} className={skipped ? 'text-emerald-300' : 'text-emerald-600'} />
+                          <span className={skipped ? 'text-emerald-700/60' : ''}>{meta.label}</span>
+                        </span>
+                        <span className={`tabular-nums ${skipped ? 'text-emerald-500/70 italic font-normal' : 'text-emerald-700'}`}>
+                          {realized || '건너뜀'}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="mt-3 text-[10px] text-emerald-700/80 italic text-center">
+                  잠시 후 Pro Mode로 자동 전환됩니다...
+                </p>
+              </div>
+            )}
 
             {/* Per-scene grid */}
             {activeStage && PER_SCENE_STAGES.includes(activeStage) && sceneViews.length > 0 && (

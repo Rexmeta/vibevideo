@@ -21,6 +21,10 @@ export interface QuickPipelineProgress {
   detail?: string;
   /** Total number of scenes the pipeline is operating on (after segmentation). */
   totalScenes?: number;
+  /** Realized wall-clock duration (ms) for each stage that has finished so far. */
+  stageDurations?: Partial<Record<QuickPipelineStage, number>>;
+  /** Total wall-clock time (ms) since the pipeline started. */
+  totalMs?: number;
 }
 
 export interface QuickPipelineResult {
@@ -63,15 +67,38 @@ export const runQuickPipeline = async (
 
   setTopic(topic);
 
+  // Track realized wall-clock duration per stage so the UI can surface
+  // "Audio: 24s · Images: 1m 12s ..." once each stage finishes.
+  const stageDurations: Partial<Record<QuickPipelineStage, number>> = {};
+  const pipelineStart = Date.now();
+  let currentStage: QuickPipelineStage | null = null;
+  let stageStart = pipelineStart;
+
+  const emit = (p: QuickPipelineProgress) => {
+    // When we enter a new stage, close out the previous one's duration.
+    if (p.stage !== currentStage) {
+      if (currentStage && currentStage !== 'done') {
+        stageDurations[currentStage] = Date.now() - stageStart;
+      }
+      currentStage = p.stage;
+      stageStart = Date.now();
+    }
+    onProgress({
+      ...p,
+      stageDurations: { ...stageDurations },
+      totalMs: Date.now() - pipelineStart,
+    });
+  };
+
   // STEP 2: Script
   let scriptText = '';
   let totalScenes = 0;
   try {
-    onProgress({ stage: 'script', label: '스크립트 생성 중...', percent: 5 });
+    emit({ stage: 'script', label: '스크립트 생성 중...', percent: 5 });
     scriptText = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform });
     setScript(scriptText);
 
-    onProgress({ stage: 'segment', label: '씬 분석 중...', percent: 18 });
+    emit({ stage: 'segment', label: '씬 분석 중...', percent: 18 });
     const segScenes = await segmentScriptIntoScenes(
       scriptText,
       videoStyle,
@@ -87,7 +114,7 @@ export const runQuickPipeline = async (
 
     if (!styleSheet) {
       try {
-        onProgress({
+        emit({
           stage: 'style',
           label: '스타일 시트 추출 중...',
           percent: 25,
@@ -110,7 +137,7 @@ export const runQuickPipeline = async (
   // STEP 3: Audio (skip if Veo handles it)
   if (!useVeoAudio) {
     try {
-      onProgress({
+      emit({
         stage: 'audio',
         label: `오디오 생성 중... (${totalScenes}개 씬 병렬 처리)`,
         percent: 35,
@@ -129,7 +156,7 @@ export const runQuickPipeline = async (
 
   // STEP 4: Images
   try {
-    onProgress({
+    emit({
       stage: 'images',
       label: `이미지 생성 중... (${totalScenes}개 씬 병렬 처리)`,
       percent: 55,
@@ -150,7 +177,7 @@ export const runQuickPipeline = async (
   // STEP 5: Videos (skip if presentation mode)
   if (!isPresentationMode) {
     try {
-      onProgress({
+      emit({
         stage: 'videos',
         label: `비디오 생성 중... (씬당 약 1분 + 60초 대기)`,
         percent: 75,
@@ -172,7 +199,7 @@ export const runQuickPipeline = async (
     setMaxStep(prev => Math.max(prev, 5));
   }
 
-  onProgress({ stage: 'done', label: '완료! Preview 단계로 이동합니다...', percent: 100, totalScenes });
+  emit({ stage: 'done', label: '완료! Preview 단계로 이동합니다...', percent: 100, totalScenes });
   setStep(6);
   setMaxStep(prev => Math.max(prev, 6));
   sync(6);
