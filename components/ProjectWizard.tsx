@@ -2212,7 +2212,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                       })()}
                     </div>
                     <p className="text-brand-dark text-sm font-medium leading-relaxed italic mb-3">"{s.script_segment}"</p>
-                    {(step === 3 || step === 4) && characterReferences.length > 0 && (() => {
+                    {(step === 3 || step === 4 || step === 5) && characterReferences.length > 0 && (() => {
                       const tagged = (s.characters || []).filter((t): t is string => typeof t === 'string' && t.length > 0);
                       const taggedLower = new Set(tagged.map(t => t.toLowerCase()));
                       const available = characterReferences.filter(c => c.name && !taggedLower.has(c.name.toLowerCase()));
