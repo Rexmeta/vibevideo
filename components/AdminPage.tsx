@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { AIModel, ModelType, ViewState } from '../types';
-import { getModels, saveModel, deleteModel, seedDefaultModels, isAdminUser } from '../services/modelService';
+import { getModels, saveModel, deleteModel, seedDefaultModels, isAdminUser, checkGoogleModelIdInput } from '../services/modelService';
 import { getModelApiKey, setModelApiKey, getModelEndpoint, setModelEndpoint, getProviderApiKey, setProviderApiKey, getGoogleApiKeySource, GoogleApiKeySource, API_KEY_CHANGE_EVENT } from '../services/apiKeyService';
 import { Icons } from './Icons';
 
@@ -507,6 +507,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
                     className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-black/10"
                     placeholder="예: gpt-image-2.0"
                   />
+                  {(() => {
+                    const w = checkGoogleModelIdInput(newModel.provider, newModel.modelId);
+                    if (!w) return null;
+                    const isWarn = w.level === 'warn';
+                    return (
+                      <p className={`mt-1.5 text-xs flex items-start gap-1.5 ${isWarn ? 'text-amber-600' : 'text-gray-500'}`}>
+                        <Icons.AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+                        <span>{w.message}</span>
+                      </p>
+                    );
+                  })()}
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 mb-1.5">정렬 순서</label>
@@ -608,6 +619,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
                               onChange={e => setEditingModel(prev => prev ? { ...prev, modelId: e.target.value } : null)}
                               className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-black/10"
                             />
+                            {(() => {
+                              const w = checkGoogleModelIdInput(editingModel.provider, editingModel.modelId);
+                              if (!w) return null;
+                              const isWarn = w.level === 'warn';
+                              return (
+                                <p className={`mt-1.5 text-xs flex items-start gap-1.5 ${isWarn ? 'text-amber-600' : 'text-gray-500'}`}>
+                                  <Icons.AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+                                  <span>{w.message}</span>
+                                </p>
+                              );
+                            })()}
                           </div>
                           <div>
                             <label className="block text-xs font-semibold text-gray-500 mb-1.5">정렬 순서</label>

@@ -35,10 +35,37 @@ const DEFAULT_MODELS: AIModel[] = [
   { id: 'vid-midjourney', name: 'Midjourney', type: 'video', provider: 'Midjourney', description: '예술적 감각이 뛰어난 이미지 영상 생성 AI', modelId: 'midjourney-video', isActive: true, sortOrder: 14, supportsKorean: true },
 ];
 
-const NANO_BANANA_ALIAS_TO_API_ID: Record<string, string> = {
+export const NANO_BANANA_ALIAS_TO_API_ID: Record<string, string> = {
   'nano-banana-pro': 'gemini-3-pro-image-preview',
   'nano-banana': 'gemini-2.5-flash-image',
 };
+
+export type GoogleModelIdWarning =
+  | { level: 'warn'; message: string; suggestedId?: string }
+  | { level: 'info'; message: string }
+  | null;
+
+export function checkGoogleModelIdInput(provider: string, modelId: string): GoogleModelIdWarning {
+  const p = (provider || '').trim().toLowerCase();
+  if (p !== 'nanobanana' && p !== 'google') return null;
+  const id = (modelId || '').trim();
+  if (!id) return null;
+  const aliasTarget = NANO_BANANA_ALIAS_TO_API_ID[id];
+  if (aliasTarget) {
+    return {
+      level: 'warn',
+      message: `이 값은 마케팅 별칭입니다. 실제 Google API ID(${aliasTarget})로 자동 변환됩니다.`,
+      suggestedId: aliasTarget,
+    };
+  }
+  if (!id.toLowerCase().startsWith('gemini-')) {
+    return {
+      level: 'info',
+      message: 'Google API 모델 ID 가 아닐 수 있습니다. (예: gemini-2.5-flash-image)',
+    };
+  }
+  return null;
+}
 
 function migrateNanoBananaModels(models: AIModel[]): { models: AIModel[]; changed: AIModel[] } {
   const changed: AIModel[] = [];
