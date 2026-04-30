@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
-import { runQuickPipeline, QuickPipelineProgress, QuickPipelineStage } from './runQuickPipeline';
+import { runQuickPipeline, QuickPipelineProgress, QuickPipelineStage, AwaitRetries } from './runQuickPipeline';
 import { setStoredMode, type WizardMode } from './ModeGate';
 import type { Scene } from '../../types';
 
@@ -79,6 +79,12 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     processingType,
     failedScenes,
     isPresentationMode,
+    handleSingleAudio,
+    handleSingleImage,
+    handleSingleVideo,
+    handleBatchAudio,
+    handleBatchImages,
+    handleBatchVideos,
   } = ctx;
 
   const [progress, setProgress] = useState<QuickPipelineProgress | null>(null);
@@ -87,6 +93,16 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
   // and the auto-handoff to Pro mode, while the timing summary is on screen.
   const [handoffPending, setHandoffPending] = useState(false);
   const [failure, setFailure] = useState<{ step: number; error: string } | null>(null);
+
+  // When the pipeline pauses at a per-scene stage because of failures, we record
+  // which scene indices the pipeline is waiting on. The pipeline's awaitRetries
+  // callback returns a Promise that we resolve once those scenes recover (or
+  // when the user explicitly gives up via the handoff button).
+  const [awaitingRetries, setAwaitingRetries] = useState<{
+    stage: 'audio' | 'images' | 'videos';
+    missing: number[];
+  } | null>(null);
+  const awaitContinueRef = useRef<((cont: boolean) => void) | null>(null);
 
   // Track when each per-scene stage started, plus a rolling estimate of how long
   // each scene takes so we can surface an "estimated time remaining" hint.
@@ -110,6 +126,12 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     }
   }, [progress]);
 
+  const awaitRetries: AwaitRetries = (stage, missing) =>
+    new Promise<boolean>(resolve => {
+      awaitContinueRef.current = resolve;
+      setAwaitingRetries({ stage, missing });
+    });
+
   const handleStart = async () => {
     if (!topic.trim()) {
       alert('비디오 주제를 입력하세요.');
@@ -120,9 +142,11 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     stageStartedRef.current = new Map();
     setProgress({ stage: 'script', label: '시작합니다...', percent: 1 });
 
-    const result = await runQuickPipeline(ctx, topic, p => setProgress(p));
+    const result = await runQuickPipeline(ctx, topic, p => setProgress(p), awaitRetries);
 
     setRunning(false);
+    setAwaitingRetries(null);
+    awaitContinueRef.current = null;
 
     if (!result.success) {
       setFailure({ step: result.failedStep || 2, error: result.error || '알 수 없는 오류' });
@@ -139,8 +163,54 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
   };
 
   const handleHandoff = () => {
+    if (awaitContinueRef.current) {
+      awaitContinueRef.current(false);
+      awaitContinueRef.current = null;
+    }
+    setAwaitingRetries(null);
     setStoredMode('pro', projectId);
     onSwitchMode('pro');
+  };
+
+  // Auto-resume the pipeline as soon as every originally-missing scene has
+  // recovered (i.e. has a fresh path AND no lingering failure marker).
+  useEffect(() => {
+    if (!awaitingRetries) return;
+    const { stage, missing } = awaitingRetries;
+    const failPrefix = stage === 'audio' ? 'audio-' : stage === 'images' ? 'image-' : 'video-';
+    const allDone = missing.every(idx => {
+      const s = scenes[idx];
+      if (!s) return false;
+      if (stage === 'audio') return !!s.audio_path;
+      if (stage === 'images') return !!s.image_path;
+      return !!s.video_path;
+    });
+    const stillFailing = missing.some(idx => failedScenes.has(`${failPrefix}${idx}`));
+    if (allDone && !stillFailing && awaitContinueRef.current) {
+      const resolve = awaitContinueRef.current;
+      awaitContinueRef.current = null;
+      setAwaitingRetries(null);
+      resolve(true);
+    }
+  }, [awaitingRetries, scenes, failedScenes]);
+
+  const retryScene = (idx: number) => {
+    if (!activeStage) return;
+    if (processingType !== null) return;
+    if (activeStage === 'audio') void handleSingleAudio(idx);
+    else if (activeStage === 'images') void handleSingleImage(idx);
+    else if (activeStage === 'videos') void handleSingleVideo(idx);
+  };
+
+  const retryAllFailed = () => {
+    if (!activeStage) return;
+    if (processingType !== null) return;
+    // The batch handlers already filter out scenes that already have an
+    // uploaded media path, so re-running the batch only re-attempts the
+    // failed/missing scenes.
+    if (activeStage === 'audio') void handleBatchAudio();
+    else if (activeStage === 'images') void handleBatchImages();
+    else if (activeStage === 'videos') void handleBatchVideos();
   };
 
   const hasMeaningfulChanges =
@@ -224,9 +294,12 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
       else if (activeStage === 'images') done = !!s.image_path;
       else if (activeStage === 'videos') done = !!s.video_path;
       let status: SceneStageStatus = 'queued';
-      if (failed) status = 'failed';
-      else if (done) status = 'done';
+      // Prefer "done" / "in-progress" over a stale "failed" marker so that a
+      // scene currently being retried shows a spinner instead of the red
+      // overlay.
+      if (done) status = 'done';
       else if (isProcessing) status = 'in-progress';
+      else if (failed) status = 'failed';
       else if (idx === nextWaitingIdx) status = 'waiting';
       const label =
         status === 'done'
@@ -636,8 +709,17 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
                           </div>
                         )}
                         {view.status === 'failed' && (
-                          <div className="absolute inset-0 bg-red-500/40 flex items-center justify-center">
+                          <div className="absolute inset-0 bg-red-500/40 flex flex-col items-center justify-center gap-2">
                             <Icons.AlertCircle className="text-white" size={20} />
+                            <button
+                              onClick={() => retryScene(view.idx)}
+                              disabled={processingType !== null}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white text-red-600 text-[10px] font-black uppercase tracking-widest shadow hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed transition-transform"
+                              title={view.errorMessage || '이 씬만 다시 생성'}
+                            >
+                              <Icons.RefreshCw size={11} />
+                              재시도
+                            </button>
                           </div>
                         )}
                         {/* Bottom label */}
@@ -656,9 +738,33 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
                   })}
                 </div>
                 {failedCount > 0 && (
-                  <p className="text-[11px] text-red-500 font-bold mt-3 text-center">
-                    {failedCount}개 씬에서 오류가 발생했습니다. 단계 종료 후 재시도할 수 있습니다.
-                  </p>
+                  <div className="mt-4 flex flex-col items-center gap-2">
+                    <p className="text-[11px] text-red-500 font-bold text-center">
+                      {failedCount}개 씬에서 오류가 발생했습니다.
+                      {awaitingRetries
+                        ? ' 재시도가 모두 완료되면 자동으로 다음 단계로 진행됩니다.'
+                        : ''}
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <button
+                        onClick={retryAllFailed}
+                        disabled={processingType !== null}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-500 text-white text-[11px] font-black uppercase tracking-widest shadow hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed transition-transform"
+                      >
+                        <Icons.RefreshCw size={12} />
+                        재시도 전체
+                      </button>
+                      {awaitingRetries && (
+                        <button
+                          onClick={handleHandoff}
+                          className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border-2 border-gray-200 text-gray-700 text-[11px] font-black uppercase tracking-widest hover:border-brand-dark transition-colors"
+                        >
+                          <Icons.SlidersHorizontal size={12} />
+                          Pro Mode에서 이어서 작업
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
             )}

@@ -33,12 +33,24 @@ export interface QuickPipelineResult {
   error?: string;
 }
 
+/**
+ * Callback used by the pipeline to pause at a per-scene stage when one or more
+ * scenes failed. Resolves with `true` once all originally-missing scenes have
+ * been recovered (e.g. via inline retry buttons), or `false` if the user gives
+ * up — in which case the pipeline will surface the existing failure state.
+ */
+export type AwaitRetries = (
+  stage: 'audio' | 'images' | 'videos',
+  missingIdx: number[]
+) => Promise<boolean>;
+
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 export const runQuickPipeline = async (
   ctx: WizardContextValue,
   topic: string,
-  onProgress: (p: QuickPipelineProgress) => void
+  onProgress: (p: QuickPipelineProgress) => void,
+  awaitRetries?: AwaitRetries
 ): Promise<QuickPipelineResult> => {
   const {
     setTopic,
@@ -144,7 +156,14 @@ export const runQuickPipeline = async (
         totalScenes,
       });
       await handleBatchAudio();
-      const allAudio = scenesRef.current.every(s => !!s.audio_path);
+      let allAudio = scenesRef.current.every(s => !!s.audio_path);
+      if (!allAudio && awaitRetries) {
+        const missingIdx = scenesRef.current
+          .map((s, i) => (!s.audio_path ? i : -1))
+          .filter(i => i >= 0);
+        await awaitRetries('audio', missingIdx);
+        allAudio = scenesRef.current.every(s => !!s.audio_path);
+      }
       if (!allAudio) {
         const missing = scenesRef.current.filter(s => !s.audio_path).length;
         return { success: false, failedStep: 3, error: `${missing}개 씬 오디오 생성에 실패했습니다.` };
@@ -165,7 +184,14 @@ export const runQuickPipeline = async (
     setStep(4);
     setMaxStep(prev => Math.max(prev, 4));
     await handleBatchImages();
-    const allImg = scenesRef.current.every(s => !!s.image_path);
+    let allImg = scenesRef.current.every(s => !!s.image_path);
+    if (!allImg && awaitRetries) {
+      const missingIdx = scenesRef.current
+        .map((s, i) => (!s.image_path ? i : -1))
+        .filter(i => i >= 0);
+      await awaitRetries('images', missingIdx);
+      allImg = scenesRef.current.every(s => !!s.image_path);
+    }
     if (!allImg) {
       const missing = scenesRef.current.filter(s => !s.image_path).length;
       return { success: false, failedStep: 4, error: `${missing}개 씬 이미지 생성에 실패했습니다.` };
@@ -186,7 +212,14 @@ export const runQuickPipeline = async (
       setStep(5);
       setMaxStep(prev => Math.max(prev, 5));
       await handleBatchVideos();
-      const allVid = scenesRef.current.every(s => !!s.video_path);
+      let allVid = scenesRef.current.every(s => !!s.video_path);
+      if (!allVid && awaitRetries) {
+        const missingIdx = scenesRef.current
+          .map((s, i) => (!s.video_path ? i : -1))
+          .filter(i => i >= 0);
+        await awaitRetries('videos', missingIdx);
+        allVid = scenesRef.current.every(s => !!s.video_path);
+      }
       if (!allVid) {
         const missing = scenesRef.current.filter(s => !s.video_path).length;
         return { success: false, failedStep: 5, error: `${missing}개 씬 비디오 생성에 실패했습니다.` };
