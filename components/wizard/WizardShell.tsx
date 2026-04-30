@@ -10,9 +10,10 @@ import { setStoredMode, type WizardMode } from './ModeGate';
 
 interface WizardShellProps {
   onSwitchMode?: (mode: WizardMode) => void;
+  onStartFreshProject?: () => void;
 }
 
-export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode }) => {
+export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode, onStartFreshProject }) => {
   const w = useWizard();
   const {
     audioRef,
@@ -32,7 +33,29 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode }) => {
   } = w;
 
   const projectHasProgress = (scenes && scenes.length > 0) || maxStep > 1 || step > 1;
-  const canSwitchToQuick = !!onSwitchMode && !projectHasProgress && !syncing && !loading && !isProcessing;
+  const canShowSwitch = !!onSwitchMode && !syncing && !loading && !isProcessing;
+
+  const handleSwitchToQuick = () => {
+    if (projectHasProgress) {
+      const ok = window.confirm(
+        '현재 프로젝트를 그대로 두고 Quick Mode로 새 프로젝트를 시작합니다.\n진행 중인 작업은 자동으로 저장되어 있으며, 프로젝트 목록에서 다시 열 수 있어요.\n\n계속할까요?'
+      );
+      if (!ok) return;
+      setStoredMode('quick', projectId);
+      // Force a fresh wizard session in Quick Mode. If App provided
+      // onStartFreshProject, it will clear the editing project id and
+      // bump a session key so ProjectWizard truly remounts. Otherwise
+      // fall back to flipping the mode in place.
+      if (onStartFreshProject) {
+        onStartFreshProject();
+      } else {
+        onSwitchMode!('quick');
+      }
+      return;
+    }
+    setStoredMode('quick', projectId);
+    onSwitchMode!('quick');
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 relative">
@@ -50,15 +73,12 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode }) => {
       </div>
 
       {/* Mode Toggle */}
-      {canSwitchToQuick && (
+      {canShowSwitch && (
         <div className="max-w-5xl mx-auto mb-6 flex justify-end">
           <button
-            onClick={() => {
-              setStoredMode('quick', projectId);
-              onSwitchMode!('quick');
-            }}
+            onClick={handleSwitchToQuick}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border-2 border-gray-100 hover:border-brand-cyan hover:bg-brand-cyan/5 text-brand-dark text-[11px] font-black uppercase tracking-widest transition-all shadow-sm"
-            title="Quick Mode로 돌아가기"
+            title={projectHasProgress ? '현재 프로젝트를 두고 Quick Mode로 새 프로젝트 시작' : 'Quick Mode로 돌아가기'}
           >
             <Icons.Wand2 size={14} className="text-brand-cyan" />
             Quick Mode로 전환

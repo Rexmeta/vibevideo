@@ -8,10 +8,11 @@ import { ModeGate, getStoredMode, setStoredMode, type WizardMode } from './wizar
 interface ProjectWizardProps {
   userId: string;
   onNavigate: (view: ViewState) => void;
+  onStartFreshProject?: () => void;
   initialProjectId?: string | null;
 }
 
-const WizardModeRouter: React.FC<{ initialProjectId?: string | null }> = ({ initialProjectId }) => {
+const WizardModeRouter: React.FC<{ initialProjectId?: string | null; onStartFreshProject?: () => void }> = ({ initialProjectId, onStartFreshProject }) => {
   const ctx = useWizard();
   const { loading, scenes, maxStep, step, projectId } = ctx;
 
@@ -64,13 +65,13 @@ const WizardModeRouter: React.FC<{ initialProjectId?: string | null }> = ({ init
     return <QuickMode onSwitchMode={m => setMode(m)} />;
   }
 
-  return <WizardShell onSwitchMode={m => setMode(m)} />;
+  return <WizardShell onSwitchMode={m => setMode(m)} onStartFreshProject={onStartFreshProject} />;
 };
 
-export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate, initialProjectId }) => {
+export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate, onStartFreshProject, initialProjectId }) => {
   return (
     <WizardProvider userId={userId} onNavigate={onNavigate} initialProjectId={initialProjectId}>
-      <WizardModeRouter initialProjectId={initialProjectId} />
+      <WizardModeRouter initialProjectId={initialProjectId} onStartFreshProject={onStartFreshProject} />
     </WizardProvider>
   );
 };

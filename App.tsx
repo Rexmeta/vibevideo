@@ -18,6 +18,7 @@ import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from './services/apiKeyServi
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewState>('landing');
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [wizardSessionKey, setWizardSessionKey] = useState(0);
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -113,6 +114,12 @@ const App: React.FC = () => {
     setCurrentView('create');
   };
 
+  const handleStartFreshProject = () => {
+    setEditingProjectId(null);
+    setCurrentView('create');
+    setWizardSessionKey(k => k + 1);
+  };
+
   if (authLoading || hasApiKey === null) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -205,8 +212,10 @@ const App: React.FC = () => {
               </button>
             </div>
             <ProjectWizard 
+              key={`${editingProjectId || 'new'}:${wizardSessionKey}`}
               userId={currentUser?.uid || ''}
               onNavigate={handleNavigate} 
+              onStartFreshProject={handleStartFreshProject}
               initialProjectId={editingProjectId}
             />
           </div>
