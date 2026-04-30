@@ -7,6 +7,11 @@ export interface ModelCapability {
   preferredStyle: 'descriptive' | 'tag-list' | 'natural';
 }
 
+export interface NamedCharacterRef {
+  name: string;
+  description?: string;
+}
+
 export interface AdapterInput {
   shot: Partial<Scene>;
   styleSheet?: StyleSheet;
@@ -18,6 +23,9 @@ export interface AdapterInput {
   previousSceneContext?: string;
   sceneIndex?: number;
   hasReferenceImage?: boolean;
+  // Named characters and (optionally) their order-aligned reference image attachments
+  namedCharacters?: NamedCharacterRef[];
+  attachedCharacterRefs?: NamedCharacterRef[];
 }
 
 export interface AdapterOutput {
@@ -63,15 +71,35 @@ function serializeShot(shot: Partial<Scene>): string {
   return bits.join(', ');
 }
 
+function buildAttachedRefsLine(refs?: NamedCharacterRef[], hasMainRef?: boolean): string {
+  const named = (refs || []).filter(r => r && r.name);
+  if (named.length > 0) {
+    const list = named.map((r, i) => `(${i + (hasMainRef ? 2 : 1)}) "${r.name}"${r.description ? ` — ${r.description}` : ''}`).join('; ');
+    const mainPrefix = hasMainRef
+      ? 'IMPORTANT — Multiple reference images are attached, in this order: (1) the main character, then '
+      : 'IMPORTANT — Reference images are attached, in this order: ';
+    return `${mainPrefix}${list}. Each attached image is a model sheet for the named character. The generated scene MUST depict every named character with the SAME face, hair, body type, clothing and identity as in their reference image. Do not swap, merge, or invent different people for any named character.`;
+  }
+  if (hasMainRef) {
+    return 'IMPORTANT — A reference image of the main character is attached. The generated image MUST depict the SAME character as in the reference: identical face, hair, body type, clothing, and overall identity. Place this character into the new scene described below; do not invent a different person.';
+  }
+  return '';
+}
+
 function buildGeminiImagePrompt(input: AdapterInput): string {
-  const { shot, styleSheet, characterProfile, visualStyle, aspectRatio, hasReferenceImage } = input;
+  const { shot, styleSheet, characterProfile, visualStyle, aspectRatio, hasReferenceImage, namedCharacters, attachedCharacterRefs } = input;
   const styleStr = serializeStyleSheet(styleSheet);
   const shotStr = serializeShot(shot);
   const visual = shot.visual_prompt || '';
+  const refsLine = buildAttachedRefsLine(attachedCharacterRefs, hasReferenceImage);
+  const namedLine = (namedCharacters && namedCharacters.length > 0)
+    ? `Named characters appearing in this scene: ${namedCharacters.map(c => `"${c.name}"${c.description ? ` (${c.description})` : ''}`).join(', ')}.`
+    : '';
   const lines = [
     'Generate an image. High quality cinematic digital art, 8k, detailed textures.',
-    hasReferenceImage ? 'IMPORTANT — A reference image of the main character is attached. The generated image MUST depict the SAME character as in the reference: identical face, hair, body type, clothing, and overall identity. Place this character into the new scene described below; do not invent a different person.' : '',
+    refsLine,
     `Scene: ${visual}`,
+    namedLine,
     visualStyle ? `Visual style: ${visualStyle}.` : '',
     aspectRatio ? `Aspect ratio: ${aspectRatio}.` : '',
     shotStr ? `Cinematography: ${shotStr}.` : '',

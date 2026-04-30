@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Modality, Type, type Part } from "@google/genai";
-import { Scene, StyleSheet, GenreId } from "../types";
+import { Scene, StyleSheet, GenreId, CharacterReference } from "../types";
 import { getEffectiveApiKey, getGoogleApiKey } from "./apiKeyService";
 import { getGenre, getPlatform, type PlatformPreset } from "./presets";
 import { buildPrompt as buildModelPrompt } from "./promptAdapter";
@@ -297,6 +297,7 @@ const SHOTLIST_SCHEMA = {
       durationSec: { type: Type.NUMBER },
       beatRole: { type: Type.STRING },
       transitionTo: { type: Type.STRING },
+      characters: { type: Type.ARRAY, items: { type: Type.STRING } },
     },
     required: ['script_segment', 'visual_prompt'],
   },
@@ -315,7 +316,7 @@ export const segmentScriptIntoScenes = async (
   ratio: string,
   characterProfile?: string,
   sceneCount?: number,
-  options: { genre?: GenreId; platform?: PlatformId } = {},
+  options: { genre?: GenreId; platform?: PlatformId; characterReferences?: CharacterReference[] } = {},
 ): Promise<Partial<Scene>[]> => {
   const ai = new GoogleGenAI({ apiKey: requireApiKey() });
   const charInstruction = characterProfile
@@ -325,7 +326,13 @@ export const segmentScriptIntoScenes = async (
   const genre = getGenre(options.genre);
   const platform = getPlatform(options.platform);
 
-  const prompt = `Segment this script into ${sceneCountInstruction} cinematic shots for a ${ratio} video. Each shot is approximately 8 seconds. Style: ${style}.${charInstruction}
+  const namedCast = (options.characterReferences || []).filter(c => c && c.name && c.name.trim());
+  const castNames = namedCast.map(c => c.name.trim());
+  const castInstruction = namedCast.length > 0
+    ? `\n\nNAMED CAST (use these EXACT names — pick which appear in each shot):\n${namedCast.map(c => `- "${c.name}"${c.description ? `: ${c.description}` : ''}`).join('\n')}\n\nFor EACH shot also output:\n- characters: array of names (subset of [${castNames.map(n => `"${n}"`).join(', ')}]) that visibly appear in this shot. Empty array if none of the named characters appear. Never invent names that are not in the cast list.`
+    : '';
+
+  const prompt = `Segment this script into ${sceneCountInstruction} cinematic shots for a ${ratio} video. Each shot is approximately 8 seconds. Style: ${style}.${charInstruction}${castInstruction}
 
 For EACH shot output a full shot card with:
 - script_segment: the spoken text in this shot
@@ -355,6 +362,7 @@ Output JSON array. Script: "${script}"`;
   );
 
   const data = JSON.parse(response.text || '[]');
+  const validCastNames = new Set(castNames);
   return (Array.isArray(data) ? data : []).map((item: any, index: number) => {
     const beatRole = pickEnum(item.beatRole, BEAT_ROLES, index === 0 ? 'hook' : 'development');
     const out: Partial<Scene> = {
@@ -368,6 +376,22 @@ Output JSON array. Script: "${script}"`;
       beatRole: index === 0 ? 'hook' : beatRole,
       transitionTo: typeof item.transitionTo === 'string' ? (item.transitionTo as any) : 'fade',
     };
+    if (validCastNames.size > 0 && Array.isArray(item.characters)) {
+      const seen = new Set<string>();
+      const cleaned: string[] = [];
+      for (const raw of item.characters) {
+        if (typeof raw !== 'string') continue;
+        const trimmed = raw.trim();
+        if (!trimmed) continue;
+        // Match case-insensitively against the cast and re-emit canonical name
+        const canonical = castNames.find(n => n.toLowerCase() === trimmed.toLowerCase());
+        if (canonical && !seen.has(canonical)) {
+          seen.add(canonical);
+          cleaned.push(canonical);
+        }
+      }
+      if (cleaned.length > 0) out.characters = cleaned;
+    }
     return out;
   });
 };
@@ -485,6 +509,12 @@ const NANO_BANANA_ALIASES: Record<string, string> = {
   'nano-banana': 'gemini-2.5-flash-image',
 };
 
+export interface NamedReferenceImage {
+  name?: string;
+  description?: string;
+  image: string; // data URL, http URL, or raw base64
+}
+
 export interface GenerateImageOptions {
   scene?: Partial<Scene>;
   styleSheet?: StyleSheet;
@@ -492,7 +522,8 @@ export interface GenerateImageOptions {
   visionCritic?: boolean;
   qualityThreshold?: number;
   extraHint?: string;
-  referenceImage?: string; // data URL, http URL, or raw base64
+  referenceImage?: string; // data URL, http URL, or raw base64 (single "main" character)
+  referenceImages?: NamedReferenceImage[]; // additional named character references
 }
 
 interface RefImagePart {
@@ -554,12 +585,12 @@ async function callImageModel(
   apiKey: string,
   actualModel: string,
   promptText: string,
-  referenceImage?: RefImagePart,
+  referenceImages?: RefImagePart[],
 ): Promise<{ base64: string; mimeType: string }> {
   const ai = new GoogleGenAI({ apiKey });
   const parts: Part[] = [];
-  if (referenceImage) {
-    parts.push({ inlineData: { mimeType: referenceImage.mimeType, data: referenceImage.base64 } });
+  for (const ref of referenceImages || []) {
+    parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
   }
   parts.push({ text: promptText });
   const response = await withTimeout(
@@ -610,8 +641,17 @@ export const generateSceneImage = async (
     console.warn(`[Image] Provider "${provider}" (model: ${modelId}) is not yet integrated. Using Gemini fallback: ${GEMINI_IMAGE_MODEL}`);
   }
 
-  // Normalize reference image (if provided) once per call
-  const refImage = await normalizeReferenceImage(options.referenceImage);
+  // Normalize reference images: main first, then named characters
+  const mainRefImage = await normalizeReferenceImage(options.referenceImage);
+  const namedRefs: { meta: { name?: string; description?: string }; part: RefImagePart }[] = [];
+  for (const r of options.referenceImages || []) {
+    if (!r || !r.image) continue;
+    const part = await normalizeReferenceImage(r.image);
+    if (part) namedRefs.push({ meta: { name: r.name, description: r.description }, part });
+  }
+  const allRefParts: RefImagePart[] = [];
+  if (mainRefImage) allRefParts.push(mainRefImage);
+  for (const n of namedRefs) allRefParts.push(n.part);
 
   // Build adapter input
   const sceneShot: Partial<Scene> = options.scene
@@ -625,7 +665,13 @@ export const generateSceneImage = async (
       negativePrompt: options.negativePrompt,
       visualStyle: style,
       aspectRatio,
-      hasReferenceImage: !!refImage,
+      hasReferenceImage: !!mainRefImage,
+      attachedCharacterRefs: namedRefs.length > 0
+        ? namedRefs.map(n => ({ name: n.meta.name || 'unnamed', description: n.meta.description }))
+        : undefined,
+      namedCharacters: namedRefs.length > 0
+        ? namedRefs.map(n => ({ name: n.meta.name || 'unnamed', description: n.meta.description }))
+        : undefined,
     },
     provider,
     modelId,
@@ -638,11 +684,11 @@ export const generateSceneImage = async (
     promptText += `\n\n[Director note] ${options.extraHint}`;
   }
 
-  console.log(`[Image] 이미지 생성 시작 - requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}, prompt: ${promptText.length}chars, ref: ${refImage ? 'yes' : 'no'}`);
+  console.log(`[Image] 이미지 생성 시작 - requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}, prompt: ${promptText.length}chars, refs: ${allRefParts.length} (main:${mainRefImage ? 'y' : 'n'}, named:${namedRefs.length})`);
 
   return withRetry(async () => {
     const stats: GenerationStats = { imagesGenerated: 0, criticCalls: 0, refineCalls: 0 };
-    const first = await callImageModel(apiKey, actualModel, promptText, refImage);
+    const first = await callImageModel(apiKey, actualModel, promptText, allRefParts);
     stats.imagesGenerated += 1;
 
     const useCritic = options.visionCritic !== false; // default ON
@@ -650,6 +696,9 @@ export const generateSceneImage = async (
     if (!useCritic) {
       return { base64: first.base64, mimeType: first.mimeType, stats };
     }
+
+    // Critic still uses the single most-relevant reference (main first, else first named)
+    const criticRef = mainRefImage || namedRefs[0]?.part;
 
     let score: QualityScore | null = null;
     try {
@@ -660,8 +709,8 @@ export const generateSceneImage = async (
         intentPrompt: prompt,
         characterProfile,
         styleSheet: options.styleSheet,
-        referenceImageBase64: refImage?.base64,
-        referenceImageMimeType: refImage?.mimeType,
+        referenceImageBase64: criticRef?.base64,
+        referenceImageMimeType: criticRef?.mimeType,
       });
     } catch (e) {
       console.warn('[Image] Critic call failed, returning first image:', e);
@@ -675,7 +724,7 @@ export const generateSceneImage = async (
     const refinePrompt = `${promptText}\n\n[Director note] ${buildRefineHint(score)}`;
     stats.refineCalls += 1;
     try {
-      const refined = await callImageModel(apiKey, actualModel, refinePrompt, refImage);
+      const refined = await callImageModel(apiKey, actualModel, refinePrompt, allRefParts);
       stats.imagesGenerated += 1;
       let refinedScore: QualityScore | null = null;
       try {
@@ -686,8 +735,8 @@ export const generateSceneImage = async (
           intentPrompt: prompt,
           characterProfile,
           styleSheet: options.styleSheet,
-          referenceImageBase64: refImage?.base64,
-          referenceImageMimeType: refImage?.mimeType,
+          referenceImageBase64: criticRef?.base64,
+          referenceImageMimeType: criticRef?.mimeType,
         });
       } catch {}
       const finalScore = refinedScore && refinedScore.overall >= score.overall ? refinedScore : score;

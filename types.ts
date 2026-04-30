@@ -28,6 +28,12 @@ export interface StyleSheet {
   refImageUrl?: string;
 }
 
+export interface CharacterReference {
+  name: string;
+  description?: string;
+  imageUrl: string;
+}
+
 export interface Project {
   id: string;
   user_id: string;
@@ -52,6 +58,7 @@ export interface Project {
   character_profile?: string;
   use_reference_image?: boolean;
   character_reference_image?: string;
+  character_references?: CharacterReference[];
   scene_duration_mode?: 'time' | 'scenes';
   target_scene_count?: number;
   use_veo_audio?: boolean;
@@ -159,6 +166,7 @@ export interface Scene {
   qualityScore?: QualityScore;
   qualityNotes?: string;
   captionWords?: CaptionWord[];
+  characters?: string[]; // names of characters from project.character_references that appear in this scene
 }
 
 export type ModelType = 'image' | 'video' | 'audio';

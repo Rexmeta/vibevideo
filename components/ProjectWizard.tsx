@@ -22,7 +22,7 @@ import { mergeAllScenes, MergeInput, renderPresentationVideo, PresentationSceneI
 import { GENRES, PLATFORMS, applyPlatformDefaults } from '../services/presets';
 import { DEFAULT_CAPTION_STYLE, CAPTION_PRESETS, alignWordsToDuration } from '../services/captionService';
 import { Icons } from './Icons';
-import { Scene, Project, ProjectStatus, ViewState, AIModel, VideoMode, TransitionType, MotionPreset, PresentationConfig, TextOverlay, GenreId, PlatformId, StyleSheet, ProjectStats, CaptionStyle, CaptionPreset } from '../types';
+import { Scene, Project, ProjectStatus, ViewState, AIModel, VideoMode, TransitionType, MotionPreset, PresentationConfig, TextOverlay, GenreId, PlatformId, StyleSheet, ProjectStats, CaptionStyle, CaptionPreset, CharacterReference } from '../types';
 
 interface ProjectWizardProps {
   userId: string;
@@ -44,6 +44,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [useReferenceImage, setUseReferenceImage] = useState(true);
   const [characterReferenceImage, setCharacterReferenceImage] = useState<string | undefined>(undefined);
   const [generatingReference, setGeneratingReference] = useState(false);
+  const [characterReferences, setCharacterReferences] = useState<CharacterReference[]>([]);
+  const [generatingCharRefIdx, setGeneratingCharRefIdx] = useState<number | null>(null);
   const [sceneDurationMode, setSceneDurationMode] = useState<'time' | 'scenes'>('time');
   const [targetSceneCount, setTargetSceneCount] = useState(4);
   const [useVeoAudio, setUseVeoAudio] = useState(true);
@@ -98,6 +100,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const characterProfileRef = useRef(characterProfile);
   const statsRef = useRef(stats);
   const characterReferenceImageRef = useRef(characterReferenceImage);
+  const characterReferencesRef = useRef(characterReferences);
 
   const addStats = (delta: Partial<ProjectStats>) => {
     setStats(prev => {
@@ -131,6 +134,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   useEffect(() => { characterProfileRef.current = characterProfile; }, [characterProfile]);
   useEffect(() => { statsRef.current = stats; }, [stats]);
   useEffect(() => { characterReferenceImageRef.current = characterReferenceImage; }, [characterReferenceImage]);
+  useEffect(() => { characterReferencesRef.current = characterReferences; }, [characterReferences]);
 
   useEffect(() => {
     return () => {
@@ -174,6 +178,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           character_reference_image: characterReferenceImageRef.current?.startsWith('http')
             ? characterReferenceImageRef.current
             : (null as any),
+          character_references: (characterReferencesRef.current || [])
+            .filter(c => c && c.name && c.imageUrl && c.imageUrl.startsWith('http')),
           scene_duration_mode: sceneDurationMode,
           target_scene_count: targetSceneCount,
           use_veo_audio: useVeoAudio,
@@ -293,6 +299,13 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           if (p.character_profile) setCharacterProfile(p.character_profile);
           if (p.use_reference_image !== undefined) setUseReferenceImage(p.use_reference_image);
           if (p.character_reference_image) setCharacterReferenceImage(p.character_reference_image);
+          if (Array.isArray(p.character_references)) {
+            const cleaned = p.character_references
+              .filter(c => c && c.name && c.imageUrl)
+              .map(c => ({ name: c.name, description: c.description, imageUrl: c.imageUrl }));
+            setCharacterReferences(cleaned);
+            characterReferencesRef.current = cleaned;
+          }
           if (p.scene_duration_mode) setSceneDurationMode(p.scene_duration_mode);
           if (p.target_scene_count) setTargetSceneCount(p.target_scene_count);
           if (p.use_veo_audio !== undefined) setUseVeoAudio(p.use_veo_audio);
@@ -421,6 +434,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         character_reference_image: characterReferenceImageRef.current?.startsWith('http')
           ? characterReferenceImageRef.current
           : (null as any),
+        character_references: (characterReferencesRef.current || [])
+          .filter(c => c && c.name && c.imageUrl && c.imageUrl.startsWith('http')),
         scene_duration_mode: sceneDurationMode,
         target_scene_count: targetSceneCount,
         use_veo_audio: useVeoAudio,
@@ -558,6 +573,17 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
     return results;
   };
 
+  const referenceImagesForScene = (s: Partial<Scene>): { name?: string; description?: string; image: string }[] => {
+    if (!characterReferences || characterReferences.length === 0) return [];
+    const tagged = (s?.characters || []).filter(Boolean);
+    // Match canonical names (case-insensitive) so user re-edits of casing still work
+    const lower = new Set(tagged.map(t => t.toLowerCase()));
+    const matched = characterReferences.filter(c => c && c.imageUrl && lower.has(c.name.toLowerCase()));
+    // If the scene has no character tags at all (legacy or AI omitted), include none —
+    // we don't want to attach every cast member to every shot.
+    return matched.map(c => ({ name: c.name, description: c.description, image: c.imageUrl }));
+  };
+
   const updateSceneAt = (idx: number, updates: Partial<Scene>) => {
     setScenes(prev => {
       const next = [...prev];
@@ -672,7 +698,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             imgModel?.modelId,
             imgModel?.provider,
             characterProfile || undefined,
-            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold, referenceImage: characterReferenceImage },
+            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold, referenceImage: characterReferenceImage, referenceImages: referenceImagesForScene(s) },
           );
           if (result) {
             addStats(result.stats);
@@ -728,7 +754,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         imgModel?.modelId,
         imgModel?.provider,
         characterProfile || undefined,
-        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold, extraHint: hint },
+        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold, extraHint: hint, referenceImage: characterReferenceImage, referenceImages: referenceImagesForScene(currentScene) },
       );
       if (result) {
         addStats(result.stats);
@@ -772,7 +798,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         imgModel?.modelId,
         imgModel?.provider,
         characterProfile || undefined,
-        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold, referenceImage: characterReferenceImage },
+        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold, referenceImage: characterReferenceImage, referenceImages: referenceImagesForScene(currentScene) },
       );
       if (result) {
         addStats(result.stats);
@@ -1481,6 +1507,154 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               </section>
               <section>
                 <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
+                  <Icons.User size={14} /> Cast (Multiple Characters) <span className="text-gray-300 normal-case font-medium">(선택사항)</span>
+                </h3>
+                <p className="text-xs text-gray-400 mb-4 italic">
+                  여러 캐릭터(예: 호스트 & 게스트, 주인공 & 악역)가 등장하는 스토리에서 캐릭터마다 이름과 참조 이미지를 등록하세요.
+                  스크립트 분석 시 각 씬에 등장하는 캐릭터가 자동으로 태깅되고, 이미지 생성 시 해당 캐릭터의 참조 이미지만 함께 전달됩니다.
+                </p>
+                <div className="space-y-3">
+                  {characterReferences.map((c, idx) => (
+                    <div key={idx} className="p-4 bg-gradient-to-br from-sky-50 to-indigo-50 rounded-3xl border-2 border-sky-100">
+                      <div className="flex gap-4">
+                        <div className="shrink-0">
+                          {c.imageUrl ? (
+                            <img src={c.imageUrl} alt={c.name || 'character'} className="w-20 h-20 rounded-2xl object-cover border-4 border-white shadow-md" />
+                          ) : (
+                            <div className="w-20 h-20 rounded-2xl bg-white/70 border-2 border-dashed border-sky-200 flex items-center justify-center text-[9px] text-sky-400 font-bold text-center px-1">
+                              No image
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0 space-y-2">
+                          <input
+                            value={c.name}
+                            onChange={e => {
+                              const v = e.target.value;
+                              setCharacterReferences(prev => prev.map((x, i) => i === idx ? { ...x, name: v } : x));
+                            }}
+                            placeholder="캐릭터 이름 (예: Alex, 진행자, 악당 보스)"
+                            className="w-full p-3 bg-white rounded-xl outline-none text-sm font-bold shadow-inner"
+                          />
+                          <textarea
+                            value={c.description || ''}
+                            onChange={e => {
+                              const v = e.target.value;
+                              setCharacterReferences(prev => prev.map((x, i) => i === idx ? { ...x, description: v } : x));
+                            }}
+                            placeholder="외형 설명 (선택) — 예: 20대 여성, 단발머리, 흰 셔츠"
+                            className="w-full p-3 bg-white rounded-xl outline-none text-[11px] font-medium shadow-inner resize-none h-12"
+                          />
+                          <div className="flex flex-wrap gap-2">
+                            <label className="px-3 py-1.5 bg-white border border-sky-200 rounded-full text-[10px] font-bold text-sky-700 hover:bg-sky-50 cursor-pointer transition-all">
+                              {generatingCharRefIdx === idx ? '업로드 중…' : '이미지 업로드'}
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                disabled={generatingCharRefIdx !== null}
+                                onChange={async (e) => {
+                                  const file = e.target.files?.[0];
+                                  if (!file) return;
+                                  if (file.size > 4 * 1024 * 1024) {
+                                    alert('참조 이미지는 4MB 이하여야 합니다.');
+                                    e.target.value = '';
+                                    return;
+                                  }
+                                  setGeneratingCharRefIdx(idx);
+                                  try {
+                                    const ext = (file.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+                                    const safeName = (c.name || `cast${idx}`).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32) || `cast${idx}`;
+                                    const storagePath = `users/${userId}/projects/${projectId}/cast/${safeName}_${idx}.${ext}`;
+                                    const url = await uploadFileToCloud(storagePath, file, 'blob');
+                                    if (!url.startsWith('http')) {
+                                      throw new Error('Storage 업로드 실패. Firebase Storage 설정을 확인해주세요.');
+                                    }
+                                    setCharacterReferences(prev => prev.map((x, i) => i === idx ? { ...x, imageUrl: url } : x));
+                                    sync();
+                                  } catch (err: any) {
+                                    alert(`업로드 실패: ${err?.message || ''}`);
+                                  } finally {
+                                    setGeneratingCharRefIdx(null);
+                                    e.target.value = '';
+                                  }
+                                }}
+                              />
+                            </label>
+                            <button
+                              disabled={generatingCharRefIdx !== null || !(c.name && c.name.trim()) || !(c.description && c.description.trim())}
+                              onClick={async () => {
+                                setGeneratingCharRefIdx(idx);
+                                try {
+                                  const imgModel = allModels.find(m => m.id === selectedImageModel);
+                                  const result = await generateSceneImage(
+                                    `Full-body character reference portrait of "${c.name}": ${c.description || ''}. Neutral studio background, even lighting, character centered and clearly visible. Use as a model sheet.`,
+                                    videoStyle,
+                                    aspectRatio,
+                                    imgModel?.modelId,
+                                    imgModel?.provider,
+                                    c.description || c.name,
+                                    { styleSheet, visionCritic: false },
+                                  );
+                                  if (result) {
+                                    const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
+                                    const safeName = (c.name || `cast${idx}`).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32) || `cast${idx}`;
+                                    const storagePath = `users/${userId}/projects/${projectId}/cast/${safeName}_${idx}.${ext}`;
+                                    const url = await uploadFileToCloud(storagePath, result.base64, 'base64');
+                                    if (!url.startsWith('http')) {
+                                      throw new Error('Storage 업로드 실패. Firebase Storage 설정을 확인해주세요.');
+                                    }
+                                    setCharacterReferences(prev => prev.map((x, i) => i === idx ? { ...x, imageUrl: url } : x));
+                                    sync();
+                                  }
+                                } catch (err: any) {
+                                  alert(`AI 생성 실패: ${err?.message || ''}`);
+                                } finally {
+                                  setGeneratingCharRefIdx(null);
+                                }
+                              }}
+                              className="px-3 py-1.5 bg-sky-500 text-white rounded-full text-[10px] font-bold hover:bg-sky-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                              title={!c.description?.trim() ? '외형 설명을 먼저 적어주세요' : 'AI로 캐릭터 시트 생성'}
+                            >
+                              {generatingCharRefIdx === idx ? '생성 중…' : 'AI 생성'}
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (!confirm(`'${c.name || '이 캐릭터'}'를 캐스트에서 제거할까요?`)) return;
+                                setCharacterReferences(prev => prev.filter((_, i) => i !== idx));
+                                sync();
+                              }}
+                              className="px-3 py-1.5 bg-white border border-red-200 rounded-full text-[10px] font-bold text-red-500 hover:bg-red-50 transition-all"
+                            >
+                              <Icons.Trash2 size={10} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => {
+                      setCharacterReferences(prev => ([...prev, { name: '', description: '', imageUrl: '' }]));
+                    }}
+                    className="w-full py-3 bg-white border-2 border-dashed border-sky-200 rounded-2xl text-xs font-bold text-sky-600 hover:bg-sky-50 hover:border-sky-300 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Icons.Plus size={14} /> 캐릭터 추가
+                  </button>
+                  {characterReferences.length === 0 && (
+                    <p className="text-[10px] text-gray-400 italic">
+                      캐스트가 비어 있으면 위의 단일 'Character Reference Image'만 사용됩니다 (단일 주인공 영상에 적합).
+                    </p>
+                  )}
+                  {characterReferences.length > 0 && (
+                    <p className="text-[10px] text-sky-600 italic">
+                      ✓ {characterReferences.filter(c => c.name && c.imageUrl).length}/{characterReferences.length}명 등록 완료. 다음 단계의 씬 분석에서 자동 태깅됩니다.
+                    </p>
+                  )}
+                </div>
+              </section>
+              <section>
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
                   <Icons.Wand2 size={14} /> Director Pipeline
                 </h3>
                 <div className="space-y-4">
@@ -1613,7 +1787,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                <button onClick={async () => {
                   setLoading(true); setLoadingMessage("스크립트를 씬 단위로 분석하고 있습니다...");
                   try {
-                    const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio, characterProfile || undefined, targetSceneCount, { genre, platform });
+                    const s = await segmentScriptIntoScenes(script, videoStyle, aspectRatio, characterProfile || undefined, targetSceneCount, { genre, platform, characterReferences });
                     setScenes(s);
                     if (!styleSheet) {
                       try {
