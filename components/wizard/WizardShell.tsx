@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
 import { Step1Setup } from './Step1Setup';
@@ -7,6 +7,7 @@ import { StepsAudioImageVideo } from './StepsAudioImageVideo';
 import { Step6Preview } from './Step6Preview';
 import { Step7Export } from './Step7Export';
 import { setStoredMode, type WizardMode } from './ModeGate';
+import { ConfirmModal } from './ConfirmModal';
 
 interface WizardShellProps {
   onSwitchMode?: (mode: WizardMode) => void;
@@ -35,22 +36,24 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode, onStartF
   const projectHasProgress = (scenes && scenes.length > 0) || maxStep > 1 || step > 1;
   const canShowSwitch = !!onSwitchMode && !syncing && !loading && !isProcessing;
 
+  const [switchConfirmOpen, setSwitchConfirmOpen] = useState(false);
+
+  const performSwitchToQuick = () => {
+    setStoredMode('quick', projectId);
+    // Force a fresh wizard session in Quick Mode. If App provided
+    // onStartFreshProject, it will clear the editing project id and
+    // bump a session key so ProjectWizard truly remounts. Otherwise
+    // fall back to flipping the mode in place.
+    if (onStartFreshProject) {
+      onStartFreshProject();
+    } else {
+      onSwitchMode!('quick');
+    }
+  };
+
   const handleSwitchToQuick = () => {
     if (projectHasProgress) {
-      const ok = window.confirm(
-        '현재 프로젝트를 그대로 두고 Quick Mode로 새 프로젝트를 시작합니다.\n진행 중인 작업은 자동으로 저장되어 있으며, 프로젝트 목록에서 다시 열 수 있어요.\n\n계속할까요?'
-      );
-      if (!ok) return;
-      setStoredMode('quick', projectId);
-      // Force a fresh wizard session in Quick Mode. If App provided
-      // onStartFreshProject, it will clear the editing project id and
-      // bump a session key so ProjectWizard truly remounts. Otherwise
-      // fall back to flipping the mode in place.
-      if (onStartFreshProject) {
-        onStartFreshProject();
-      } else {
-        onSwitchMode!('quick');
-      }
+      setSwitchConfirmOpen(true);
       return;
     }
     setStoredMode('quick', projectId);
@@ -85,6 +88,25 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode, onStartF
           </button>
         </div>
       )}
+
+      <ConfirmModal
+        open={switchConfirmOpen}
+        title="Quick Mode로 전환할까요?"
+        description={
+          <>
+            현재 프로젝트는 그대로 두고 Quick Mode로 새 프로젝트를 시작합니다.
+            {'\n'}진행 중인 작업은 자동으로 저장되어 있으며, 프로젝트 목록에서 다시 열 수 있어요.
+          </>
+        }
+        confirmLabel="Switch to Quick Mode"
+        cancelLabel="Stay"
+        icon={<Icons.Wand2 size={24} />}
+        onCancel={() => setSwitchConfirmOpen(false)}
+        onConfirm={() => {
+          setSwitchConfirmOpen(false);
+          performSwitchToQuick();
+        }}
+      />
 
       {/* Stepper */}
       <div className="flex justify-between mb-16 relative max-w-5xl mx-auto">
