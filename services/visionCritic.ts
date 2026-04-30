@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type, type Part } from '@google/genai';
 import { getGoogleApiKey } from './apiKeyService';
 import type { QualityScore, StyleSheet } from '../types';
 
@@ -21,6 +21,8 @@ export interface CriticInput {
   intentPrompt: string;
   characterProfile?: string;
   styleSheet?: StyleSheet;
+  referenceImageBase64?: string;
+  referenceImageMimeType?: string;
 }
 
 const RESPONSE_SCHEMA = {
@@ -50,12 +52,17 @@ function buildCriticPrompt(input: CriticInput): string {
   if (input.styleSheet?.palette?.length) styleParts.push(`palette ${input.styleSheet.palette.join(', ')}`);
   if (input.styleSheet?.lighting) styleParts.push(`lighting ${input.styleSheet.lighting}`);
   if (input.styleSheet?.mood) styleParts.push(`mood ${input.styleSheet.mood}`);
+  const hasRef = !!input.referenceImageBase64;
   return `You are a strict visual director reviewing an AI-generated image for a video scene. Score each axis from 0 (terrible) to 10 (perfect). Be honest — most generations score 5–8.
 
+${hasRef
+  ? 'Two images are attached. The FIRST image is the GROUND-TRUTH reference for the main character (face, hair, body, clothing, identity). The SECOND image is the generated scene under review. For characterConsistency, compare the SECOND image directly to the FIRST: same person? same outfit? same identity? Score harshly if the character is clearly a different person.'
+  : 'One image is attached: the generated scene under review.'}
+
 Evaluation axes:
-- characterConsistency: does the depicted character match the described character profile?
+- characterConsistency: ${hasRef ? 'how closely the character in the generated image matches the attached reference image (identity, face, hair, clothing).' : 'does the depicted character match the described character profile?'}
 - compositionQuality: framing, focus, balance, technical polish.
-- intentAlignment: does the image actually depict what the scene prompt asks for?
+- intentAlignment: does the generated image actually depict what the scene prompt asks for?
 - overall: holistic verdict (not necessarily an average).
 
 Also list up to 3 short concrete issues that would help regenerate a better version. Empty array if none.
@@ -78,17 +85,21 @@ export async function critiqueImage(input: CriticInput): Promise<QualityScore | 
 
   try {
     const ai = new GoogleGenAI({ apiKey });
+    const parts: Part[] = [];
+    if (input.referenceImageBase64) {
+      parts.push({
+        inlineData: {
+          mimeType: input.referenceImageMimeType || 'image/png',
+          data: input.referenceImageBase64,
+        },
+      });
+    }
+    parts.push({ inlineData: { mimeType: input.mimeType, data: input.imageBase64 } });
+    parts.push({ text: buildCriticPrompt(input) });
     const response = await withTimeout(
       ai.models.generateContent({
         model: CRITIC_MODEL,
-        contents: [
-          {
-            parts: [
-              { inlineData: { mimeType: input.mimeType, data: input.imageBase64 } },
-              { text: buildCriticPrompt(input) },
-            ],
-          },
-        ],
+        contents: [{ parts }],
         config: {
           responseMimeType: 'application/json',
           responseSchema: RESPONSE_SCHEMA as any,

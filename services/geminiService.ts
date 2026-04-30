@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Modality, Type } from "@google/genai";
+import { GoogleGenAI, Modality, Type, type Part } from "@google/genai";
 import { Scene, StyleSheet, GenreId } from "../types";
 import { getEffectiveApiKey, getGoogleApiKey } from "./apiKeyService";
 import { getGenre, getPlatform, type PlatformPreset } from "./presets";
@@ -492,6 +492,44 @@ export interface GenerateImageOptions {
   visionCritic?: boolean;
   qualityThreshold?: number;
   extraHint?: string;
+  referenceImage?: string; // data URL, http URL, or raw base64
+}
+
+interface RefImagePart {
+  base64: string;
+  mimeType: string;
+}
+
+async function normalizeReferenceImage(source?: string): Promise<RefImagePart | undefined> {
+  if (!source) return undefined;
+  try {
+    if (source.startsWith('data:')) {
+      const m = source.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (!m) return undefined;
+      return { mimeType: m[1], base64: m[2] };
+    }
+    if (source.startsWith('http')) {
+      const resp = await fetch(source);
+      if (!resp.ok) throw new Error(`reference fetch failed: ${resp.status}`);
+      const blob = await resp.blob();
+      const mimeType = blob.type || 'image/jpeg';
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          resolve(result.split(',')[1]);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      return { mimeType, base64 };
+    }
+    // raw base64
+    return { mimeType: 'image/png', base64: source };
+  } catch (e) {
+    console.warn('[ReferenceImage] normalize failed:', e);
+    return undefined;
+  }
 }
 
 export interface GenerationStats {
@@ -516,12 +554,18 @@ async function callImageModel(
   apiKey: string,
   actualModel: string,
   promptText: string,
+  referenceImage?: RefImagePart,
 ): Promise<{ base64: string; mimeType: string }> {
   const ai = new GoogleGenAI({ apiKey });
+  const parts: Part[] = [];
+  if (referenceImage) {
+    parts.push({ inlineData: { mimeType: referenceImage.mimeType, data: referenceImage.base64 } });
+  }
+  parts.push({ text: promptText });
   const response = await withTimeout(
     ai.models.generateContent({
       model: actualModel,
-      contents: [{ parts: [{ text: promptText }] }],
+      contents: [{ parts }],
       config: {
         responseModalities: [Modality.IMAGE, Modality.TEXT],
       },
@@ -566,6 +610,9 @@ export const generateSceneImage = async (
     console.warn(`[Image] Provider "${provider}" (model: ${modelId}) is not yet integrated. Using Gemini fallback: ${GEMINI_IMAGE_MODEL}`);
   }
 
+  // Normalize reference image (if provided) once per call
+  const refImage = await normalizeReferenceImage(options.referenceImage);
+
   // Build adapter input
   const sceneShot: Partial<Scene> = options.scene
     ? { ...options.scene, visual_prompt: options.scene.visual_prompt || prompt }
@@ -578,6 +625,7 @@ export const generateSceneImage = async (
       negativePrompt: options.negativePrompt,
       visualStyle: style,
       aspectRatio,
+      hasReferenceImage: !!refImage,
     },
     provider,
     modelId,
@@ -590,11 +638,11 @@ export const generateSceneImage = async (
     promptText += `\n\n[Director note] ${options.extraHint}`;
   }
 
-  console.log(`[Image] 이미지 생성 시작 - requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}, prompt: ${promptText.length}chars`);
+  console.log(`[Image] 이미지 생성 시작 - requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}, prompt: ${promptText.length}chars, ref: ${refImage ? 'yes' : 'no'}`);
 
   return withRetry(async () => {
     const stats: GenerationStats = { imagesGenerated: 0, criticCalls: 0, refineCalls: 0 };
-    const first = await callImageModel(apiKey, actualModel, promptText);
+    const first = await callImageModel(apiKey, actualModel, promptText, refImage);
     stats.imagesGenerated += 1;
 
     const useCritic = options.visionCritic !== false; // default ON
@@ -612,6 +660,8 @@ export const generateSceneImage = async (
         intentPrompt: prompt,
         characterProfile,
         styleSheet: options.styleSheet,
+        referenceImageBase64: refImage?.base64,
+        referenceImageMimeType: refImage?.mimeType,
       });
     } catch (e) {
       console.warn('[Image] Critic call failed, returning first image:', e);
@@ -625,7 +675,7 @@ export const generateSceneImage = async (
     const refinePrompt = `${promptText}\n\n[Director note] ${buildRefineHint(score)}`;
     stats.refineCalls += 1;
     try {
-      const refined = await callImageModel(apiKey, actualModel, refinePrompt);
+      const refined = await callImageModel(apiKey, actualModel, refinePrompt, refImage);
       stats.imagesGenerated += 1;
       let refinedScore: QualityScore | null = null;
       try {
@@ -636,6 +686,8 @@ export const generateSceneImage = async (
           intentPrompt: prompt,
           characterProfile,
           styleSheet: options.styleSheet,
+          referenceImageBase64: refImage?.base64,
+          referenceImageMimeType: refImage?.mimeType,
         });
       } catch {}
       const finalScore = refinedScore && refinedScore.overall >= score.overall ? refinedScore : score;

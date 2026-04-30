@@ -17,6 +17,7 @@ export interface AdapterInput {
   audioScript?: string;
   previousSceneContext?: string;
   sceneIndex?: number;
+  hasReferenceImage?: boolean;
 }
 
 export interface AdapterOutput {
@@ -63,12 +64,13 @@ function serializeShot(shot: Partial<Scene>): string {
 }
 
 function buildGeminiImagePrompt(input: AdapterInput): string {
-  const { shot, styleSheet, characterProfile, visualStyle, aspectRatio } = input;
+  const { shot, styleSheet, characterProfile, visualStyle, aspectRatio, hasReferenceImage } = input;
   const styleStr = serializeStyleSheet(styleSheet);
   const shotStr = serializeShot(shot);
   const visual = shot.visual_prompt || '';
   const lines = [
     'Generate an image. High quality cinematic digital art, 8k, detailed textures.',
+    hasReferenceImage ? 'IMPORTANT — A reference image of the main character is attached. The generated image MUST depict the SAME character as in the reference: identical face, hair, body type, clothing, and overall identity. Place this character into the new scene described below; do not invent a different person.' : '',
     `Scene: ${visual}`,
     visualStyle ? `Visual style: ${visualStyle}.` : '',
     aspectRatio ? `Aspect ratio: ${aspectRatio}.` : '',

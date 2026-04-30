@@ -18,6 +18,7 @@ import {
   limit,
   startAfter,
   deleteDoc,
+  deleteField,
   serverTimestamp,
   runTransaction,
   DocumentSnapshot,
@@ -237,6 +238,11 @@ export const saveProjectToCloud = async (project: Project, skipLocalSave: boolea
     delete dataToSave.saved_scenes;
     if (sanitizedScenes) {
       dataToSave.saved_scenes = sanitizedScenes;
+    }
+
+    const refImg = (project as any).character_reference_image;
+    if (refImg === null || refImg === '' || (typeof refImg === 'string' && !refImg.startsWith('http'))) {
+      dataToSave.character_reference_image = deleteField();
     }
 
     await withTimeout(setDoc(projectRef, dataToSave, { merge: true }), 20000, '프로젝트 저장');

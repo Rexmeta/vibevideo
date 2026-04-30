@@ -42,6 +42,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [script, setScript] = useState('');
   const [characterProfile, setCharacterProfile] = useState('');
   const [useReferenceImage, setUseReferenceImage] = useState(true);
+  const [characterReferenceImage, setCharacterReferenceImage] = useState<string | undefined>(undefined);
+  const [generatingReference, setGeneratingReference] = useState(false);
   const [sceneDurationMode, setSceneDurationMode] = useState<'time' | 'scenes'>('time');
   const [targetSceneCount, setTargetSceneCount] = useState(4);
   const [useVeoAudio, setUseVeoAudio] = useState(true);
@@ -95,6 +97,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const thumbnailRef = useRef(thumbnail);
   const characterProfileRef = useRef(characterProfile);
   const statsRef = useRef(stats);
+  const characterReferenceImageRef = useRef(characterReferenceImage);
 
   const addStats = (delta: Partial<ProjectStats>) => {
     setStats(prev => {
@@ -127,6 +130,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   useEffect(() => { thumbnailRef.current = thumbnail; }, [thumbnail]);
   useEffect(() => { characterProfileRef.current = characterProfile; }, [characterProfile]);
   useEffect(() => { statsRef.current = stats; }, [stats]);
+  useEffect(() => { characterReferenceImageRef.current = characterReferenceImage; }, [characterReferenceImage]);
 
   useEffect(() => {
     return () => {
@@ -167,6 +171,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           selected_video_model: selectedVideoModel,
           character_profile: characterProfileRef.current,
           use_reference_image: useReferenceImage,
+          character_reference_image: characterReferenceImageRef.current?.startsWith('http')
+            ? characterReferenceImageRef.current
+            : (null as any),
           scene_duration_mode: sceneDurationMode,
           target_scene_count: targetSceneCount,
           use_veo_audio: useVeoAudio,
@@ -285,6 +292,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           setThumbnail(p.thumbnail);
           if (p.character_profile) setCharacterProfile(p.character_profile);
           if (p.use_reference_image !== undefined) setUseReferenceImage(p.use_reference_image);
+          if (p.character_reference_image) setCharacterReferenceImage(p.character_reference_image);
           if (p.scene_duration_mode) setSceneDurationMode(p.scene_duration_mode);
           if (p.target_scene_count) setTargetSceneCount(p.target_scene_count);
           if (p.use_veo_audio !== undefined) setUseVeoAudio(p.use_veo_audio);
@@ -410,6 +418,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         selected_video_model: selectedVideoModel,
         character_profile: characterProfileRef.current,
         use_reference_image: useReferenceImage,
+        character_reference_image: characterReferenceImageRef.current?.startsWith('http')
+          ? characterReferenceImageRef.current
+          : (null as any),
         scene_duration_mode: sceneDurationMode,
         target_scene_count: targetSceneCount,
         use_veo_audio: useVeoAudio,
@@ -661,7 +672,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             imgModel?.modelId,
             imgModel?.provider,
             characterProfile || undefined,
-            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold },
+            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold, referenceImage: characterReferenceImage },
           );
           if (result) {
             addStats(result.stats);
@@ -761,7 +772,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         imgModel?.modelId,
         imgModel?.provider,
         characterProfile || undefined,
-        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold },
+        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold, referenceImage: characterReferenceImage },
       );
       if (result) {
         addStats(result.stats);
@@ -1350,6 +1361,114 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                   placeholder="예: 30대 한국 남성, 짧은 검은 머리, 둥근 안경, 파란색 후드티를 입고 있음. 중간 체형, 밝고 친근한 표정."
                   className="w-full p-6 bg-gray-50 rounded-[2rem] outline-none text-sm font-medium leading-relaxed shadow-inner resize-none h-24"
                 />
+                <div className="mt-6 p-5 bg-gradient-to-br from-amber-50 to-orange-50 rounded-[2rem] border-2 border-amber-100">
+                  <div className="flex items-start justify-between gap-4 mb-3">
+                    <div className="flex-1">
+                      <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-700 flex items-center gap-2">
+                        <Icons.ImageIcon size={12} /> Character Reference Image
+                      </h4>
+                      <p className="text-[10px] text-amber-600 mt-1 italic leading-relaxed">
+                        업로드하거나 자동 생성한 참조 이미지를 모든 씬 생성에 함께 전달합니다. 캐릭터 얼굴·복장·정체성이 씬마다 흔들리지 않습니다.
+                      </p>
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <label className="px-4 py-2 bg-white border border-amber-200 rounded-full text-[10px] font-bold text-amber-700 hover:bg-amber-50 cursor-pointer transition-all">
+                        {generatingReference ? '업로드 중…' : '업로드'}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={generatingReference}
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            if (file.size > 4 * 1024 * 1024) {
+                              alert('참조 이미지는 4MB 이하여야 합니다.');
+                              e.target.value = '';
+                              return;
+                            }
+                            setGeneratingReference(true);
+                            try {
+                              const ext = (file.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+                              const storagePath = `users/${userId}/projects/${projectId}/character_ref.${ext}`;
+                              const url = await uploadFileToCloud(storagePath, file, 'blob');
+                              if (!url.startsWith('http')) {
+                                throw new Error('Storage 업로드에 실패했습니다. Firebase Storage 설정을 확인해주세요.');
+                              }
+                              setCharacterReferenceImage(url);
+                              sync();
+                            } catch (err: any) {
+                              alert(`참조 이미지 업로드 실패: ${err?.message || ''}`);
+                            } finally {
+                              setGeneratingReference(false);
+                              e.target.value = '';
+                            }
+                          }}
+                        />
+                      </label>
+                      <button
+                        disabled={generatingReference || !characterProfile.trim()}
+                        onClick={async () => {
+                          setGeneratingReference(true);
+                          try {
+                            const imgModel = allModels.find(m => m.id === selectedImageModel);
+                            const result = await generateSceneImage(
+                              `Full-body character reference portrait of: ${characterProfile}. Neutral studio background, even lighting, character centered and clearly visible. Use this as a model sheet for downstream scenes.`,
+                              videoStyle,
+                              aspectRatio,
+                              imgModel?.modelId,
+                              imgModel?.provider,
+                              characterProfile || undefined,
+                              { styleSheet, visionCritic: false },
+                            );
+                            if (result) {
+                              const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
+                              const storagePath = `users/${userId}/projects/${projectId}/character_ref.${ext}`;
+                              const url = await uploadFileToCloud(storagePath, result.base64, 'base64');
+                              if (!url.startsWith('http')) {
+                                throw new Error('Storage 업로드에 실패했습니다. Firebase Storage 설정을 확인해주세요.');
+                              }
+                              setCharacterReferenceImage(url);
+                              sync();
+                            }
+                          } catch (err: any) {
+                            alert(`참조 이미지 생성 실패: ${err?.message || ''}`);
+                          } finally {
+                            setGeneratingReference(false);
+                          }
+                        }}
+                        className="px-4 py-2 bg-amber-500 text-white rounded-full text-[10px] font-bold hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                      >
+                        {generatingReference ? '생성 중…' : 'AI로 자동 생성'}
+                      </button>
+                      {characterReferenceImage && (
+                        <button
+                          onClick={() => { setCharacterReferenceImage(undefined); sync(); }}
+                          className="px-3 py-2 bg-white border border-red-200 rounded-full text-[10px] font-bold text-red-500 hover:bg-red-50 transition-all"
+                        >
+                          제거
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {characterReferenceImage ? (
+                    <div className="flex items-center gap-3 mt-2">
+                      <img
+                        src={characterReferenceImage}
+                        alt="Character reference"
+                        className="w-24 h-24 rounded-2xl object-cover border-4 border-white shadow-md"
+                      />
+                      <p className="text-[10px] text-amber-600 font-medium leading-relaxed">
+                        ✓ 이 이미지가 모든 씬 이미지 생성에 reference 로 함께 전달됩니다.<br/>
+                        Vision Critic 도 이 이미지를 기준으로 캐릭터 일관성을 채점합니다.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-amber-500 italic mt-1">
+                      참조 이미지가 없으면 텍스트 설명만으로 매 씬을 그리므로 캐릭터가 흔들릴 수 있습니다.
+                    </p>
+                  )}
+                </div>
                 <div className="mt-4 flex items-center gap-3">
                   <button
                     onClick={() => setUseReferenceImage(!useReferenceImage)}
@@ -1716,6 +1835,30 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               </div>
               );
             })()}
+
+            {step === 4 && characterReferenceImage && (
+              <div className="mb-4 p-4 bg-gradient-to-br from-amber-50 to-orange-50 rounded-[2rem] border-2 border-amber-100 flex items-center gap-4">
+                <img
+                  src={characterReferenceImage}
+                  alt="Character reference"
+                  className="w-16 h-16 rounded-2xl object-cover border-4 border-white shadow-md shrink-0"
+                />
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-700 flex items-center gap-2">
+                    <Icons.ImageIcon size={12} /> Character Reference Locked
+                  </h4>
+                  <p className="text-[10px] text-amber-600 italic mt-1">
+                    이 참조 이미지가 모든 씬 이미지 생성에 함께 전달되어 캐릭터 일관성을 유지합니다.
+                  </p>
+                </div>
+                <button
+                  onClick={() => { if (confirm('참조 이미지를 제거할까요? 이미 생성된 씬 이미지는 그대로 유지됩니다.')) { setCharacterReferenceImage(undefined); sync(); } }}
+                  className="px-3 py-1.5 bg-white border border-amber-200 rounded-full text-[10px] font-bold text-amber-700 hover:bg-amber-50 shrink-0"
+                >
+                  제거
+                </button>
+              </div>
+            )}
 
             {step === 4 && styleSheet && (
               <div className="mb-6 p-6 bg-gradient-to-br from-purple-50 to-blue-50 rounded-[2rem] border-2 border-purple-100">
