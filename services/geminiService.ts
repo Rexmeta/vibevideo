@@ -834,6 +834,7 @@ export interface GenerateVideoOptions {
   scene?: Partial<Scene>;
   styleSheet?: StyleSheet;
   negativePrompt?: string;
+  referenceImage?: string; // project-level character reference (data URL, http URL, or raw base64)
 }
 
 export const generateSceneVideo = async (
@@ -869,24 +870,30 @@ export const generateSceneVideo = async (
   }
   console.log(`[Video Gen] Requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}`);
 
+  // Prefer the per-scene generated image as seed. If absent, fall back to the
+  // project-level locked character reference image so Veo still locks identity
+  // instead of going text-only.
+  const effectiveSeedSource = imageSource || options.referenceImage;
+  const seedFromReference = !imageSource && !!options.referenceImage;
+
   let imageData: { imageBytes: string; mimeType: string } | undefined;
-  if (imageSource) {
+  if (effectiveSeedSource) {
     try {
-      imageData = await resizeImageForVideo(imageSource, 768);
-      console.log(`[Video Gen] Seed image resized → ${imageData.mimeType}, ${Math.round(imageData.imageBytes.length / 1024)}KB`);
+      imageData = await resizeImageForVideo(effectiveSeedSource, 768);
+      console.log(`[Video Gen] Seed image resized → ${imageData.mimeType}, ${Math.round(imageData.imageBytes.length / 1024)}KB${seedFromReference ? ' (from character reference)' : ''}`);
     } catch (resizeErr) {
       console.warn("[Video Gen] Image resize failed:", resizeErr);
       try {
         let imageBytes: string;
         let mimeType = 'image/jpeg';
-        if (imageSource.startsWith('data:')) {
-          const m = imageSource.match(/^data:(image\/[a-z+]+);base64,/);
+        if (effectiveSeedSource.startsWith('data:')) {
+          const m = effectiveSeedSource.match(/^data:(image\/[a-z+]+);base64,/);
           if (m) mimeType = m[1];
-          imageBytes = imageSource.replace(/^data:image\/[a-z+]+;base64,/, "");
-        } else if (imageSource.startsWith('http')) {
-          imageBytes = await urlToBase64(imageSource);
+          imageBytes = effectiveSeedSource.replace(/^data:image\/[a-z+]+;base64,/, "");
+        } else if (effectiveSeedSource.startsWith('http')) {
+          imageBytes = await urlToBase64(effectiveSeedSource);
         } else {
-          imageBytes = imageSource;
+          imageBytes = effectiveSeedSource;
         }
         imageData = { imageBytes, mimeType };
       } catch (rawErr) {
@@ -895,6 +902,11 @@ export const generateSceneVideo = async (
       }
     }
   }
+
+  // hasReferenceImage tells the prompt adapter to mention the attached reference
+  // so the model knows to lock identity to the still. We mark it true whenever a
+  // project-level reference exists OR whenever we're seeding from that reference.
+  const hasReferenceImage = !!options.referenceImage || seedFromReference;
 
   const sceneShot: Partial<Scene> = options.scene
     ? { ...options.scene, visual_prompt: options.scene.visual_prompt || prompt }
@@ -909,6 +921,7 @@ export const generateSceneVideo = async (
       previousSceneContext,
       sceneIndex,
       aspectRatio,
+      hasReferenceImage,
     },
     provider,
     modelId,

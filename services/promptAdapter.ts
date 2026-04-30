@@ -82,7 +82,7 @@ function buildGeminiImagePrompt(input: AdapterInput): string {
 }
 
 function buildVeoPrompt(input: AdapterInput): string {
-  const { shot, styleSheet, characterProfile, audioScript, previousSceneContext, sceneIndex } = input;
+  const { shot, styleSheet, characterProfile, audioScript, previousSceneContext, sceneIndex, hasReferenceImage } = input;
   const styleStr = serializeStyleSheet(styleSheet);
   const shotStr = serializeShot(shot);
   const visual = shot.visual_prompt || '';
@@ -93,6 +93,11 @@ function buildVeoPrompt(input: AdapterInput): string {
     styleStr ? `Style sheet — ${styleStr}.` : '',
   ];
 
+  if (hasReferenceImage) {
+    lines.push(
+      '[Character reference image attached]: The accompanying still image shows the locked main character. The animated subject MUST be the SAME person — identical face, hair, body type, clothing, and overall identity. Do not invent a different character.',
+    );
+  }
   if (previousSceneContext && sceneIndex !== undefined && sceneIndex > 0) {
     lines.push(
       `[Scene continuity - Scene ${sceneIndex + 1}]: This scene follows directly from the previous scene. Previous scene: "${previousSceneContext}". Start this scene as a natural continuation — maintain visual flow, environment consistency, and smooth transition from the previous action. Do NOT reset or repeat the opening of the previous scene.`,
