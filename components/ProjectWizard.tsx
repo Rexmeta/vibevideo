@@ -13,24 +13,35 @@ interface ProjectWizardProps {
 
 const WizardModeRouter: React.FC<{ initialProjectId?: string | null }> = ({ initialProjectId }) => {
   const ctx = useWizard();
-  const { loading, scenes, maxStep, step } = ctx;
+  const { loading, scenes, maxStep, step, projectId } = ctx;
 
   // Determine if this is an existing project (skip mode gate)
   const isExisting = !!initialProjectId;
   const projectHasProgress = (scenes && scenes.length > 0) || maxStep > 1 || step > 1;
 
   const [mode, setMode] = useState<WizardMode | null>(() => {
-    if (isExisting) return 'pro';
-    return getStoredMode();
+    if (isExisting) {
+      // Restore this project's last-used mode (falls back to global, then 'pro')
+      return getStoredMode(initialProjectId) || 'pro';
+    }
+    // New project: per-project key won't exist yet, so falls back to global last-used
+    return getStoredMode(projectId);
   });
+
+  // Materialize the resolved mode under the per-project key on first open so the
+  // project's default no longer drifts when the global last-used preference changes.
+  useEffect(() => {
+    if (mode) setStoredMode(mode, projectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   // After restore: if existing project shows it has progressed, force pro mode
   useEffect(() => {
     if (!loading && projectHasProgress && mode !== 'pro') {
       setMode('pro');
-      setStoredMode('pro');
+      setStoredMode('pro', projectId);
     }
-  }, [loading, projectHasProgress, mode]);
+  }, [loading, projectHasProgress, mode, projectId]);
 
   if (loading && isExisting) {
     return (
@@ -46,7 +57,7 @@ const WizardModeRouter: React.FC<{ initialProjectId?: string | null }> = ({ init
   }
 
   if (!mode) {
-    return <ModeGate onSelect={m => setMode(m)} />;
+    return <ModeGate projectId={projectId} onSelect={m => setMode(m)} />;
   }
 
   if (mode === 'quick') {

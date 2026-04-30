@@ -28,6 +28,7 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode }) => {
     loading,
     loadingMessage,
     scenes,
+    projectId,
   } = w;
 
   const projectHasProgress = (scenes && scenes.length > 0) || maxStep > 1 || step > 1;
@@ -53,7 +54,7 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode }) => {
         <div className="max-w-5xl mx-auto mb-6 flex justify-end">
           <button
             onClick={() => {
-              setStoredMode('quick');
+              setStoredMode('quick', projectId);
               onSwitchMode!('quick');
             }}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border-2 border-gray-100 hover:border-brand-cyan hover:bg-brand-cyan/5 text-brand-dark text-[11px] font-black uppercase tracking-widest transition-all shadow-sm"

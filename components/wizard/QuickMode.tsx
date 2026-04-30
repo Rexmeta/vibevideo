@@ -28,6 +28,7 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     audioRef,
     syncAudioRef,
     setPlayingAudioIdx,
+    projectId,
   } = ctx;
 
   const [progress, setProgress] = useState<QuickPipelineProgress | null>(null);
@@ -50,13 +51,13 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     if (!result.success) {
       setFailure({ step: result.failedStep || 2, error: result.error || '알 수 없는 오류' });
     } else {
-      setStoredMode('pro');
+      setStoredMode('pro', projectId);
       onSwitchMode('pro');
     }
   };
 
   const handleHandoff = () => {
-    setStoredMode('pro');
+    setStoredMode('pro', projectId);
     onSwitchMode('pro');
   };
 
@@ -82,7 +83,7 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
         <h1 className="text-5xl font-black tracking-tighter text-brand-dark mb-3">한 번에 만들기</h1>
         <p className="text-gray-500 italic font-medium">주제를 입력하고 시작 버튼을 누르면 AI가 모든 것을 처리합니다.</p>
         <button
-          onClick={() => { setStoredMode('pro'); onSwitchMode('pro'); }}
+          onClick={() => { setStoredMode('pro', projectId); onSwitchMode('pro'); }}
           className="mt-3 text-xs font-bold text-gray-400 hover:text-brand-dark underline-offset-4 hover:underline"
         >
           더 정밀한 제어가 필요하다면 Pro Mode로 전환

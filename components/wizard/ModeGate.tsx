@@ -2,36 +2,52 @@ import React from 'react';
 import { Icons } from '../Icons';
 
 const MODE_KEY = 'vibe_video_mode_pref';
+const MODE_KEY_PREFIX = 'vibe_video_mode_pref_';
 
 export type WizardMode = 'quick' | 'pro';
 
-export const getStoredMode = (): WizardMode | null => {
+const isMode = (v: unknown): v is WizardMode => v === 'quick' || v === 'pro';
+
+export const getStoredMode = (projectId?: string | null): WizardMode | null => {
   try {
-    const v = localStorage.getItem(MODE_KEY);
-    if (v === 'quick' || v === 'pro') return v;
+    if (projectId) {
+      const v = localStorage.getItem(MODE_KEY_PREFIX + projectId);
+      if (isMode(v)) return v;
+    }
+    const g = localStorage.getItem(MODE_KEY);
+    if (isMode(g)) return g;
   } catch {}
   return null;
 };
 
-export const setStoredMode = (mode: WizardMode) => {
+export const setStoredMode = (mode: WizardMode, projectId?: string | null) => {
   try {
+    if (projectId) {
+      localStorage.setItem(MODE_KEY_PREFIX + projectId, mode);
+    }
+    // Always update the global "last-used" so new projects fall back to this preference
     localStorage.setItem(MODE_KEY, mode);
   } catch {}
 };
 
-export const clearStoredMode = () => {
+export const clearStoredMode = (projectId?: string | null) => {
   try {
-    localStorage.removeItem(MODE_KEY);
+    if (projectId) {
+      localStorage.removeItem(MODE_KEY_PREFIX + projectId);
+    } else {
+      localStorage.removeItem(MODE_KEY);
+    }
   } catch {}
 };
 
 interface Props {
   onSelect: (mode: WizardMode) => void;
+  projectId?: string | null;
 }
 
-export const ModeGate: React.FC<Props> = ({ onSelect }) => {
+export const ModeGate: React.FC<Props> = ({ onSelect, projectId }) => {
   const choose = (mode: WizardMode) => {
-    setStoredMode(mode);
+    setStoredMode(mode, projectId);
     onSelect(mode);
   };
 
