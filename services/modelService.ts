@@ -19,7 +19,12 @@ const DEFAULT_MODELS: AIModel[] = [
   { id: 'img-flux-2', name: 'Flux 2', type: 'image', provider: 'Black Forest Labs', description: '빠른 속도와 극대화된 실사 표현력을 가진 차세대 모델', modelId: 'flux-2', isActive: true, sortOrder: 10, supportsKorean: true },
   { id: 'img-grok-imagine', name: 'Grok Imagine', type: 'image', provider: 'xAI', description: 'xAI 의 빠른 속도의 최신 생성 모델', modelId: 'grok-imagine', isActive: true, sortOrder: 11, supportsKorean: true },
 
+  // NOTE: 비-Google 영상 모델의 modelId 들(seedance-*, sora-2, kling-*, hailuo-*, vidu-*, wan-*, midjourney-video)은
+  // 실제 각 프로바이더의 API 모델 ID 가 아니라 마케팅 별칭이다. 향후 실제 통합 작업 시 각 SDK/REST 의
+  // 공식 모델명으로 교체해야 하며, 그때 이미지 쪽 NANO_BANANA_ALIAS_TO_API_ID 와 같은 마이그레이션을 추가해야 한다.
   { id: 'vid-seedance-lite', name: 'Seedance 1.0 Lite', type: 'video', provider: 'ByteDance', description: 'ByteDance의 경량 Seedance 모델', modelId: 'seedance-1.0-lite', isActive: true, sortOrder: 1, supportsKorean: true },
+  // Google Veo 3.1: `veo-3.1-fast-generate-preview` 는 Google Generative AI 의 실제 Preview API ID 이다.
+  // (표준 변형은 `veo-3.1-generate-preview`. 현재는 비용/속도를 고려해 fast 사용.)
   { id: 'vid-veo-31', name: 'Veo 3.1', type: 'video', provider: 'Google', description: '구글이 만든 사실적인 영상과 오디오 생성 AI', modelId: 'veo-3.1-fast-generate-preview', isActive: true, sortOrder: 2, supportsKorean: true },
   { id: 'vid-sora-2', name: 'Sora 2', type: 'video', provider: 'OpenAI', description: 'OpenAI 의 편리하고 너무 사실적인 영상 생성 모델', modelId: 'sora-2', isActive: true, sortOrder: 3, supportsKorean: true },
   { id: 'vid-kling-30', name: 'Kling 3.0', type: 'video', provider: 'Kuaishou', description: '멀티샷 제어와 오디오 동기화가 되는 차세대 올인원 AI 비디오 생성 모델', modelId: 'kling-3.0', isActive: true, sortOrder: 4, supportsKorean: true },
@@ -40,6 +45,17 @@ export const NANO_BANANA_ALIAS_TO_API_ID: Record<string, string> = {
   'nano-banana': 'gemini-2.5-flash-image',
 };
 
+// Google Veo: 마케팅 별칭 → 실제 Generative AI Preview API ID.
+// Firestore/localStorage 에 과거 별칭("veo-3.1" 등) 으로 저장된 값이 들어와도
+// 호출 직전에 안전하게 보정한다. 실제 GA/Preview ID 와 별칭이 함께 와도 우선순위는 안전망이 가진다.
+const VEO_ALIAS_TO_API_ID: Record<string, string> = {
+  'veo-3.1': 'veo-3.1-fast-generate-preview',
+  'veo-3.1-fast': 'veo-3.1-fast-generate-preview',
+  'veo-3.1-preview': 'veo-3.1-fast-generate-preview',
+  'veo-3': 'veo-3.1-fast-generate-preview',
+  'veo-3-fast': 'veo-3.1-fast-generate-preview',
+};
+
 export type GoogleModelIdWarning =
   | { level: 'warn'; message: string; suggestedId?: string }
   | { level: 'info'; message: string }
@@ -50,7 +66,7 @@ export function checkGoogleModelIdInput(provider: string, modelId: string): Goog
   if (p !== 'nanobanana' && p !== 'google') return null;
   const id = (modelId || '').trim();
   if (!id) return null;
-  const aliasTarget = NANO_BANANA_ALIAS_TO_API_ID[id];
+  const aliasTarget = NANO_BANANA_ALIAS_TO_API_ID[id] ?? VEO_ALIAS_TO_API_ID[id];
   if (aliasTarget) {
     return {
       level: 'warn',
@@ -58,10 +74,11 @@ export function checkGoogleModelIdInput(provider: string, modelId: string): Goog
       suggestedId: aliasTarget,
     };
   }
-  if (!id.toLowerCase().startsWith('gemini-')) {
+  const lower = id.toLowerCase();
+  if (!lower.startsWith('gemini-') && !lower.startsWith('veo-')) {
     return {
       level: 'info',
-      message: 'Google API 모델 ID 가 아닐 수 있습니다. (예: gemini-2.5-flash-image)',
+      message: 'Google API 모델 ID 가 아닐 수 있습니다. (예: gemini-2.5-flash-image, veo-3.1-fast-generate-preview)',
     };
   }
   return null;
@@ -79,6 +96,29 @@ function migrateNanoBananaModels(models: AIModel[]): { models: AIModel[]; change
     return m;
   });
   return { models: migrated, changed };
+}
+
+function migrateVeoModels(models: AIModel[]): { models: AIModel[]; changed: AIModel[] } {
+  const changed: AIModel[] = [];
+  const migrated = models.map(m => {
+    if (m.provider === 'Google' && m.type === 'video' && m.modelId && VEO_ALIAS_TO_API_ID[m.modelId]) {
+      const fixed: AIModel = { ...m, modelId: VEO_ALIAS_TO_API_ID[m.modelId] };
+      console.log(`[ModelService] Migrating Veo model "${m.name}" modelId: ${m.modelId} → ${fixed.modelId}`);
+      changed.push(fixed);
+      return fixed;
+    }
+    return m;
+  });
+  return { models: migrated, changed };
+}
+
+function runAllMigrations(models: AIModel[]): { models: AIModel[]; changed: AIModel[] } {
+  const nano = migrateNanoBananaModels(models);
+  const veo = migrateVeoModels(nano.models);
+  const changedById = new Map<string, AIModel>();
+  for (const m of nano.changed) changedById.set(m.id, m);
+  for (const m of veo.changed) changedById.set(m.id, m);
+  return { models: veo.models, changed: Array.from(changedById.values()) };
 }
 
 function getLocalModels(): AIModel[] {
@@ -101,9 +141,9 @@ async function persistMigratedModels(changed: AIModel[]): Promise<void> {
       batch.set(doc(db, COLLECTION, m.id), { ...m, updated_at: now }, { merge: true });
     }
     await batch.commit();
-    console.log(`[ModelService] Persisted NanoBanana migration for ${changed.length} model(s) to Firestore`);
+    console.log(`[ModelService] Persisted modelId migration for ${changed.length} model(s) to Firestore`);
   } catch (e) {
-    console.warn('[ModelService] Failed to persist NanoBanana migration to Firestore (in-memory still corrected):', e);
+    console.warn('[ModelService] Failed to persist modelId migration to Firestore (in-memory still corrected):', e);
   }
 }
 
@@ -116,13 +156,13 @@ export async function getModels(): Promise<AIModel[]> {
         await seedDefaultModels();
         const snap2 = await getDocs(q);
         const raw = snap2.docs.map(d => ({ ...d.data(), id: d.id } as AIModel));
-        const { models, changed } = migrateNanoBananaModels(raw);
+        const { models, changed } = runAllMigrations(raw);
         if (changed.length > 0) await persistMigratedModels(changed);
         setLocalModels(models);
         return models;
       }
       const raw = snap.docs.map(d => ({ ...d.data(), id: d.id } as AIModel));
-      const { models, changed } = migrateNanoBananaModels(raw);
+      const { models, changed } = runAllMigrations(raw);
       if (changed.length > 0) await persistMigratedModels(changed);
       setLocalModels(models);
       return models;
@@ -133,7 +173,7 @@ export async function getModels(): Promise<AIModel[]> {
 
   const local = getLocalModels();
   if (local.length > 0) {
-    const { models, changed } = migrateNanoBananaModels(local);
+    const { models, changed } = runAllMigrations(local);
     if (changed.length > 0) setLocalModels(models);
     return models;
   }

@@ -745,6 +745,17 @@ const VEO_MODEL = 'veo-3.1-fast-generate-preview';
 
 const GOOGLE_VIDEO_PROVIDERS = ['Google'];
 
+// 이미지 쪽 NANO_BANANA_ALIASES 와 같은 안전망: Firestore/localStorage/관리자 입력 등으로
+// 마케팅 별칭("veo-3.1" 등) 이 들어와도 호출 직전에 실제 Generative AI Preview API ID 로 보정.
+// 이렇게 해야 modelService 의 마이그레이션이 적용되기 전 캐시된 값으로도 404 가 나지 않는다.
+const VEO_ALIASES: Record<string, string> = {
+  'veo-3.1': 'veo-3.1-fast-generate-preview',
+  'veo-3.1-fast': 'veo-3.1-fast-generate-preview',
+  'veo-3.1-preview': 'veo-3.1-fast-generate-preview',
+  'veo-3': 'veo-3.1-fast-generate-preview',
+  'veo-3-fast': 'veo-3.1-fast-generate-preview',
+};
+
 export interface GenerateVideoOptions {
   scene?: Partial<Scene>;
   styleSheet?: StyleSheet;
@@ -765,10 +776,18 @@ export const generateSceneVideo = async (
 ): Promise<string | null> => {
   const validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
   const isGoogleProvider = !provider || GOOGLE_VIDEO_PROVIDERS.includes(provider);
-  const actualModel = (modelId && isGoogleProvider) ? modelId : VEO_MODEL;
+  let actualModel = (modelId && isGoogleProvider) ? modelId : VEO_MODEL;
   const isFallback = !isGoogleProvider;
 
-  const apiKey = isFallback ? getApiKey() : getApiKeyForModel(modelId, provider);
+  if (isGoogleProvider && modelId && VEO_ALIASES[modelId]) {
+    const mapped = VEO_ALIASES[modelId];
+    console.log(`[Video Gen] Veo alias resolved: ${modelId} → ${mapped}`);
+    actualModel = mapped;
+  }
+
+  // 별칭 보정 후 실제 API ID 로 키를 찾는다. 관리자가 실제 API ID 로 per-model 키를
+  // 등록한 경우에도 캐시된 별칭이 들어오면 일치하도록 한다.
+  const apiKey = isFallback ? getApiKey() : getApiKeyForModel(actualModel, provider);
   if (!apiKey) throw new Error(MISSING_API_KEY_MESSAGE);
 
   if (isFallback) {
