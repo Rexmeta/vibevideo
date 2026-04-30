@@ -2352,6 +2352,19 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                       const tagged = (s.characters || []).filter((t): t is string => typeof t === 'string' && t.trim().length > 0);
                       const taggedLower = new Set(tagged.map(t => t.trim().toLowerCase()));
                       const available = characterReferences.filter(c => c.name && c.name.trim() && !taggedLower.has(c.name.trim().toLowerCase()));
+                      // Detect a cast edit on Step 5 that hasn't been baked into
+                      // the existing video yet. Compare current `characters`
+                      // against `videoCast`, the snapshot of names that were
+                      // actually passed to the video model on the last successful
+                      // generation. Legacy scenes without a snapshot suppress the
+                      // hint to avoid a false positive.
+                      const castDiffersFromVideo = (() => {
+                        if (step !== 5 || !s.video_path || !s.videoCast) return false;
+                        const sentLower = new Set(s.videoCast.map(n => n.trim().toLowerCase()));
+                        if (sentLower.size !== taggedLower.size) return true;
+                        for (const n of taggedLower) if (!sentLower.has(n)) return true;
+                        return false;
+                      })();
                       return (
                         <div className="flex items-center gap-2 mb-3 flex-wrap">
                           <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 mr-1">Cast</span>
@@ -2394,6 +2407,15 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                               <span className="text-[11px] font-bold">+ {c.name}</span>
                             </button>
                           ))}
+                          {castDiffersFromVideo && (
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-bold"
+                              title="현재 영상은 이전 캐스트로 만들어졌어요. 아래 '재생성' 버튼을 누르면 새 캐스트가 적용됩니다."
+                            >
+                              <Icons.AlertCircle size={10} />
+                              변경 사항은 다음 재생성부터 반영됩니다
+                            </span>
+                          )}
                         </div>
                       );
                     })()}
