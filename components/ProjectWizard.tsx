@@ -20,7 +20,7 @@ import { getModels, getModelsByType } from '../services/modelService';
 import { mergeAllScenes, MergeInput, renderPresentationVideo, PresentationSceneInput } from '../services/videoMergeService';
 import { GENRES, PLATFORMS, applyPlatformDefaults } from '../services/presets';
 import { Icons } from './Icons';
-import { Scene, Project, ProjectStatus, ViewState, AIModel, VideoMode, TransitionType, MotionPreset, PresentationConfig, TextOverlay, GenreId, PlatformId, StyleSheet } from '../types';
+import { Scene, Project, ProjectStatus, ViewState, AIModel, VideoMode, TransitionType, MotionPreset, PresentationConfig, TextOverlay, GenreId, PlatformId, StyleSheet, ProjectStats } from '../types';
 
 interface ProjectWizardProps {
   userId: string;
@@ -51,8 +51,10 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const [platform, setPlatform] = useState<PlatformId | undefined>(undefined);
   const [styleSheet, setStyleSheet] = useState<StyleSheet | undefined>(undefined);
   const [visionCriticEnabled, setVisionCriticEnabled] = useState<boolean>(true);
+  const [qualityThreshold, setQualityThreshold] = useState<number>(6);
   const [negativePrompt, setNegativePrompt] = useState<string>('');
   const [generatingStyleSheet, setGeneratingStyleSheet] = useState<boolean>(false);
+  const [stats, setStats] = useState<ProjectStats>({ imagesGenerated: 0, criticCalls: 0, refineCalls: 0, videosGenerated: 0 });
   
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
@@ -88,6 +90,20 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const scriptRef = useRef(script);
   const thumbnailRef = useRef(thumbnail);
   const characterProfileRef = useRef(characterProfile);
+  const statsRef = useRef(stats);
+
+  const addStats = (delta: Partial<ProjectStats>) => {
+    setStats(prev => {
+      const next = {
+        imagesGenerated: (prev.imagesGenerated || 0) + (delta.imagesGenerated || 0),
+        criticCalls: (prev.criticCalls || 0) + (delta.criticCalls || 0),
+        refineCalls: (prev.refineCalls || 0) + (delta.refineCalls || 0),
+        videosGenerated: (prev.videosGenerated || 0) + (delta.videosGenerated || 0),
+      };
+      statsRef.current = next;
+      return next;
+    });
+  };
 
   useEffect(() => {
     getModels().then(models => {
@@ -106,6 +122,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   useEffect(() => { scriptRef.current = script; }, [script]);
   useEffect(() => { thumbnailRef.current = thumbnail; }, [thumbnail]);
   useEffect(() => { characterProfileRef.current = characterProfile; }, [characterProfile]);
+  useEffect(() => { statsRef.current = stats; }, [stats]);
 
   useEffect(() => {
     return () => {
@@ -154,7 +171,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           platform,
           style_sheet: styleSheet,
           vision_critic_enabled: visionCriticEnabled,
+          quality_threshold: qualityThreshold,
           negative_prompt: negativePrompt || undefined,
+          stats: statsRef.current,
           ...params.extraData
         };
         const localProj = { ...proj, saved_scenes: proj.saved_scenes?.map(s => {
@@ -272,7 +291,18 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           if (p.platform) setPlatform(p.platform);
           if (p.style_sheet) setStyleSheet(p.style_sheet);
           if (p.vision_critic_enabled !== undefined) setVisionCriticEnabled(p.vision_critic_enabled);
+          if (typeof p.quality_threshold === 'number') setQualityThreshold(p.quality_threshold);
           if (p.negative_prompt) setNegativePrompt(p.negative_prompt);
+          if (p.stats) {
+            const restoredStats = {
+              imagesGenerated: p.stats.imagesGenerated || 0,
+              criticCalls: p.stats.criticCalls || 0,
+              refineCalls: p.stats.refineCalls || 0,
+              videosGenerated: p.stats.videosGenerated || 0,
+            };
+            setStats(restoredStats);
+            statsRef.current = restoredStats;
+          }
 
           const restoredScenes = migrateSceneFields(p.saved_scenes || []);
           const maxForRestore = Math.max(restoredMaxStep, restoredStep);
@@ -383,7 +413,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         platform,
         style_sheet: styleSheet,
         vision_critic_enabled: visionCriticEnabled,
+        quality_threshold: qualityThreshold,
         negative_prompt: negativePrompt || undefined,
+        stats: statsRef.current,
         ...params.extraData
       };
 
@@ -623,9 +655,10 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             imgModel?.modelId,
             imgModel?.provider,
             characterProfile || undefined,
-            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt, visionCritic: visionCriticEnabled },
+            { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold },
           );
           if (result) {
+            addStats(result.stats);
             const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
             updateSceneAt(idx, { image_path: previewUrl, qualityScore: result.qualityScore });
             saveMedia(projectId, idx, 'image', previewUrl);
@@ -680,9 +713,10 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         imgModel?.modelId,
         imgModel?.provider,
         characterProfile || undefined,
-        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled },
+        { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt, visionCritic: visionCriticEnabled, qualityThreshold },
       );
       if (result) {
+        addStats(result.stats);
         const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
         updateSceneAt(idx, { image_path: previewUrl, qualityScore: result.qualityScore });
         saveMedia(projectId, idx, 'image', previewUrl);
@@ -745,7 +779,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           const vidModel = allModels.find(m => m.id === selectedVideoModel);
           const seedImage = s.image_path;
           const prevContext = idx > 0 ? sceneSnapshot[idx - 1]?.visual_prompt : undefined;
-          const videoUrl = await generateSceneVideo(
+          const videoResult = await generateSceneVideo(
             s.visual_prompt!,
             seedImage,
             aspectRatio,
@@ -757,8 +791,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
             idx,
             { scene: s, styleSheet, negativePrompt: negativePrompt || s.negativePrompt },
           );
-          if (videoUrl) {
-            const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
+          if (videoResult?.videoUrl) {
+            addStats(videoResult.stats);
+            const { blobUrl, blob } = await fetchVideoAsBlob(videoResult.videoUrl, idx);
             updateSceneAt(idx, { video_path: blobUrl });
             try {
               const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
@@ -819,7 +854,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       const vidModel = allModels.find(m => m.id === selectedVideoModel);
       const seedImage = currentScene.image_path;
       const prevContext = idx > 0 ? scenes[idx - 1]?.visual_prompt : undefined;
-      const videoUrl = await generateSceneVideo(
+      const videoResult = await generateSceneVideo(
         currentScene.visual_prompt!,
         seedImage,
         aspectRatio,
@@ -831,8 +866,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
         idx,
         { scene: currentScene, styleSheet, negativePrompt: negativePrompt || currentScene.negativePrompt },
       );
-      if (videoUrl) {
-        const { blobUrl, blob } = await fetchVideoAsBlob(videoUrl, idx);
+      if (videoResult?.videoUrl) {
+        addStats(videoResult.stats);
+        const { blobUrl, blob } = await fetchVideoAsBlob(videoResult.videoUrl, idx);
         updateSceneAt(idx, { video_path: blobUrl });
         console.log(`[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.modelId || 'default'})`);
         try {
@@ -1273,9 +1309,32 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                     </button>
                     <div className="flex-1">
                       <span className="text-xs font-bold text-gray-700 block">Vision Critic 자동 품질 검수</span>
-                      <span className="text-[10px] text-gray-400 italic">생성된 이미지를 AI가 채점하고 6점 미만이면 1회 자동 재생성합니다 (생성 시간 약 2배).</span>
+                      <span className="text-[10px] text-gray-400 italic">생성된 이미지를 AI가 채점하고 {qualityThreshold}점 미만이면 1회 자동 재생성합니다 (생성 시간 약 2배).</span>
                     </div>
                   </div>
+                  {visionCriticEnabled && (
+                    <div className="pl-15 ml-15">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 block mb-2 flex items-center justify-between">
+                        <span>품질 기준 (Quality Threshold)</span>
+                        <span className="text-brand-cyan font-black tabular-nums">{qualityThreshold}/10</span>
+                      </label>
+                      <input
+                        type="range"
+                        min={4}
+                        max={8}
+                        step={1}
+                        value={qualityThreshold}
+                        onChange={e => setQualityThreshold(parseInt(e.target.value, 10))}
+                        className="w-full accent-brand-cyan"
+                      />
+                      <div className="flex justify-between text-[9px] text-gray-400 mt-1 font-bold">
+                        <span>4 (관대)</span>
+                        <span>6 (기본)</span>
+                        <span>8 (엄격)</span>
+                      </div>
+                      <p className="text-[10px] text-gray-400 italic mt-2">기준이 높을수록 재생성이 잦아져 시간·비용이 늘어납니다.</p>
+                    </div>
+                  )}
                   <div>
                     <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 block mb-2">
                       Negative Prompt <span className="text-gray-300 normal-case font-medium">(피하고 싶은 요소)</span>
@@ -1539,6 +1598,35 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                     </>
                   );
                 })()}
+              </div>
+            )}
+
+            {step === 4 && (
+              <div className="mb-4 flex items-center gap-2 flex-wrap text-[11px] font-bold">
+                <span className="text-gray-400 uppercase tracking-widest text-[10px]">생성 비용</span>
+                <span className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full">
+                  이미지 {stats.imagesGenerated || 0}장
+                </span>
+                <span className="bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full">
+                  재생성 {stats.refineCalls || 0}회
+                </span>
+                <span className="bg-purple-50 text-purple-700 px-3 py-1.5 rounded-full">
+                  비전 검증 {stats.criticCalls || 0}회
+                </span>
+                {(stats.imagesGenerated || stats.criticCalls || stats.refineCalls) ? (
+                  <button
+                    onClick={() => {
+                      const reset = { imagesGenerated: 0, criticCalls: 0, refineCalls: 0, videosGenerated: stats.videosGenerated || 0 };
+                      setStats(reset);
+                      statsRef.current = reset;
+                      sync();
+                    }}
+                    className="text-[10px] text-gray-400 hover:text-gray-700 font-bold underline ml-1"
+                    title="이미지·검증 카운터 초기화"
+                  >
+                    초기화
+                  </button>
+                ) : null}
               </div>
             )}
 
@@ -1876,6 +1964,21 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               <div className="mb-10 text-center">
                 <h2 className="text-5xl font-black text-brand-dark mb-4 tracking-tighter">Director's Preview</h2>
                 <p className="text-gray-400 font-medium italic">모든 씬이 유기적으로 연결된 최종 결과물을 확인하세요.</p>
+                <div className="mt-4 inline-flex items-center gap-2 flex-wrap text-[11px] font-bold justify-center">
+                  <span className="text-gray-400 uppercase tracking-widest text-[10px]">생성 비용</span>
+                  <span className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full">
+                    이미지 {stats.imagesGenerated || 0}장
+                  </span>
+                  <span className="bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full">
+                    재생성 {stats.refineCalls || 0}회
+                  </span>
+                  <span className="bg-purple-50 text-purple-700 px-3 py-1.5 rounded-full">
+                    비전 검증 {stats.criticCalls || 0}회
+                  </span>
+                  <span className="bg-pink-50 text-pink-700 px-3 py-1.5 rounded-full">
+                    비디오 {stats.videosGenerated || 0}편
+                  </span>
+                </div>
                 <div className="flex items-center justify-center gap-4 mt-4">
                   <button
                     onClick={() => { setActivePreviewIdx(0); }}

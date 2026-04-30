@@ -60,7 +60,16 @@ export interface Project {
   platform?: PlatformId;
   style_sheet?: StyleSheet;
   vision_critic_enabled?: boolean;
+  quality_threshold?: number;
   negative_prompt?: string;
+  stats?: ProjectStats;
+}
+
+export interface ProjectStats {
+  imagesGenerated?: number;
+  criticCalls?: number;
+  refineCalls?: number;
+  videosGenerated?: number;
 }
 
 export interface Script {

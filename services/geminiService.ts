@@ -493,10 +493,22 @@ export interface GenerateImageOptions {
   qualityThreshold?: number;
 }
 
+export interface GenerationStats {
+  imagesGenerated: number;
+  criticCalls: number;
+  refineCalls: number;
+}
+
 export interface GenerateImageResult {
   base64: string;
   mimeType: string;
   qualityScore?: QualityScore;
+  stats: GenerationStats;
+}
+
+export interface GenerateVideoResult {
+  videoUrl: string;
+  stats: GenerationStats & { videosGenerated: number };
 }
 
 async function callImageModel(
@@ -577,16 +589,19 @@ export const generateSceneImage = async (
   console.log(`[Image] 이미지 생성 시작 - requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}, prompt: ${promptText.length}chars`);
 
   return withRetry(async () => {
+    const stats: GenerationStats = { imagesGenerated: 0, criticCalls: 0, refineCalls: 0 };
     const first = await callImageModel(apiKey, actualModel, promptText);
+    stats.imagesGenerated += 1;
 
     const useCritic = options.visionCritic !== false; // default ON
     const threshold = typeof options.qualityThreshold === 'number' ? options.qualityThreshold : 6;
     if (!useCritic) {
-      return { base64: first.base64, mimeType: first.mimeType };
+      return { base64: first.base64, mimeType: first.mimeType, stats };
     }
 
     let score: QualityScore | null = null;
     try {
+      stats.criticCalls += 1;
       score = await critiqueImage({
         imageBase64: first.base64,
         mimeType: first.mimeType,
@@ -599,15 +614,18 @@ export const generateSceneImage = async (
     }
 
     if (!score || score.overall >= threshold) {
-      return { base64: first.base64, mimeType: first.mimeType, qualityScore: score || undefined };
+      return { base64: first.base64, mimeType: first.mimeType, qualityScore: score || undefined, stats };
     }
 
     console.log(`[Image] Quality score ${score.overall}/10 below threshold ${threshold}, refining...`);
     const refinePrompt = `${promptText}\n\n[Director note] ${buildRefineHint(score)}`;
+    stats.refineCalls += 1;
     try {
       const refined = await callImageModel(apiKey, actualModel, refinePrompt);
+      stats.imagesGenerated += 1;
       let refinedScore: QualityScore | null = null;
       try {
+        stats.criticCalls += 1;
         refinedScore = await critiqueImage({
           imageBase64: refined.base64,
           mimeType: refined.mimeType,
@@ -618,10 +636,10 @@ export const generateSceneImage = async (
       } catch {}
       const finalScore = refinedScore && refinedScore.overall >= score.overall ? refinedScore : score;
       const better = refinedScore && refinedScore.overall >= score.overall ? refined : first;
-      return { base64: better.base64, mimeType: better.mimeType, qualityScore: { ...finalScore!, refined: true } };
+      return { base64: better.base64, mimeType: better.mimeType, qualityScore: { ...finalScore!, refined: true }, stats };
     } catch (refineErr) {
       console.warn('[Image] Refine generation failed, returning first:', refineErr);
-      return { base64: first.base64, mimeType: first.mimeType, qualityScore: score };
+      return { base64: first.base64, mimeType: first.mimeType, qualityScore: score, stats };
     }
   }, 1, '이미지 생성');
 };
@@ -773,7 +791,7 @@ export const generateSceneVideo = async (
   previousSceneContext?: string,
   sceneIndex?: number,
   options: GenerateVideoOptions = {},
-): Promise<string | null> => {
+): Promise<GenerateVideoResult | null> => {
   const validRatio: '16:9' | '9:16' = (aspectRatio === '9:16' || aspectRatio === '3:4') ? '9:16' : '16:9';
   const isGoogleProvider = !provider || GOOGLE_VIDEO_PROVIDERS.includes(provider);
   let actualModel = (modelId && isGoogleProvider) ? modelId : VEO_MODEL;
@@ -845,7 +863,7 @@ export const generateSceneVideo = async (
   }
   console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}, continuity: ${!!previousSceneContext}, negative: ${!!adapter.negativePrompt}`);
 
-  return withRetry(async () => {
+  const videoUrl = await withRetry(async () => {
     if (imageData) {
       try {
         return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, imageData, 'img', actualModel);
@@ -861,4 +879,5 @@ export const generateSceneVideo = async (
     }
     return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt', actualModel);
   }, 3, '비디오 생성');
+  return { videoUrl, stats: { imagesGenerated: 0, criticCalls: 0, refineCalls: 0, videosGenerated: 1 } };
 }
