@@ -2408,13 +2408,25 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                             </button>
                           ))}
                           {castDiffersFromVideo && (
-                            <span
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-bold"
-                              title="현재 영상은 이전 캐스트로 만들어졌어요. 아래 '재생성' 버튼을 누르면 새 캐스트가 적용됩니다."
+                            <button
+                              type="button"
+                              onClick={() => handleSingleVideo(i)}
+                              disabled={isProcessing}
+                              title={isActive ? '이 씬을 재생성 중입니다…' : isProcessing ? '다른 씬을 처리 중입니다. 잠시 후 다시 시도해주세요.' : '클릭하면 새 캐스트로 이 씬을 바로 재생성합니다.'}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold transition-colors ${isProcessing ? 'bg-amber-50 border-amber-200 text-amber-800 opacity-60 cursor-not-allowed' : 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100 hover:border-amber-300 cursor-pointer'}`}
                             >
-                              <Icons.AlertCircle size={10} />
-                              변경 사항은 다음 재생성부터 반영됩니다
-                            </span>
+                              {isActive ? (
+                                <>
+                                  <Icons.Loader2 size={10} className="animate-spin" />
+                                  재생성 중…
+                                </>
+                              ) : (
+                                <>
+                                  <Icons.RefreshCw size={10} />
+                                  지금 재생성 — 새 캐스트 반영
+                                </>
+                              )}
+                            </button>
                           )}
                         </div>
                       );
