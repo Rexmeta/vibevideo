@@ -61,6 +61,27 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     onSwitchMode('pro');
   };
 
+  const hasMeaningfulChanges =
+    topic.trim().length > 0 ||
+    duration !== 30 ||
+    aspectRatio !== '16:9' ||
+    videoStyle !== 'Cute Stickman' ||
+    videoMode !== 'ai' ||
+    useVeoAudio !== true;
+
+  const handleSwitchToPro = () => {
+    if (hasMeaningfulChanges) {
+      const ok = window.confirm(
+        'Pro Mode로 전환합니다.\n지금까지 입력한 주제와 설정(길이, 비율, 스타일 등)은 그대로 유지되며, 7단계 전체를 직접 제어할 수 있어요.\n\n계속할까요?'
+      );
+      if (!ok) return;
+    }
+    setStoredMode('pro', projectId);
+    onSwitchMode('pro');
+  };
+
+  const canShowSwitch = !running && !syncing;
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-12 relative">
       <audio ref={audioRef} onEnded={() => setPlayingAudioIdx(null)} className="hidden" />
@@ -76,18 +97,25 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
         </div>
       </div>
 
+      {canShowSwitch && (
+        <div className="mb-6 flex justify-end">
+          <button
+            onClick={handleSwitchToPro}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border-2 border-gray-100 hover:border-brand-dark hover:bg-brand-dark/5 text-brand-dark text-[11px] font-black uppercase tracking-widest transition-all shadow-sm"
+            title={hasMeaningfulChanges ? '입력한 설정을 그대로 들고 Pro Mode 7단계로 이동' : 'Pro Mode 7단계로 이동'}
+          >
+            <Icons.SlidersHorizontal size={14} className="text-brand-dark" />
+            Pro Mode로 전환
+          </button>
+        </div>
+      )}
+
       <div className="text-center mb-10">
         <div className="inline-flex items-center gap-2 mb-4 px-4 py-1.5 rounded-full bg-brand-cyan/10 text-brand-dark text-[11px] font-black uppercase tracking-widest">
           <Icons.Wand2 size={14} /> Quick Mode
         </div>
         <h1 className="text-5xl font-black tracking-tighter text-brand-dark mb-3">한 번에 만들기</h1>
         <p className="text-gray-500 italic font-medium">주제를 입력하고 시작 버튼을 누르면 AI가 모든 것을 처리합니다.</p>
-        <button
-          onClick={() => { setStoredMode('pro', projectId); onSwitchMode('pro'); }}
-          className="mt-3 text-xs font-bold text-gray-400 hover:text-brand-dark underline-offset-4 hover:underline"
-        >
-          더 정밀한 제어가 필요하다면 Pro Mode로 전환
-        </button>
       </div>
 
       <div className="bg-white rounded-[3.5rem] shadow-2xl p-10 md:p-14 border border-gray-50">
