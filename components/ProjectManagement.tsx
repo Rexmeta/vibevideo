@@ -10,6 +10,7 @@ import {
 } from '../services/storageService';
 import { QueryDocumentSnapshot } from 'firebase/firestore';
 import { Icons } from './Icons';
+import { clearStoredMode } from './wizard/ModeGate';
 
 interface ProjectManagementProps {
   userId: string;
@@ -82,6 +83,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
     if (confirm('이 프로젝트를 영구 삭제하시겠습니까?\n프로젝트와 관련된 모든 파일(이미지, 오디오, 비디오)이 함께 삭제됩니다.')) {
       try {
         await deleteProjectFromCloud(id, userId);
+        clearStoredMode(id);
         setProjects(prev => prev.filter(p => p.id !== id));
       } catch (err) { alert("삭제에 실패했습니다."); }
     }
