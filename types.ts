@@ -132,6 +132,8 @@ export type ShotType = 'wide' | 'medium' | 'close-up' | 'extreme-close-up' | 'ov
 export type CameraMovement = 'static' | 'pan-left' | 'pan-right' | 'tilt-up' | 'tilt-down' | 'dolly-in' | 'dolly-out' | 'tracking' | 'handheld' | 'crane';
 export type BeatRole = 'hook' | 'setup' | 'development' | 'payoff' | 'cta';
 
+export type SeedSource = 'reference' | 'scene-image' | 'text-only';
+
 export interface QualityScore {
   characterConsistency: number;
   compositionQuality: number;
@@ -167,6 +169,7 @@ export interface Scene {
   qualityNotes?: string;
   captionWords?: CaptionWord[];
   characters?: string[]; // names of characters from project.character_references that appear in this scene
+  seedSource?: SeedSource;
 }
 
 export type ModelType = 'image' | 'video' | 'audio';

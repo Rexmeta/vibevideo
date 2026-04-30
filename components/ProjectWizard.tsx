@@ -896,7 +896,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
           if (videoResult?.videoUrl) {
             addStats(videoResult.stats);
             const { blobUrl, blob } = await fetchVideoAsBlob(videoResult.videoUrl, idx);
-            updateSceneAt(idx, { video_path: blobUrl });
+            updateSceneAt(idx, { video_path: blobUrl, seedSource: videoResult.seedSource });
             try {
               const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
               updateSceneAt(idx, { video_path: url });
@@ -971,8 +971,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
       if (videoResult?.videoUrl) {
         addStats(videoResult.stats);
         const { blobUrl, blob } = await fetchVideoAsBlob(videoResult.videoUrl, idx);
-        updateSceneAt(idx, { video_path: blobUrl });
-        console.log(`[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.modelId || 'default'})`);
+        updateSceneAt(idx, { video_path: blobUrl, seedSource: videoResult.seedSource });
+        console.log(`[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.modelId || 'default'}, seed: ${videoResult.seedSource})`);
         try {
           const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/videos/s${idx}.mp4`, blob, 'blob');
           updateSceneAt(idx, { video_path: url });
@@ -2195,6 +2195,21 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                       )}
                       {isFailed && <span className="bg-red-100 text-red-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">Failed</span>}
                       {isActive && <span className="bg-brand-cyan/20 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-black uppercase animate-pulse">Processing</span>}
+                      {step === 5 && !isPresentationMode && s.video_path && s.seedSource && (() => {
+                        const seedBadge = s.seedSource === 'reference'
+                          ? { cls: 'bg-emerald-50 text-emerald-700 border border-emerald-200', label: '참조 이미지로 시드', title: '캐릭터 참조 이미지로 정체성 잠금' }
+                          : s.seedSource === 'scene-image'
+                          ? { cls: 'bg-blue-50 text-blue-700 border border-blue-200', label: '씬 이미지로 시드', title: '이 씬에서 생성된 이미지를 시드로 사용' }
+                          : { cls: 'bg-gray-100 text-gray-600 border border-gray-200', label: '텍스트만 사용', title: '시드 이미지 없이 텍스트 프롬프트만으로 생성됨' };
+                        return (
+                          <span
+                            className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${seedBadge.cls}`}
+                            title={seedBadge.title}
+                          >
+                            {seedBadge.label}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <p className="text-brand-dark text-sm font-medium leading-relaxed italic mb-3">"{s.script_segment}"</p>
                     {(step === 3 || step === 4) && characterReferences.length > 0 && (() => {

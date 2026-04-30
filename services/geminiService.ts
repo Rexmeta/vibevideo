@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Modality, Type, type Part } from "@google/genai";
-import { Scene, StyleSheet, GenreId, CharacterReference } from "../types";
+import { Scene, StyleSheet, GenreId, CharacterReference, SeedSource } from "../types";
 import { getEffectiveApiKey, getGoogleApiKey } from "./apiKeyService";
 import { getGenre, getPlatform, type PlatformPreset } from "./presets";
 import { buildPrompt as buildModelPrompt } from "./promptAdapter";
@@ -578,6 +578,7 @@ export interface GenerateImageResult {
 
 export interface GenerateVideoResult {
   videoUrl: string;
+  seedSource: SeedSource;
   stats: GenerationStats & { videosGenerated: number };
 }
 
@@ -981,6 +982,12 @@ export const generateSceneVideo = async (
   }
   console.log(`[Video Gen] Prompt includes audio script: ${!!audioScript}, continuity: ${!!previousSceneContext}, negative: ${!!adapter.negativePrompt}`);
 
+  // Track which seed source actually got used (could downgrade to 'text-only'
+  // if image-based generation fails and we fall back to text-only).
+  let actualSeedSource: SeedSource = imageData
+    ? (seedFromReference ? 'reference' : 'scene-image')
+    : 'text-only';
+
   const videoUrl = await withRetry(async () => {
     if (imageData) {
       try {
@@ -992,10 +999,12 @@ export const generateSceneVideo = async (
           throw imgErr;
         }
         console.log(`[Video Gen] Falling back to text-only generation...`);
-        return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt-fallback', actualModel);
+        const url = await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt-fallback', actualModel);
+        actualSeedSource = 'text-only';
+        return url;
       }
     }
     return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt', actualModel);
   }, 3, '비디오 생성');
-  return { videoUrl, stats: { imagesGenerated: 0, criticCalls: 0, refineCalls: 0, videosGenerated: 1 } };
+  return { videoUrl, seedSource: actualSeedSource, stats: { imagesGenerated: 0, criticCalls: 0, refineCalls: 0, videosGenerated: 1 } };
 }
