@@ -5,7 +5,7 @@ import { getModelsByType } from '../../services/modelService';
 import { generateStyleSheet } from '../../services/geminiService';
 import { estimateCost, formatUsd, resolveApiModelId } from '../../services/pricing';
 import { CAPTION_PRESETS } from '../../services/captionService';
-import { TransitionType, MotionPreset } from '../../types';
+import { TransitionType, MotionPreset, SeedSource } from '../../types';
 
 export const StepsAudioImageVideo: React.FC = () => {
   const w = useWizard();
@@ -64,6 +64,7 @@ export const StepsAudioImageVideo: React.FC = () => {
     isVideosReady,
     characterReferences,
     toggleSceneCharacter,
+    updateSceneAt,
     applyDefaultTransitions,
     applyDefaultMotion,
     TRANSITION_OPTIONS,
@@ -642,6 +643,71 @@ export const StepsAudioImageVideo: React.FC = () => {
                     </div>
                   );
                 })() : (
+                  <>
+                  {step === 5 && !isPresentationMode && !isProcessing && (() => {
+                    const seedMode: SeedSource = s.videoSeedPreference || 'scene-image';
+                    const hasSceneImage = !!s.image_path;
+                    const hasReference = !!characterReferenceImage;
+                    const opts: { key: SeedSource; label: string; sub: string; disabled?: boolean }[] = [
+                      { key: 'scene-image', label: '씬 이미지', sub: hasSceneImage ? '현재 씬 컷' : (hasReference ? '없음 → 레퍼런스' : '없음 → 텍스트') },
+                      { key: 'reference', label: '캐릭터 레퍼런스', sub: hasReference ? '잠긴 인물 사진' : '레퍼런스 미설정', disabled: !hasReference },
+                      { key: 'text-only', label: '텍스트만', sub: '시드 이미지 없이' },
+                    ];
+                    // Same staleness pattern as castDiffersFromVideo above:
+                    // when an existing video was rendered with a different
+                    // seed preference than the one currently selected,
+                    // surface an inline hint so the user knows the toggle
+                    // only applies on the next regeneration. Legacy scenes
+                    // without a snapshot suppress the hint.
+                    const seedDiffersFromVideo = !!s.video_path
+                      && !!s.videoSeedPreferenceUsed
+                      && s.videoSeedPreferenceUsed !== seedMode;
+                    return (
+                      <div className="mb-3 p-3 rounded-2xl bg-gradient-to-br from-purple-50 to-pink-50 border border-purple-200/60">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="text-[10px] font-black uppercase tracking-wider text-purple-700 flex items-center gap-1.5">
+                            <Icons.Video size={11} /> Veo 시드 선택
+                          </div>
+                          <div className="text-[9px] font-medium text-gray-500">기본: 씬 이미지</div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {opts.map(opt => {
+                            const active = seedMode === opt.key;
+                            return (
+                              <button
+                                key={opt.key}
+                                type="button"
+                                disabled={opt.disabled}
+                                onClick={() => updateSceneAt(i, { videoSeedPreference: opt.key })}
+                                title={opt.disabled ? '캐릭터 레퍼런스가 설정되지 않았습니다 (Step 1)' : `${opt.label} - ${opt.sub}`}
+                                className={`px-2 py-1.5 rounded-lg text-[10px] font-bold border transition-all ${
+                                  active
+                                    ? 'border-purple-500 bg-purple-500 text-white shadow-sm'
+                                    : opt.disabled
+                                      ? 'border-gray-200 bg-gray-50 text-gray-300 cursor-not-allowed'
+                                      : 'border-gray-200 bg-white text-gray-600 hover:border-purple-300 hover:text-purple-700'
+                                }`}
+                              >
+                                <div className="leading-tight">{opt.label}</div>
+                                <div className={`text-[8px] font-medium leading-tight mt-0.5 ${active ? 'text-purple-100' : 'text-gray-400'}`}>{opt.sub}</div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {seedDiffersFromVideo && (
+                          <div className="mt-2 flex items-center gap-1.5">
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-bold"
+                              title="현재 영상은 이전 시드 선택으로 만들어졌어요. 아래 '재생성' 버튼을 누르면 새 시드 선택이 적용됩니다."
+                            >
+                              <Icons.AlertCircle size={10} />
+                              변경 사항은 다음 재생성부터 반영됩니다
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   <div className="flex flex-wrap gap-3">
                     {!isProcessing && (
                       <>
@@ -688,6 +754,7 @@ export const StepsAudioImageVideo: React.FC = () => {
                       </>
                     )}
                   </div>
+                  </>
                 )}
                 {step === 5 && !isPresentationMode && selectedVideoIdx === i && s.video_path && (
                   <div className="mt-4 rounded-2xl overflow-hidden bg-black shadow-lg border-2 border-purple-400/30">

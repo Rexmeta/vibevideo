@@ -1300,6 +1300,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
               styleSheet,
               negativePrompt: negativePrompt || s.negativePrompt,
               referenceImage: characterReferenceImage,
+              referenceImages: referenceImagesForScene(s),
+              seedPreference: s.videoSeedPreference,
             }
           );
           if (videoResult?.videoUrl) {
@@ -1310,6 +1312,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
               seedSource: videoResult.seedSource,
               videoCast: videoResult.videoCast,
               videoCastAttached: videoResult.videoCastAttached,
+              videoSeedPreferenceUsed: s.videoSeedPreference || 'scene-image',
             });
             try {
               const url = await uploadFileToCloud(
@@ -1400,6 +1403,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
           styleSheet,
           negativePrompt: negativePrompt || currentScene.negativePrompt,
           referenceImage: characterReferenceImage,
+          referenceImages: referenceImagesForScene(currentScene),
+          seedPreference: currentScene.videoSeedPreference,
         }
       );
       if (videoResult?.videoUrl) {
@@ -1410,6 +1415,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
           seedSource: videoResult.seedSource,
           videoCast: videoResult.videoCast,
           videoCastAttached: videoResult.videoCastAttached,
+          videoSeedPreferenceUsed: currentScene.videoSeedPreference || 'scene-image',
         });
         console.log(
           `[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.modelId || 'default'}, seed: ${videoResult.seedSource}, cast: [${videoResult.videoCast.join(', ')}], attached: ${videoResult.videoCastAttached})`

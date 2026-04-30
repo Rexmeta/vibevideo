@@ -188,6 +188,12 @@ export interface Scene {
   // images (multi-image-capable model). False means cast was surfaced only as
   // text in the prompt — current Veo path is always text-only.
   videoCastAttached?: boolean;
+  // Snapshot of the user's `videoSeedPreference` at the time of the last
+  // successful video generation. Used to detect when the per-scene seed-source
+  // toggle has been changed since rendering and surface an inline
+  // "applies on next regeneration" hint. Legacy scenes without this field
+  // suppress the hint to avoid false positives.
+  videoSeedPreferenceUsed?: SeedSource;
 }
 
 export type ModelType = 'image' | 'video' | 'audio';
