@@ -17,6 +17,7 @@ import {
 } from '../services/storageService';
 import { saveMedia, getMedia, saveProjectMeta, getProjectMeta } from '../services/mediaCache';
 import { getModels, getModelsByType } from '../services/modelService';
+import { estimateCost, formatUsd, resolveApiModelId } from '../services/pricing';
 import { mergeAllScenes, MergeInput, renderPresentationVideo, PresentationSceneInput } from '../services/videoMergeService';
 import { GENRES, PLATFORMS, applyPlatformDefaults } from '../services/presets';
 import { DEFAULT_CAPTION_STYLE, CAPTION_PRESETS, alignWordsToDuration } from '../services/captionService';
@@ -1622,7 +1623,20 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               </div>
             )}
 
-            {step === 4 && (
+            {step === 4 && (() => {
+              const imgApiId = resolveApiModelId(allModels, selectedImageModel);
+              const vidApiId = resolveApiModelId(allModels, selectedVideoModel);
+              const breakdown = estimateCost({
+                imagesGenerated: stats.imagesGenerated,
+                refineCalls: stats.refineCalls,
+                criticCalls: stats.criticCalls,
+                videosGenerated: 0,
+                imageModelId: imgApiId,
+                videoModelId: vidApiId,
+              });
+              const tooltip = `예상 비용 (USD)\n이미지 ${formatUsd(breakdown.imagesUsd)} · 재생성 ${formatUsd(breakdown.refinesUsd)} · 비전 검증 ${formatUsd(breakdown.criticsUsd)}\n실제 청구액은 모델/해상도/토큰 수에 따라 달라질 수 있습니다.`;
+              const showCost = (stats.imagesGenerated || stats.refineCalls || stats.criticCalls);
+              return (
               <div className="mb-4 flex items-center gap-2 flex-wrap text-[11px] font-bold">
                 <span className="text-gray-400 uppercase tracking-widest text-[10px]">생성 비용</span>
                 <span className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full">
@@ -1634,6 +1648,14 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                 <span className="bg-purple-50 text-purple-700 px-3 py-1.5 rounded-full">
                   비전 검증 {stats.criticCalls || 0}회
                 </span>
+                {showCost ? (
+                  <span
+                    className="bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full cursor-help"
+                    title={tooltip}
+                  >
+                    예상 비용 ~{formatUsd(breakdown.totalUsd)} USD
+                  </span>
+                ) : null}
                 {(stats.imagesGenerated || stats.criticCalls || stats.refineCalls) ? (
                   <button
                     onClick={() => {
@@ -1649,7 +1671,8 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                   </button>
                 ) : null}
               </div>
-            )}
+              );
+            })()}
 
             {step === 4 && styleSheet && (
               <div className="mb-6 p-6 bg-gradient-to-br from-purple-50 to-blue-50 rounded-[2rem] border-2 border-purple-100">
@@ -2032,21 +2055,45 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
               <div className="mb-10 text-center">
                 <h2 className="text-5xl font-black text-brand-dark mb-4 tracking-tighter">Director's Preview</h2>
                 <p className="text-gray-400 font-medium italic">모든 씬이 유기적으로 연결된 최종 결과물을 확인하세요.</p>
-                <div className="mt-4 inline-flex items-center gap-2 flex-wrap text-[11px] font-bold justify-center">
-                  <span className="text-gray-400 uppercase tracking-widest text-[10px]">생성 비용</span>
-                  <span className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full">
-                    이미지 {stats.imagesGenerated || 0}장
-                  </span>
-                  <span className="bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full">
-                    재생성 {stats.refineCalls || 0}회
-                  </span>
-                  <span className="bg-purple-50 text-purple-700 px-3 py-1.5 rounded-full">
-                    비전 검증 {stats.criticCalls || 0}회
-                  </span>
-                  <span className="bg-pink-50 text-pink-700 px-3 py-1.5 rounded-full">
-                    비디오 {stats.videosGenerated || 0}편
-                  </span>
-                </div>
+                {(() => {
+                  const imgApiId = resolveApiModelId(allModels, selectedImageModel);
+                  const vidApiId = resolveApiModelId(allModels, selectedVideoModel);
+                  const breakdown = estimateCost({
+                    imagesGenerated: stats.imagesGenerated,
+                    refineCalls: stats.refineCalls,
+                    criticCalls: stats.criticCalls,
+                    videosGenerated: stats.videosGenerated,
+                    imageModelId: imgApiId,
+                    videoModelId: vidApiId,
+                  });
+                  const tooltip = `예상 비용 (USD)\n이미지 ${formatUsd(breakdown.imagesUsd)} · 재생성 ${formatUsd(breakdown.refinesUsd)} · 비전 검증 ${formatUsd(breakdown.criticsUsd)} · 비디오 ${formatUsd(breakdown.videosUsd)}\n실제 청구액은 모델/해상도/길이에 따라 달라질 수 있습니다.`;
+                  const showCost = (stats.imagesGenerated || stats.refineCalls || stats.criticCalls || stats.videosGenerated);
+                  return (
+                  <div className="mt-4 inline-flex items-center gap-2 flex-wrap text-[11px] font-bold justify-center">
+                    <span className="text-gray-400 uppercase tracking-widest text-[10px]">생성 비용</span>
+                    <span className="bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full">
+                      이미지 {stats.imagesGenerated || 0}장
+                    </span>
+                    <span className="bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full">
+                      재생성 {stats.refineCalls || 0}회
+                    </span>
+                    <span className="bg-purple-50 text-purple-700 px-3 py-1.5 rounded-full">
+                      비전 검증 {stats.criticCalls || 0}회
+                    </span>
+                    <span className="bg-pink-50 text-pink-700 px-3 py-1.5 rounded-full">
+                      비디오 {stats.videosGenerated || 0}편
+                    </span>
+                    {showCost ? (
+                      <span
+                        className="bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full cursor-help"
+                        title={tooltip}
+                      >
+                        예상 비용 ~{formatUsd(breakdown.totalUsd)} USD
+                      </span>
+                    ) : null}
+                  </div>
+                  );
+                })()}
                 <div className="flex items-center justify-center gap-4 mt-4">
                   <button
                     onClick={() => { setActivePreviewIdx(0); }}

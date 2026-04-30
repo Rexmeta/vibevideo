@@ -21,6 +21,7 @@ The application is built with React 18 and TypeScript, using Vite 5 as the build
 - **Media Handling**: `mediaCache.ts` utilizes IndexedDB for caching large base64 media data, enhancing performance and offline capabilities.
 - **Video Processing**: `videoMergeService.ts` integrates `FFmpeg.wasm` for in-browser video merging and scene concatenation.
 - **AI Model Management**: `modelService.ts` handles CRUD operations for AI models, persisting data in Firestore and localStorage, and seeding default models.
+- **Cost Estimation**: `services/pricing.ts` holds approximate per-call USD prices for image, video, and vision-critic models. Step 4 and Step 6 cost chips multiply generation counters by these prices to surface an estimated USD spend with a tooltip clarifying it is an approximation.
 - **Data Persistence**: Firebase Firestore is used with offline persistence enabled for multi-tab support.
 - **Storage**: Firebase Storage manages media uploads, with structured paths and robust retry mechanisms.
 
