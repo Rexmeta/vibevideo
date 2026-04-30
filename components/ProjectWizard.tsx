@@ -101,6 +101,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const statsRef = useRef(stats);
   const characterReferenceImageRef = useRef(characterReferenceImage);
   const characterReferencesRef = useRef(characterReferences);
+  const castEditingOriginalRef = useRef<{ idx: number; name: string } | null>(null);
 
   const addStats = (delta: Partial<ProjectStats>) => {
     setStats(prev => {
@@ -576,25 +577,72 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
   const referenceImagesForScene = (s: Partial<Scene>): { name?: string; description?: string; image: string }[] => {
     if (!characterReferences || characterReferences.length === 0) return [];
     const tagged = (s?.characters || []).filter(Boolean);
-    // Match canonical names (case-insensitive) so user re-edits of casing still work
-    const lower = new Set(tagged.map(t => t.toLowerCase()));
-    const matched = characterReferences.filter(c => c && c.imageUrl && lower.has(c.name.toLowerCase()));
+    // Match canonical names (case-insensitive, trimmed) so re-edits of casing
+    // or stray whitespace in either side still resolve correctly.
+    const lower = new Set(tagged.map(t => t.trim().toLowerCase()).filter(Boolean));
+    const matched = characterReferences.filter(c => c && c.imageUrl && lower.has((c.name || '').trim().toLowerCase()));
     // If the scene has no character tags at all (legacy or AI omitted), include none —
     // we don't want to attach every cast member to every shot.
     return matched.map(c => ({ name: c.name, description: c.description, image: c.imageUrl }));
   };
 
+  const renameCharacterInScenes = (oldName: string, newName: string) => {
+    const oldTrim = (oldName || '').trim();
+    const newTrim = (newName || '').trim();
+    if (!oldTrim || !newTrim) return;
+    if (oldTrim === newTrim) return;
+    const oldLower = oldTrim.toLowerCase();
+    setScenes(prev => {
+      let changed = false;
+      const next = prev.map(sc => {
+        const tags = (sc.characters || []).filter((t): t is string => typeof t === 'string' && t.length > 0);
+        if (!tags.some(t => t.trim().toLowerCase() === oldLower)) return sc;
+        const seen = new Set<string>();
+        const updated: string[] = [];
+        for (const t of tags) {
+          const replaced = t.trim().toLowerCase() === oldLower ? newTrim : t.trim();
+          const key = replaced.toLowerCase();
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          updated.push(replaced);
+        }
+        changed = true;
+        return { ...sc, characters: updated };
+      });
+      return changed ? next : prev;
+    });
+  };
+
+  const removeCharacterFromScenes = (name: string) => {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return;
+    const lower = trimmed.toLowerCase();
+    setScenes(prev => {
+      let changed = false;
+      const next = prev.map(sc => {
+        const tags = (sc.characters || []).filter((t): t is string => typeof t === 'string' && t.length > 0);
+        if (!tags.some(t => t.trim().toLowerCase() === lower)) return sc;
+        const updated = tags.filter(t => t.trim().toLowerCase() !== lower);
+        changed = true;
+        return { ...sc, characters: updated };
+      });
+      return changed ? next : prev;
+    });
+  };
+
   const toggleSceneCharacter = (idx: number, name: string) => {
-    if (!name) return;
+    const trimmed = (name || '').trim();
+    if (!trimmed) return;
+    const lower = trimmed.toLowerCase();
     setScenes(prev => {
       const next = [...prev];
       const old = next[idx];
       if (!old) return prev;
-      const current = (old.characters || []).filter((c): c is string => typeof c === 'string' && c.length > 0);
-      const exists = current.some(c => c.toLowerCase() === name.toLowerCase());
+      const current = (old.characters || []).filter((c): c is string => typeof c === 'string' && c.trim().length > 0);
+      const exists = current.some(c => c.trim().toLowerCase() === lower);
       const updated = exists
-        ? current.filter(c => c.toLowerCase() !== name.toLowerCase())
-        : [...current, name];
+        ? current.filter(c => c.trim().toLowerCase() !== lower)
+        : [...current, trimmed];
       next[idx] = { ...old, characters: updated };
       return next;
     });
@@ -1546,9 +1594,34 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                         <div className="flex-1 min-w-0 space-y-2">
                           <input
                             value={c.name}
+                            onFocus={() => {
+                              castEditingOriginalRef.current = { idx, name: c.name || '' };
+                            }}
                             onChange={e => {
                               const v = e.target.value;
                               setCharacterReferences(prev => prev.map((x, i) => i === idx ? { ...x, name: v } : x));
+                            }}
+                            onBlur={e => {
+                              const snapshot = castEditingOriginalRef.current;
+                              castEditingOriginalRef.current = null;
+                              if (!snapshot || snapshot.idx !== idx) return;
+                              const original = snapshot.name.trim();
+                              const finalName = (e.target.value || '').trim();
+                              // Normalize cast name in state to the trimmed value so
+                              // tag lookups (which use exact case-insensitive match)
+                              // never get desynced by trailing/leading whitespace.
+                              if (e.target.value !== finalName) {
+                                setCharacterReferences(prev => prev.map((x, i) => i === idx ? { ...x, name: finalName } : x));
+                              }
+                              if (original === finalName) return;
+                              if (original && !finalName) {
+                                // Cleared — drop tag from every scene so no chip is orphaned
+                                removeCharacterFromScenes(original);
+                                sync();
+                              } else if (original && finalName) {
+                                renameCharacterInScenes(original, finalName);
+                                sync();
+                              }
                             }}
                             placeholder="캐릭터 이름 (예: Alex, 진행자, 악당 보스)"
                             className="w-full p-3 bg-white rounded-xl outline-none text-sm font-bold shadow-inner"
@@ -1638,7 +1711,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                             <button
                               onClick={() => {
                                 if (!confirm(`'${c.name || '이 캐릭터'}'를 캐스트에서 제거할까요?`)) return;
+                                const removedName = c.name;
                                 setCharacterReferences(prev => prev.filter((_, i) => i !== idx));
+                                removeCharacterFromScenes(removedName);
                                 sync();
                               }}
                               className="px-3 py-1.5 bg-white border border-red-200 rounded-full text-[10px] font-bold text-red-500 hover:bg-red-50 transition-all"
@@ -2213,9 +2288,9 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                     </div>
                     <p className="text-brand-dark text-sm font-medium leading-relaxed italic mb-3">"{s.script_segment}"</p>
                     {(step === 3 || step === 4 || step === 5) && characterReferences.length > 0 && (() => {
-                      const tagged = (s.characters || []).filter((t): t is string => typeof t === 'string' && t.length > 0);
-                      const taggedLower = new Set(tagged.map(t => t.toLowerCase()));
-                      const available = characterReferences.filter(c => c.name && !taggedLower.has(c.name.toLowerCase()));
+                      const tagged = (s.characters || []).filter((t): t is string => typeof t === 'string' && t.trim().length > 0);
+                      const taggedLower = new Set(tagged.map(t => t.trim().toLowerCase()));
+                      const available = characterReferences.filter(c => c.name && c.name.trim() && !taggedLower.has(c.name.trim().toLowerCase()));
                       return (
                         <div className="flex items-center gap-2 mb-3 flex-wrap">
                           <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 mr-1">Cast</span>
@@ -2223,7 +2298,7 @@ export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate
                             <span className="text-[10px] text-gray-300 italic mr-1">캐릭터 없음 — 아래에서 추가</span>
                           )}
                           {tagged.map(name => {
-                            const ref = characterReferences.find(c => c.name.toLowerCase() === name.toLowerCase());
+                            const ref = characterReferences.find(c => (c.name || '').trim().toLowerCase() === name.trim().toLowerCase());
                             return (
                               <button
                                 key={`tagged-${name}`}
