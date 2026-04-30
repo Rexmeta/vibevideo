@@ -14,6 +14,7 @@ import {
   CaptionStyle,
   CharacterReference,
 } from '../../types';
+import type { WizardMode } from './ModeGate';
 
 import { WizardContextValue } from './wizardTypes';
 import {
@@ -58,6 +59,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const [createdAt, setCreatedAt] = useState<string>(new Date().toISOString());
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7>(1);
   const [maxStep, setMaxStep] = useState<number>(1);
+  const [savedMode, setSavedModeState] = useState<WizardMode | null>(null);
 
   // ---- Project config ----
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1' | '3:4'>('16:9');
@@ -135,7 +137,24 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const statsRef = useRef(stats);
   const characterReferenceImageRef = useRef(characterReferenceImage);
   const characterReferencesRef = useRef(characterReferences);
+  const savedModeRef = useRef<WizardMode | null>(savedMode);
+  const syncRef = useRef<WizardContextValue['sync'] | null>(null);
+  const syncPendingRef = useRef<boolean>(false);
   const blobUrlsRef = useRef<Set<string>>(new Set());
+
+  const setSavedMode = (mode: WizardMode | null) => {
+    const changed = savedModeRef.current !== mode;
+    savedModeRef.current = mode;
+    setSavedModeState(mode);
+    // A mode switch is often the last thing the user does before navigating
+    // away, so make sure the new preference reaches the cloud record.
+    // If a richer snapshot is already queued, leave it alone — the queued
+    // sync reads `savedModeRef` at fire time and will include the new mode.
+    // Only schedule a fresh sync when nothing is pending.
+    if (changed && !syncPendingRef.current) {
+      syncRef.current?.();
+    }
+  };
 
   useEffect(() => {
     scenesRef.current = scenes;
@@ -242,11 +261,14 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     statsRef,
     characterReferenceImageRef,
     characterReferencesRef,
+    savedModeRef,
+    syncPendingRef,
     blobUrlsRef,
     syncCleanupRef,
     setSyncing,
     setSyncError,
   });
+  syncRef.current = sync;
 
   // ---- Restore on mount ----
   useRestore({
@@ -262,6 +284,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setVideoStyle,
     setStep,
     setMaxStep,
+    setSavedMode,
     setScript,
     setDuration,
     setThumbnail,
@@ -445,6 +468,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setStep,
     maxStep,
     setMaxStep,
+    savedMode,
+    setSavedMode,
     aspectRatio,
     setAspectRatio,
     videoStyle,

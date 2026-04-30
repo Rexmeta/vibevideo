@@ -46,6 +46,7 @@ export interface Project {
   thumbnail?: string;
   saved_step?: number;
   saved_max_step?: number;
+  saved_mode?: 'quick' | 'pro';
   saved_script?: string;
   saved_scenes?: Scene[];
   saved_topic?: string;

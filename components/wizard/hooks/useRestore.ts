@@ -10,6 +10,7 @@ import {
   StyleSheet,
   VideoMode,
 } from '../../../types';
+import type { WizardMode } from '../ModeGate';
 import { getProjectFromCloud } from '../../../services/storageService';
 import { saveMedia, getMedia, getProjectMeta } from '../../../services/mediaCache';
 import { migrateSceneFields } from '../../../services/geminiService';
@@ -28,6 +29,7 @@ interface RestoreDeps {
   setVideoStyle: React.Dispatch<React.SetStateAction<string>>;
   setStep: React.Dispatch<React.SetStateAction<1 | 2 | 3 | 4 | 5 | 6 | 7>>;
   setMaxStep: React.Dispatch<React.SetStateAction<number>>;
+  setSavedMode: (mode: WizardMode | null) => void;
   setScript: React.Dispatch<React.SetStateAction<string>>;
   setDuration: React.Dispatch<React.SetStateAction<number>>;
   setThumbnail: React.Dispatch<React.SetStateAction<string | undefined>>;
@@ -70,6 +72,7 @@ export const useRestore = (deps: RestoreDeps) => {
     setVideoStyle,
     setStep,
     setMaxStep,
+    setSavedMode,
     setScript,
     setDuration,
     setThumbnail,
@@ -195,6 +198,9 @@ export const useRestore = (deps: RestoreDeps) => {
           const restoredMaxStep = p.saved_max_step || p.saved_step || 1;
           setStep(restoredStep);
           setMaxStep(restoredMaxStep);
+          if (p.saved_mode === 'quick' || p.saved_mode === 'pro') {
+            setSavedMode(p.saved_mode);
+          }
           setScript(p.saved_script || '');
           setDuration(p.saved_duration || 30);
           setThumbnail(p.thumbnail);

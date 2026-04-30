@@ -13,6 +13,7 @@ import {
 } from '../../../types';
 import { saveProjectToCloud } from '../../../services/storageService';
 import { saveProjectMeta } from '../../../services/mediaCache';
+import type { WizardMode } from '../ModeGate';
 
 export type SyncFn = (
   targetStep?: number,
@@ -52,6 +53,8 @@ interface SyncDeps {
   statsRef: React.MutableRefObject<ProjectStats>;
   characterReferenceImageRef: React.MutableRefObject<string | undefined>;
   characterReferencesRef: React.MutableRefObject<CharacterReference[]>;
+  savedModeRef: React.MutableRefObject<WizardMode | null>;
+  syncPendingRef: React.MutableRefObject<boolean>;
   blobUrlsRef: React.MutableRefObject<Set<string>>;
   syncCleanupRef: React.MutableRefObject<(() => void) | null>;
   setSyncing: React.Dispatch<React.SetStateAction<boolean>>;
@@ -90,6 +93,8 @@ export const useSync = (deps: SyncDeps): SyncFn => {
     statsRef,
     characterReferenceImageRef,
     characterReferencesRef,
+    savedModeRef,
+    syncPendingRef,
     blobUrlsRef,
     syncCleanupRef,
     setSyncing,
@@ -103,14 +108,19 @@ export const useSync = (deps: SyncDeps): SyncFn => {
   const sync: SyncFn = (targetStep, scenesOverride, extraData = {}, overrides = {}) => {
     if (!userId) return;
     syncParamsRef.current = { targetStep, scenesOverride, extraData, overrides };
+    syncPendingRef.current = true;
 
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     pendingSyncRef.current = null;
     syncTimerRef.current = setTimeout(async () => {
       syncTimerRef.current = null;
       const params = syncParamsRef.current;
-      if (!params) return;
+      if (!params) {
+        syncPendingRef.current = false;
+        return;
+      }
       syncParamsRef.current = null;
+      syncPendingRef.current = false;
 
       const currentStep = params.targetStep || stepRef.current;
       const currentScenes = (params.scenesOverride || scenesRef.current) as Scene[];
@@ -128,6 +138,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
         updated_at: new Date().toISOString(),
         saved_step: currentStep,
         saved_max_step: currentMaxStep,
+        saved_mode: savedModeRef.current ?? undefined,
         saved_script: params.overrides.script ?? scriptRef.current,
         saved_scenes: currentScenes,
         saved_topic: params.overrides.topic || topicRef.current,
@@ -271,6 +282,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
           updated_at: new Date().toISOString(),
           saved_step: currentStep,
           saved_max_step: currentMaxStep,
+          saved_mode: savedModeRef.current ?? undefined,
           saved_script: params.overrides?.script ?? scriptRef.current,
           saved_scenes: currentScenes,
           saved_topic: params.overrides?.topic || topicRef.current,

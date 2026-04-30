@@ -16,6 +16,7 @@ import {
   CharacterReference,
 } from '../../types';
 import { SyncFn } from './hooks/useSync';
+import type { WizardMode } from './ModeGate';
 
 export interface WizardContextValue {
   // Identity
@@ -32,6 +33,8 @@ export interface WizardContextValue {
   setStep: React.Dispatch<React.SetStateAction<1 | 2 | 3 | 4 | 5 | 6 | 7>>;
   maxStep: number;
   setMaxStep: React.Dispatch<React.SetStateAction<number>>;
+  savedMode: WizardMode | null;
+  setSavedMode: (mode: WizardMode | null) => void;
 
   // Project config
   aspectRatio: '16:9' | '9:16' | '1:1' | '3:4';
