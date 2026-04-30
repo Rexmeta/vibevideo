@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { AIModel, ModelType, ViewState } from '../types';
 import { getModels, saveModel, deleteModel, seedDefaultModels, isAdminUser } from '../services/modelService';
-import { getModelApiKey, setModelApiKey, getModelEndpoint, setModelEndpoint, getProviderApiKey, setProviderApiKey } from '../services/apiKeyService';
+import { getModelApiKey, setModelApiKey, getModelEndpoint, setModelEndpoint, getProviderApiKey, setProviderApiKey, getGoogleApiKeySource, GoogleApiKeySource, API_KEY_CHANGE_EVENT } from '../services/apiKeyService';
 import { Icons } from './Icons';
 
 interface AdminPageProps {
@@ -39,6 +39,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
   const [providerKeys, setProviderKeys] = useState<Record<string, string>>({});
   const [showProviderKeys, setShowProviderKeys] = useState<Record<string, boolean>>({});
   const [apiSaveMsg, setApiSaveMsg] = useState<Record<string, string>>({});
+  const [googleKeySource, setGoogleKeySource] = useState<GoogleApiKeySource>(() => getGoogleApiKeySource());
 
   const loadModels = useCallback(async () => {
     setLoading(true);
@@ -68,6 +69,20 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
   useEffect(() => {
     loadModels();
   }, [loadModels]);
+
+  useEffect(() => {
+    const updateSource = () => setGoogleKeySource(getGoogleApiKeySource());
+    updateSource();
+    if (typeof window !== 'undefined') {
+      window.addEventListener(API_KEY_CHANGE_EVENT, updateSource);
+      window.addEventListener('storage', updateSource);
+      return () => {
+        window.removeEventListener(API_KEY_CHANGE_EVENT, updateSource);
+        window.removeEventListener('storage', updateSource);
+      };
+    }
+    return undefined;
+  }, [models]);
 
   const filteredModels = models
     .filter(m => m.type === activeTab)
@@ -207,6 +222,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
           )}
         </div>
       </div>
+
+      <GoogleApiKeyStatusBadge source={googleKeySource} onGoToApi={() => setActiveTab('api')} />
 
       <div className="flex items-center gap-4 mb-6">
         <div className="flex bg-gray-100 rounded-xl p-1">
@@ -719,6 +736,77 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
       <div className="mt-8 text-center text-xs text-gray-300">
         전체 모델: {models.length}개 | 이미지: {models.filter(m => m.type === 'image').length}개 | 비디오: {models.filter(m => m.type === 'video').length}개
       </div>
+    </div>
+  );
+};
+
+interface GoogleApiKeyStatusBadgeProps {
+  source: GoogleApiKeySource;
+  onGoToApi: () => void;
+}
+
+const GoogleApiKeyStatusBadge: React.FC<GoogleApiKeyStatusBadgeProps> = ({ source, onGoToApi }) => {
+  const config = (() => {
+    switch (source) {
+      case 'provider':
+        return {
+          tone: 'green' as const,
+          icon: <Icons.Check size={14} />,
+          label: '저장된 키 사용 중',
+          detail: '관리자 페이지에 저장된 Google 프로바이더 키를 사용합니다.',
+        };
+      case 'model':
+        return {
+          tone: 'green' as const,
+          icon: <Icons.Check size={14} />,
+          label: '저장된 키 사용 중',
+          detail: '개별 모델에 저장된 Google API 키를 사용합니다. (프로바이더 키 미설정)',
+        };
+      case 'env':
+        return {
+          tone: 'blue' as const,
+          icon: <Icons.Shield size={14} />,
+          label: '환경변수 사용 중',
+          detail: '서버 환경변수 API_KEY 값을 사용합니다. 저장된 프로바이더 키가 없을 때 적용됩니다.',
+        };
+      case 'none':
+      default:
+        return {
+          tone: 'red' as const,
+          icon: <Icons.AlertCircle size={14} />,
+          label: '설정되지 않음',
+          detail: 'Google API 키가 설정되어 있지 않습니다. 아래 "API 설정" 탭에서 키를 등록하세요.',
+        };
+    }
+  })();
+
+  const toneClasses = {
+    green: 'bg-green-50 border-green-200 text-green-700',
+    blue: 'bg-blue-50 border-blue-200 text-blue-700',
+    red: 'bg-orange-50 border-orange-200 text-orange-700',
+  }[config.tone];
+
+  const badgeClasses = {
+    green: 'bg-green-100 text-green-700',
+    blue: 'bg-blue-100 text-blue-700',
+    red: 'bg-orange-100 text-orange-700',
+  }[config.tone];
+
+  return (
+    <div className={`flex items-center justify-between gap-3 mb-6 px-4 py-3 border rounded-2xl ${toneClasses}`}>
+      <div className="flex items-center gap-3 min-w-0">
+        <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold flex-shrink-0 ${badgeClasses}`}>
+          {config.icon}
+          현재 Google 키: {config.label}
+        </span>
+        <p className="text-xs leading-snug truncate">{config.detail}</p>
+      </div>
+      <button
+        onClick={onGoToApi}
+        className="text-xs font-semibold underline-offset-2 hover:underline flex-shrink-0"
+      >
+        API 설정으로 이동
+      </button>
     </div>
   );
 };

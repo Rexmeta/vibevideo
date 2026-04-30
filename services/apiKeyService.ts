@@ -175,3 +175,17 @@ export function getGoogleApiKey(): string {
 export function hasAnyGoogleApiKey(): boolean {
   return !!getGoogleApiKey();
 }
+
+export type GoogleApiKeySource = 'provider' | 'env' | 'model' | 'none';
+
+export function getGoogleApiKeySource(): GoogleApiKeySource {
+  for (const provider of GOOGLE_PROVIDERS) {
+    const k = getProviderApiKey(provider);
+    if (k && k.trim()) return 'provider';
+  }
+  const env = readEnvApiKey();
+  if (env && env.trim()) return 'env';
+  const modelKey = findStoredGoogleModelKey();
+  if (modelKey) return 'model';
+  return 'none';
+}
