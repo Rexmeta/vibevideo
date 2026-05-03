@@ -1,18 +1,104 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Icons } from './Icons';
 import { ViewState } from '../types';
 import { auth } from '../services/firebaseConfig';
 import { signOut, User } from 'firebase/auth';
+import {
+  getGoogleApiKey,
+  getGoogleApiKeySource,
+  GoogleApiKeySource,
+  API_KEY_CHANGE_EVENT,
+} from '../services/apiKeyService';
 
 interface ProfilePageProps {
     currentUser: User | null;
     onNavigate: (view: ViewState) => void;
 }
 
+const SOURCE_LABEL: Record<GoogleApiKeySource, string> = {
+  provider: '프로바이더 키',
+  model: '개별 모델 키',
+  env: '환경변수',
+  none: '미설정',
+};
+
+const SOURCE_DESCRIPTION: Record<GoogleApiKeySource, string> = {
+  provider: '관리자 페이지에 저장된 Google 프로바이더 키를 사용합니다.',
+  model: '개별 모델에 저장된 Google API 키를 사용합니다.',
+  env: '서버 환경변수 API_KEY 값을 사용합니다.',
+  none: 'Google API 키가 아직 설정되지 않았습니다. 키를 등록하면 이미지/비디오 생성을 사용할 수 있습니다.',
+};
+
+function maskApiKey(key: string): string {
+  if (!key) return '';
+  if (key.length <= 8) return `${key.slice(0, 2)}…${key.slice(-2)}`;
+  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+}
+
+interface GoogleApiKeyCardProps {
+  source: GoogleApiKeySource;
+  maskedKey: string;
+  onGoToSettings: () => void;
+}
+
+const GoogleApiKeyCard: React.FC<GoogleApiKeyCardProps> = ({ source, maskedKey, onGoToSettings }) => {
+  const isSet = source !== 'none';
+  const tone = isSet
+    ? 'bg-green-50 border-green-200 text-green-700'
+    : 'bg-orange-50 border-orange-200 text-orange-700';
+  const badgeTone = isSet ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700';
+  const Icon = isSet ? Icons.Check : Icons.AlertCircle;
+
+  return (
+    <div className={`flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8 px-5 py-4 border rounded-2xl ${tone}`}>
+      <div className="flex items-start gap-3 min-w-0">
+        <span className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold flex-shrink-0 ${badgeTone}`}>
+          <Icon size={14} />
+          Google API 키: {SOURCE_LABEL[source]}
+        </span>
+        <div className="min-w-0">
+          <p className="text-xs leading-snug">{SOURCE_DESCRIPTION[source]}</p>
+          {isSet && maskedKey && (
+            <p className="text-xs font-mono mt-1 opacity-80">{maskedKey}</p>
+          )}
+        </div>
+      </div>
+      <button
+        onClick={onGoToSettings}
+        className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold flex-shrink-0 transition-colors ${
+          isSet ? 'bg-white text-green-700 hover:bg-green-100 border border-green-200' : 'bg-black text-white hover:bg-gray-800'
+        }`}
+      >
+        <Icons.Key size={13} />
+        {isSet ? '변경' : 'API 키 설정으로 이동'}
+      </button>
+    </div>
+  );
+};
+
 export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigate }) => {
   const [activeTab, setActiveTab] = useState<'general' | 'billing' | 'preferences'>('general');
-  
+  const [googleKeySource, setGoogleKeySource] = useState<GoogleApiKeySource>(() => getGoogleApiKeySource());
+  const [googleKeyMasked, setGoogleKeyMasked] = useState<string>(() => maskApiKey(getGoogleApiKey()));
+
+  useEffect(() => {
+    const update = () => {
+      setGoogleKeySource(getGoogleApiKeySource());
+      setGoogleKeyMasked(maskApiKey(getGoogleApiKey()));
+    };
+    update();
+    if (typeof window !== 'undefined') {
+      window.addEventListener(API_KEY_CHANGE_EVENT, update);
+      window.addEventListener('storage', update);
+      return () => {
+        window.removeEventListener(API_KEY_CHANGE_EVENT, update);
+        window.removeEventListener('storage', update);
+      };
+    }
+    return undefined;
+  }, []);
+
   if (!currentUser) return null;
 
   const handleLogout = async () => {
@@ -24,7 +110,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-12">
-      <h1 className="text-4xl font-black mb-10">Account Settings</h1>
+      <h1 className="text-4xl font-black mb-6">Account Settings</h1>
+
+      <GoogleApiKeyCard
+        source={googleKeySource}
+        maskedKey={googleKeyMasked}
+        onGoToSettings={() => onNavigate('api-keys')}
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-12 gap-8">
         {/* Profile Sidebar */}
