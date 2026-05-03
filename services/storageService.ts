@@ -13,6 +13,7 @@ import {
   getDoc, 
   getDocs, 
   getDocsFromCache,
+  onSnapshot,
   query, 
   where, 
   orderBy,
@@ -703,6 +704,73 @@ export const getProjectsPageFromCache = async (
   } catch {
     return { projects: [], cursor: null, hasMore: false, fromCloud: false };
   }
+};
+
+export interface ProjectsListSubscription {
+  unsubscribe: () => void;
+}
+
+export const subscribeToProjectsList = (
+  userId: string,
+  onChange: (projects: Project[]) => void,
+  onError?: (err: Error) => void,
+  pageSize: number = PAGE_SIZE,
+): ProjectsListSubscription => {
+  if (!userId || !db) {
+    return { unsubscribe: () => {} };
+  }
+
+  let cancelled = false;
+  let unsub: (() => void) | null = null;
+
+  try {
+    const q = query(
+      collection(db, PROJECTS_COLLECTION),
+      where('user_id', '==', userId),
+      orderBy('updated_at', 'desc'),
+      limit(pageSize),
+    );
+
+    unsub = onSnapshot(
+      q,
+      (snap) => {
+        if (cancelled) return;
+        const projects: Project[] = [];
+        snap.forEach((docSnap) => {
+          projects.push(stripScenes(docSnap.data() as Project));
+        });
+        if (snap.metadata.hasPendingWrites) {
+          // Local optimistic write echo — surface anyway, downstream merges by id.
+        }
+        persistCardsIdle(userId, projects);
+        try { onChange(projects); } catch (e) {
+          console.warn('[Database] subscribeToProjectsList onChange threw:', (e as Error)?.message);
+        }
+      },
+      (err) => {
+        if (cancelled) return;
+        console.warn('[Database] projects 실시간 구독 오류:', err?.message);
+        if (onError) {
+          try { onError(err); } catch {}
+        }
+      },
+    );
+  } catch (e) {
+    console.warn('[Database] projects 실시간 구독 시작 실패:', (e as Error)?.message);
+    if (onError) {
+      try { onError(e as Error); } catch {}
+    }
+  }
+
+  return {
+    unsubscribe: () => {
+      cancelled = true;
+      if (unsub) {
+        try { unsub(); } catch {}
+        unsub = null;
+      }
+    },
+  };
 };
 
 export const syncProjectsFromCloud = async (userId: string, localProjects: Project[]): Promise<{ projects: Project[], fromCloud: boolean }> => {

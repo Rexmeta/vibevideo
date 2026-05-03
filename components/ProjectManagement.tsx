@@ -8,7 +8,9 @@ import {
   getAllProjectIdsFromCloud,
   deleteProjectFromCloud, 
   duplicateProjectInCloud,
-  PaginatedResult
+  subscribeToProjectsList,
+  PaginatedResult,
+  ProjectsListSubscription
 } from '../services/storageService';
 import { Icons } from './Icons';
 import { clearStoredMode, cleanupOrphanedModePrefs } from './wizard/ModeGate';
@@ -165,6 +167,43 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
 
     loadFromCloud(userId, false);
   }, [userId, loadFromCloud]);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    let active = true;
+    let firstSnapshot = true;
+    const sub: ProjectsListSubscription = subscribeToProjectsList(
+      userId,
+      (livePage) => {
+        if (!active || !mountedRef.current) return;
+        if (firstSnapshot) {
+          firstSnapshot = false;
+          console.log(`[Sync] 실시간 구독 활성화: ${livePage.length}개`);
+        }
+        setProjects(prev => {
+          const liveIds = new Set(livePage.map(p => p.id));
+          const liveCutoff = livePage.length > 0
+            ? new Date(livePage[livePage.length - 1].updated_at || livePage[livePage.length - 1].created_at).getTime()
+            : -Infinity;
+          const retained = prev.filter(p => {
+            if (liveIds.has(p.id)) return false;
+            const t = new Date(p.updated_at || p.created_at).getTime();
+            return t < liveCutoff;
+          });
+          return mergeUniqueByDate(retained, livePage);
+        });
+      },
+      (err) => {
+        console.warn('[Sync] 실시간 구독 오류 — 폴링 데이터로 폴백:', err?.message);
+      }
+    );
+
+    return () => {
+      active = false;
+      sub.unsubscribe();
+    };
+  }, [userId]);
 
   const handleManualRetry = useCallback(() => {
     if (!userId) return;
