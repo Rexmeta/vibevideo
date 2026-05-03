@@ -1,4 +1,4 @@
-import { db, storage } from "./firebaseConfig";
+import { db, storage, auth } from "./firebaseConfig";
 import { 
   ref, 
   uploadBytes, 
@@ -12,6 +12,7 @@ import {
   setDoc, 
   getDoc, 
   getDocs, 
+  getDocsFromCache,
   query, 
   where, 
   orderBy,
@@ -29,6 +30,19 @@ import { Project, ProjectStatus, Scene } from "../types";
 
 const PROJECTS_COLLECTION = 'projects';
 const PAGE_SIZE = 20;
+
+const CARD_KEY = (id: string) => `vibe_video_card_${id}`;
+
+type IdleScheduler = (cb: () => void, opts?: { timeout: number }) => number;
+type WithIdle = { requestIdleCallback?: IdleScheduler };
+
+const runIdle = (cb: () => void, timeout: number = 2000) => {
+  const ric = (globalThis as WithIdle).requestIdleCallback;
+  if (typeof ric === 'function') {
+    try { ric(cb, { timeout }); return; } catch {}
+  }
+  setTimeout(cb, 0);
+};
 
 const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
   return new Promise((resolve, reject) => {
@@ -49,6 +63,45 @@ export const generateProjectId = (): string => {
   return `proj-${ts}-${rand}`;
 };
 
+type ProjectCard = Pick<Project,
+  'id' | 'user_id' | 'title' | 'aspect_ratio' | 'style_template' | 'status' |
+  'thumbnail' | 'saved_step' | 'saved_max_step' | 'saved_mode' | 'saved_topic' |
+  'saved_duration' | 'scene_count' | 'total_duration' | 'created_at' | 'updated_at' | 'version'
+>;
+
+const CARD_FIELD_PATHS: ReadonlyArray<keyof ProjectCard> = [
+  'user_id', 'title', 'aspect_ratio', 'style_template', 'status', 'thumbnail',
+  'saved_step', 'saved_max_step', 'saved_mode', 'saved_topic', 'saved_duration',
+  'scene_count', 'total_duration', 'created_at', 'updated_at', 'version',
+];
+
+const stripScenes = (p: Project): Project => {
+  const { saved_scenes: _omit, ...rest } = p;
+  return rest as Project;
+};
+
+const toCard = (p: Project): Project => {
+  const card: Partial<ProjectCard> & { id: string } = { id: p.id };
+  for (const k of CARD_FIELD_PATHS) {
+    const value = p[k];
+    if (value !== undefined) (card as Record<string, unknown>)[k] = value;
+  }
+  return card as Project;
+};
+
+const writeCardCache = (p: Project): boolean => {
+  try {
+    localStorage.setItem(CARD_KEY(p.id), JSON.stringify(toCard(p)));
+    return true;
+  } catch (e) {
+    const err = e as { name?: string; message?: string };
+    if (err?.name !== 'QuotaExceededError') {
+      console.warn('[Database] card cache write failed:', err?.message);
+    }
+    return false;
+  }
+};
+
 const getLocalProjects = (userId: string): Project[] => {
   const projects: Project[] = [];
   try {
@@ -56,18 +109,32 @@ const getLocalProjects = (userId: string): Project[] => {
     if (indexStr) {
       const index: string[] = JSON.parse(indexStr);
       for (const id of index) {
+        const cardStr = localStorage.getItem(CARD_KEY(id));
+        if (cardStr) {
+          try {
+            const card = JSON.parse(cardStr) as Project;
+            if (card && card.user_id === userId) {
+              projects.push(card);
+              continue;
+            }
+          } catch {}
+        }
         const val = localStorage.getItem(`vibe_video_backup_${id}`);
         if (!val) continue;
-        const p = JSON.parse(val);
-        if (p && p.user_id === userId) projects.push(p);
+        try {
+          const p = JSON.parse(val) as Project;
+          if (p && p.user_id === userId) projects.push(stripScenes(p));
+        } catch {}
       }
     } else {
       const localKeys = Object.keys(localStorage).filter(k => k.startsWith('vibe_video_backup_') && !k.includes('emergency'));
       for (const key of localKeys) {
         const val = localStorage.getItem(key);
         if (!val) continue;
-        const p = JSON.parse(val);
-        if (p && p.user_id === userId) projects.push(p);
+        try {
+          const p = JSON.parse(val) as Project;
+          if (p && p.user_id === userId) projects.push(stripScenes(p));
+        } catch {}
       }
     }
   } catch (e) {}
@@ -87,6 +154,27 @@ const updateProjectIndex = (userId: string, projectId: string, action: 'add' | '
     }
     localStorage.setItem(`vibe_project_index_${userId}`, JSON.stringify(index));
   } catch (e) {}
+};
+
+const batchAddToProjectIndex = (userId: string, ids: string[]): void => {
+  if (!userId || !ids.length) return;
+  try {
+    const indexStr = localStorage.getItem(`vibe_project_index_${userId}`);
+    const existing: string[] = indexStr ? JSON.parse(indexStr) : [];
+    const seen = new Set(existing);
+    let changed = false;
+    for (let i = ids.length - 1; i >= 0; i--) {
+      const id = ids[i];
+      if (!id || seen.has(id)) continue;
+      existing.unshift(id);
+      seen.add(id);
+      changed = true;
+    }
+    if (existing.length > 50) existing.length = 50;
+    if (changed) {
+      localStorage.setItem(`vibe_project_index_${userId}`, JSON.stringify(existing));
+    }
+  } catch {}
 };
 
 const isDataUrl = (s?: string): boolean => !!s && s.startsWith('data:');
@@ -365,101 +453,255 @@ export const getLocalProjectsList = (userId: string): Project[] => {
 
 export interface PaginatedResult {
   projects: Project[];
-  lastDoc: QueryDocumentSnapshot | null;
+  cursor: string | null;
   hasMore: boolean;
   fromCloud: boolean;
 }
 
+const persistCardsIdle = (userId: string, projects: Project[]): void => {
+  if (!userId || projects.length === 0) return;
+  const slim = projects.map(toCard);
+  runIdle(() => {
+    let written = 0;
+    for (const p of slim) {
+      if (writeCardCache(p)) written++;
+    }
+    batchAddToProjectIndex(userId, slim.map(p => p.id));
+    if (written > 0) {
+      console.log(`[Database] card cache: ${written}/${slim.length} 저장 (idle)`);
+    }
+  });
+};
+
+type RestValue = {
+  stringValue?: string;
+  integerValue?: string;
+  doubleValue?: number;
+  booleanValue?: boolean;
+  nullValue?: null;
+  timestampValue?: string;
+};
+
+type RestDocument = {
+  name: string;
+  fields?: Record<string, RestValue>;
+};
+
+const fromRestValue = (v: RestValue | undefined): unknown => {
+  if (!v) return undefined;
+  if (v.stringValue !== undefined) return v.stringValue;
+  if (v.integerValue !== undefined) return Number(v.integerValue);
+  if (v.doubleValue !== undefined) return Number(v.doubleValue);
+  if (v.booleanValue !== undefined) return v.booleanValue;
+  if (v.nullValue !== undefined) return null;
+  if (v.timestampValue !== undefined) return v.timestampValue;
+  return undefined;
+};
+
+const restDocToProject = (doc: RestDocument): Project => {
+  const id = doc.name.split('/').pop() || '';
+  const out: Record<string, unknown> = { id };
+  const fields = doc.fields || {};
+  for (const k of CARD_FIELD_PATHS) {
+    const value = fromRestValue(fields[k]);
+    if (value !== undefined) out[k] = value;
+  }
+  return out as unknown as Project;
+};
+
+const getFirebaseProjectId = (): string | null => {
+  const opts = auth?.app?.options as { projectId?: string } | undefined;
+  return opts?.projectId || null;
+};
+
+type SlimPageResult = {
+  projects: Project[];
+  cursor: string | null;
+  hasMore: boolean;
+};
+
+const fetchSlimPageViaRest = async (
+  userId: string,
+  pageSize: number,
+  startAfterUpdatedAt?: string | null,
+): Promise<SlimPageResult> => {
+  const projectId = getFirebaseProjectId();
+  const user = auth?.currentUser;
+  if (!projectId || !user) throw new Error('Firebase auth not ready');
+
+  const token = await user.getIdToken();
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:runQuery`;
+
+  const structuredQuery: Record<string, unknown> = {
+    from: [{ collectionId: PROJECTS_COLLECTION }],
+    where: {
+      fieldFilter: {
+        field: { fieldPath: 'user_id' },
+        op: 'EQUAL',
+        value: { stringValue: userId },
+      },
+    },
+    orderBy: [{ field: { fieldPath: 'updated_at' }, direction: 'DESCENDING' }],
+    limit: pageSize,
+    select: { fields: CARD_FIELD_PATHS.map(fieldPath => ({ fieldPath })) },
+  };
+  if (startAfterUpdatedAt) {
+    structuredQuery.startAt = {
+      values: [{ stringValue: startAfterUpdatedAt }],
+      before: false,
+    };
+  }
+
+  const resp = await withTimeout(
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ structuredQuery }),
+    }),
+    15000,
+    '프로젝트 목록 조회',
+  );
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`Firestore REST ${resp.status}: ${text.slice(0, 200)}`);
+  }
+
+  const json = (await resp.json()) as Array<{ document?: RestDocument }>;
+  const projects: Project[] = [];
+  let cursor: string | null = null;
+  for (const entry of json) {
+    if (!entry?.document) continue;
+    const card = restDocToProject(entry.document);
+    projects.push(card);
+    if (typeof card.updated_at === 'string') cursor = card.updated_at;
+  }
+  return { projects, cursor, hasMore: projects.length === pageSize };
+};
+
 export const getProjectsPage = async (
-  userId: string, 
-  lastDocument?: QueryDocumentSnapshot | null,
-  pageSize: number = PAGE_SIZE
+  userId: string,
+  cursor?: string | null,
+  pageSize: number = PAGE_SIZE,
 ): Promise<PaginatedResult> => {
   if (!userId || !db) {
     const local = getLocalProjectsList(userId);
-    return { projects: local, lastDoc: null, hasMore: false, fromCloud: false };
+    return { projects: local, cursor: null, hasMore: false, fromCloud: false };
   }
 
-  const tryQuery = async (useCompoundIndex: boolean): Promise<PaginatedResult> => {
+  try {
+    const slim = await fetchSlimPageViaRest(userId, pageSize, cursor);
+    persistCardsIdle(userId, slim.projects);
+    console.log(`[Database] 페이지 조회: ${slim.projects.length}개 (REST slim)`);
+    return { projects: slim.projects, cursor: slim.cursor, hasMore: slim.hasMore, fromCloud: true };
+  } catch (restError) {
+    const msg = (restError as Error)?.message;
+    console.warn('[Database] REST slim 실패, SDK로 재시도:', msg);
+  }
+
+  const trySdk = async (useCompoundIndex: boolean): Promise<PaginatedResult> => {
     let q;
     if (useCompoundIndex) {
-      if (lastDocument) {
-        q = query(
-          collection(db!, PROJECTS_COLLECTION), 
-          where("user_id", "==", userId),
-          orderBy("updated_at", "desc"),
-          startAfter(lastDocument),
-          limit(pageSize)
-        );
-      } else {
-        q = query(
-          collection(db!, PROJECTS_COLLECTION), 
-          where("user_id", "==", userId),
-          orderBy("updated_at", "desc"),
-          limit(pageSize)
-        );
-      }
+      q = cursor
+        ? query(
+            collection(db!, PROJECTS_COLLECTION),
+            where('user_id', '==', userId),
+            orderBy('updated_at', 'desc'),
+            startAfter(cursor),
+            limit(pageSize),
+          )
+        : query(
+            collection(db!, PROJECTS_COLLECTION),
+            where('user_id', '==', userId),
+            orderBy('updated_at', 'desc'),
+            limit(pageSize),
+          );
     } else {
       q = query(
-        collection(db!, PROJECTS_COLLECTION), 
-        where("user_id", "==", userId),
-        limit(100)
+        collection(db!, PROJECTS_COLLECTION),
+        where('user_id', '==', userId),
+        limit(100),
       );
     }
 
     const querySnapshot = await withTimeout(getDocs(q), 15000, '프로젝트 목록 조회');
     const projects: Project[] = [];
-    let lastDoc: QueryDocumentSnapshot | null = null;
-
+    let lastUpdated: string | null = null;
     querySnapshot.forEach((docSnap) => {
-      projects.push(docSnap.data() as Project);
-      lastDoc = docSnap as QueryDocumentSnapshot;
+      const slim = stripScenes(docSnap.data() as Project);
+      projects.push(slim);
+      if (typeof slim.updated_at === 'string') lastUpdated = slim.updated_at;
     });
-
     if (!useCompoundIndex) {
       projects.sort((a, b) => {
         const dateA = new Date(a.updated_at || a.created_at).getTime();
         const dateB = new Date(b.updated_at || b.created_at).getTime();
         return dateB - dateA;
       });
+      lastUpdated = projects[projects.length - 1]?.updated_at || null;
     }
-
-    projects.forEach(p => {
-      try {
-        const lightProject = { ...p };
-        if (lightProject.saved_scenes) {
-          lightProject.saved_scenes = lightProject.saved_scenes.map(s => {
-            const c = { ...s };
-            if (isDataUrl(c.audio_path) || isBase64Only(c.audio_path)) c.audio_path = undefined;
-            if (isDataUrl(c.image_path) || isBase64Only(c.image_path)) c.image_path = undefined;
-            return c;
-          });
-        }
-        localStorage.setItem(`vibe_video_backup_${p.id}`, JSON.stringify(lightProject));
-        if (userId) updateProjectIndex(userId, p.id, 'add');
-      } catch(e) {}
-    });
-
-    console.log(`[Database] 페이지 조회: ${projects.length}개 프로젝트 로드 (${useCompoundIndex ? 'compound' : 'simple'} query)`);
-    return { 
-      projects, 
-      lastDoc: useCompoundIndex ? lastDoc : null, 
+    persistCardsIdle(userId, projects);
+    if (useCompoundIndex) {
+      console.log(`[Database] 페이지 조회: ${projects.length}개 (SDK compound fallback)`);
+    } else {
+      console.warn(`[Database] 페이지 조회: ${projects.length}개 — SDK simple fallback. 컴포지트 인덱스를 배포하세요.`);
+    }
+    return {
+      projects,
+      cursor: useCompoundIndex ? lastUpdated : null,
       hasMore: useCompoundIndex ? querySnapshot.size === pageSize : false,
-      fromCloud: true 
+      fromCloud: true,
     };
   };
 
   try {
-    return await tryQuery(true);
-  } catch (error: any) {
-    console.warn("[Database] Compound query 실패, simple query로 재시도:", error?.message);
+    return await trySdk(true);
+  } catch (error) {
+    const msg = (error as Error)?.message;
+    console.warn('[Database] SDK compound 실패, simple로 재시도:', msg);
     try {
-      return await tryQuery(false);
-    } catch (fallbackError: any) {
-      console.warn("[Database] 페이지 조회 실패:", fallbackError?.message);
+      return await trySdk(false);
+    } catch (fallbackError) {
+      console.warn('[Database] 페이지 조회 실패:', (fallbackError as Error)?.message);
       const local = getLocalProjectsList(userId);
-      return { projects: local, lastDoc: null, hasMore: false, fromCloud: false };
+      return { projects: local, cursor: null, hasMore: false, fromCloud: false };
     }
+  }
+};
+
+export const getProjectsPageFromCache = async (
+  userId: string,
+  pageSize: number = PAGE_SIZE,
+): Promise<PaginatedResult> => {
+  if (!userId || !db) {
+    return { projects: [], cursor: null, hasMore: false, fromCloud: false };
+  }
+  try {
+    const q = query(
+      collection(db, PROJECTS_COLLECTION),
+      where('user_id', '==', userId),
+      orderBy('updated_at', 'desc'),
+      limit(pageSize),
+    );
+    const snap = await getDocsFromCache(q);
+    const projects: Project[] = [];
+    let cursor: string | null = null;
+    snap.forEach((docSnap) => {
+      const slim = stripScenes(docSnap.data() as Project);
+      projects.push(slim);
+      if (typeof slim.updated_at === 'string') cursor = slim.updated_at;
+    });
+    if (projects.length > 0) {
+      console.log(`[Database] cache 페이지 조회: ${projects.length}개`);
+    }
+    return {
+      projects,
+      cursor,
+      hasMore: snap.size === pageSize,
+      fromCloud: true,
+    };
+  } catch {
+    return { projects: [], cursor: null, hasMore: false, fromCloud: false };
   }
 };
 
@@ -467,55 +709,58 @@ export const syncProjectsFromCloud = async (userId: string, localProjects: Proje
   if (!userId || !db) return { projects: localProjects, fromCloud: false };
 
   const projectMap = new Map<string, Project>();
-  localProjects.forEach(p => projectMap.set(p.id, p));
+  localProjects.forEach(p => projectMap.set(p.id, stripScenes(p)));
 
-  const doSync = async (useCompound: boolean) => {
-    const q = useCompound
-      ? query(collection(db!, PROJECTS_COLLECTION), where("user_id", "==", userId), orderBy("updated_at", "desc"), limit(PAGE_SIZE))
-      : query(collection(db!, PROJECTS_COLLECTION), where("user_id", "==", userId), limit(100));
-    
-    const querySnapshot = await withTimeout(getDocs(q), 15000, '프로젝트 동기화');
-    querySnapshot.forEach((docSnap) => {
-      const cloudProject = docSnap.data() as Project;
+  const mergeFresh = (fresh: Project[]) => {
+    fresh.forEach(cloudProject => {
       const localVersion = projectMap.get(cloudProject.id);
       if (localVersion) {
         const cloudDate = new Date(cloudProject.updated_at || cloudProject.created_at).getTime();
         const localDate = new Date(localVersion.updated_at || localVersion.created_at).getTime();
-        if (cloudDate >= localDate) {
-          projectMap.set(cloudProject.id, cloudProject);
-        }
+        if (cloudDate >= localDate) projectMap.set(cloudProject.id, cloudProject);
       } else {
         projectMap.set(cloudProject.id, cloudProject);
       }
     });
-    const merged = sortProjects(Array.from(projectMap.values()));
-    merged.forEach(p => {
-      try {
-        const lightProject = { ...p };
-        if (lightProject.saved_scenes) {
-          lightProject.saved_scenes = lightProject.saved_scenes.map(s => {
-            const c = { ...s };
-            if (isDataUrl(c.audio_path) || isBase64Only(c.audio_path)) c.audio_path = undefined;
-            if (isDataUrl(c.image_path) || isBase64Only(c.image_path)) c.image_path = undefined;
-            return c;
-          });
-        }
-        localStorage.setItem(`vibe_video_backup_${p.id}`, JSON.stringify(lightProject));
-        if (userId) updateProjectIndex(userId, p.id, 'add');
-      } catch(e) {}
-    });
-    console.log(`[Database] 클라우드에서 ${querySnapshot.size}개 프로젝트 동기화 완료 (${useCompound ? 'compound' : 'simple'})`);
-    return { projects: merged, fromCloud: true };
   };
 
   try {
-    return await doSync(true);
-  } catch (error: any) {
-    console.warn("[Database] Compound sync 실패, simple query로 재시도:", error?.message);
+    const slim = await fetchSlimPageViaRest(userId, PAGE_SIZE);
+    mergeFresh(slim.projects);
+    persistCardsIdle(userId, slim.projects);
+    console.log(`[Database] 클라우드 동기화: ${slim.projects.length}개 (REST slim)`);
+    return { projects: sortProjects(Array.from(projectMap.values())), fromCloud: true };
+  } catch (restError) {
+    console.warn('[Database] REST slim sync 실패, SDK로 재시도:', (restError as Error)?.message);
+  }
+
+  const doSdkSync = async (useCompound: boolean) => {
+    const q = useCompound
+      ? query(collection(db!, PROJECTS_COLLECTION), where('user_id', '==', userId), orderBy('updated_at', 'desc'), limit(PAGE_SIZE))
+      : query(collection(db!, PROJECTS_COLLECTION), where('user_id', '==', userId), limit(100));
+    const querySnapshot = await withTimeout(getDocs(q), 15000, '프로젝트 동기화');
+    const fresh: Project[] = [];
+    querySnapshot.forEach((docSnap) => {
+      fresh.push(stripScenes(docSnap.data() as Project));
+    });
+    mergeFresh(fresh);
+    persistCardsIdle(userId, fresh);
+    if (useCompound) {
+      console.log(`[Database] 클라우드 동기화: ${querySnapshot.size}개 (SDK compound fallback)`);
+    } else {
+      console.warn(`[Database] 클라우드 동기화: ${querySnapshot.size}개 — SDK simple fallback. 컴포지트 인덱스 배포 필요.`);
+    }
+    return { projects: sortProjects(Array.from(projectMap.values())), fromCloud: true };
+  };
+
+  try {
+    return await doSdkSync(true);
+  } catch (error) {
+    console.warn('[Database] SDK compound sync 실패, simple로 재시도:', (error as Error)?.message);
     try {
-      return await doSync(false);
-    } catch (fallbackError: any) {
-      console.warn("[Database] 클라우드 동기화 실패:", fallbackError?.message);
+      return await doSdkSync(false);
+    } catch (fallbackError) {
+      console.warn('[Database] 클라우드 동기화 실패:', (fallbackError as Error)?.message);
       return { projects: localProjects, fromCloud: false };
     }
   }
@@ -603,6 +848,7 @@ export const deleteProjectFromCloud = async (id: string, userId?: string): Promi
   const localData = localStorage.getItem(`vibe_video_backup_${id}`);
   localStorage.removeItem(`vibe_video_backup_${id}`);
   localStorage.removeItem(`vibe_video_backup_emergency_${id}`);
+  localStorage.removeItem(CARD_KEY(id));
 
   let resolvedUserId = userId;
   if (!resolvedUserId && localData) {

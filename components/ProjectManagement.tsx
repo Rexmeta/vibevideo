@@ -4,16 +4,30 @@ import { Project, ViewState } from '../types';
 import { 
   getLocalProjectsList,
   getProjectsPage,
+  getProjectsPageFromCache,
   getAllProjectIdsFromCloud,
   deleteProjectFromCloud, 
   duplicateProjectInCloud,
   PaginatedResult
 } from '../services/storageService';
-import { QueryDocumentSnapshot } from 'firebase/firestore';
 import { Icons } from './Icons';
 import { clearStoredMode, cleanupOrphanedModePrefs } from './wizard/ModeGate';
 
 const modePrefCleanupRanByUser = new Set<string>();
+
+const MODE_PREF_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const MODE_PREF_CLEANUP_KEY = (uid: string) => `vibe_modepref_cleanup_${uid}`;
+
+type IdleScheduler = (cb: () => void, opts?: { timeout: number }) => number;
+type WithIdle = { requestIdleCallback?: IdleScheduler };
+
+const runIdle = (cb: () => void, timeout: number = 4000) => {
+  const ric = (globalThis as WithIdle).requestIdleCallback;
+  if (typeof ric === 'function') {
+    try { ric(cb, { timeout }); return; } catch {}
+  }
+  setTimeout(cb, 0);
+};
 
 interface ProjectManagementProps {
   userId: string;
@@ -21,87 +35,153 @@ interface ProjectManagementProps {
   onEditProject?: (id: string) => void;
 }
 
+type SyncState = 'idle' | 'syncing' | 'retrying' | 'failed';
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+const mergeUniqueByDate = (a: Project[], b: Project[]): Project[] => {
+  const map = new Map<string, Project>();
+  a.forEach(p => map.set(p.id, p));
+  b.forEach(p => map.set(p.id, p));
+  return Array.from(map.values()).sort((p1, p2) => {
+    const d1 = new Date(p1.updated_at || p1.created_at).getTime();
+    const d2 = new Date(p2.updated_at || p2.created_at).getTime();
+    return d2 - d1;
+  });
+};
+
 export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, onNavigate, onEditProject }) => {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [isSyncing, setIsSyncing] = useState(true);
-  const [syncFailed, setSyncFailed] = useState(false);
+  const [syncState, setSyncState] = useState<SyncState>('idle');
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const lastDocRef = useRef<QueryDocumentSnapshot | null>(null);
+  const cursorRef = useRef<string | null>(null);
   const initialLoadDone = useRef(false);
+  const mountedRef = useRef(true);
+  const reloadTokenRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const runCleanupIdle = useCallback((uid: string) => {
+    if (!uid || modePrefCleanupRanByUser.has(uid)) return;
+
+    let last = 0;
+    try { last = parseInt(localStorage.getItem(MODE_PREF_CLEANUP_KEY(uid)) || '0', 10); } catch {}
+    if (Number.isFinite(last) && Date.now() - last < MODE_PREF_CLEANUP_INTERVAL_MS) {
+      modePrefCleanupRanByUser.add(uid);
+      return;
+    }
+
+    runIdle(() => {
+      if (modePrefCleanupRanByUser.has(uid)) return;
+      modePrefCleanupRanByUser.add(uid);
+      getAllProjectIdsFromCloud(uid)
+        .then(cloudIds => {
+          const validIds = new Set<string>(cloudIds);
+          getLocalProjectsList(uid).forEach(p => {
+            if (p?.id) validIds.add(p.id);
+          });
+          const removed = cleanupOrphanedModePrefs(validIds);
+          try { localStorage.setItem(MODE_PREF_CLEANUP_KEY(uid), String(Date.now())); } catch {}
+          if (removed > 0) {
+            console.log(`[ModeGate] 정리: 삭제된 프로젝트의 모드 설정 ${removed}개 제거 (idle)`);
+          }
+        })
+        .catch(err => {
+          modePrefCleanupRanByUser.delete(uid);
+          console.warn('[ModeGate] 정리 건너뜀: 전체 프로젝트 목록 조회 실패', err?.message);
+        });
+    });
+  }, []);
+
+  const loadFromCloud = useCallback(async (uid: string, isRetry: boolean = false): Promise<boolean> => {
+    const myToken = ++reloadTokenRef.current;
+    setSyncState(isRetry ? 'retrying' : 'syncing');
+
+    const tStart = performance.now();
+
+    getProjectsPageFromCache(uid)
+      .then(cacheResult => {
+        if (!mountedRef.current || reloadTokenRef.current !== myToken) return;
+        if (cacheResult.projects.length === 0) return;
+        console.log(`[Sync Timing] cache 첫 페인트 ${(performance.now() - tStart).toFixed(0)}ms`);
+        setProjects(prev => mergeUniqueByDate(prev, cacheResult.projects));
+      })
+      .catch(() => {});
+
+    const backoffs = [0, 500, 1500];
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < backoffs.length; attempt++) {
+      if (backoffs[attempt] > 0) {
+        if (mountedRef.current && reloadTokenRef.current === myToken) {
+          setSyncState('retrying');
+        }
+        await sleep(backoffs[attempt]);
+        if (reloadTokenRef.current !== myToken) return false;
+      }
+      try {
+        const result: PaginatedResult = await getProjectsPage(uid);
+        if (!mountedRef.current || reloadTokenRef.current !== myToken) return false;
+        console.log(
+          `[Sync Timing] 서버 응답 ${(performance.now() - tStart).toFixed(0)}ms (attempt ${attempt + 1}, ${result.fromCloud ? 'cloud' : 'local'})`
+        );
+
+        if (result.fromCloud) {
+          setProjects(prev => mergeUniqueByDate(prev, result.projects));
+          cursorRef.current = result.cursor;
+          setHasMore(result.hasMore);
+          setSyncState('idle');
+          runCleanupIdle(uid);
+          return true;
+        } else {
+          lastError = new Error('fromCloud=false');
+        }
+      } catch (err) {
+        const e = err as Error;
+        lastError = e;
+        console.warn(`[Sync] attempt ${attempt + 1} 실패:`, e?.message);
+      }
+    }
+
+    if (!mountedRef.current || reloadTokenRef.current !== myToken) return false;
+    console.warn('[Sync] 모든 재시도 실패, offline 상태로 전환:', lastError?.message);
+    setSyncState('failed');
+    return false;
+  }, [runCleanupIdle]);
 
   useEffect(() => {
     if (!userId || initialLoadDone.current) return;
     initialLoadDone.current = true;
 
+    const tMount = performance.now();
     const localData = getLocalProjectsList(userId);
     setProjects(localData);
+    if (localData.length > 0) {
+      console.log(`[Sync Timing] local 첫 페인트 ${(performance.now() - tMount).toFixed(0)}ms (${localData.length}개)`);
+    }
 
-    setIsSyncing(true);
-    getProjectsPage(userId).then((result: PaginatedResult) => {
-      if (result.fromCloud) {
-        const mergedMap = new Map<string, Project>();
-        localData.forEach(p => mergedMap.set(p.id, p));
-        result.projects.forEach(p => mergedMap.set(p.id, p));
-        const merged = Array.from(mergedMap.values()).sort((a, b) => {
-          const dateA = new Date(a.updated_at || a.created_at).getTime();
-          const dateB = new Date(b.updated_at || b.created_at).getTime();
-          return dateB - dateA;
-        });
-        setProjects(merged);
+    loadFromCloud(userId, false);
+  }, [userId, loadFromCloud]);
 
-        // Once per signed-in user per session: remove
-        // `vibe_video_mode_pref_<id>` entries for projects that no longer
-        // exist. Needs the full project id set (not just the first cloud
-        // page) so a pref on a later page is not mistakenly removed.
-        // `getAllProjectIdsFromCloud` paginates exhaustively and throws on
-        // failure; cleanup is skipped on rejection and the per-user guard
-        // is only marked after a successful authoritative scan, so a
-        // failed attempt is retried on the next mount.
-        if (!modePrefCleanupRanByUser.has(userId)) {
-          getAllProjectIdsFromCloud(userId)
-            .then(cloudIds => {
-              const validIds = new Set<string>(cloudIds);
-              // Re-read local projects right before deletion so any project
-              // created on this device while the cloud scan was in flight
-              // is still considered valid.
-              getLocalProjectsList(userId).forEach(p => {
-                if (p?.id) validIds.add(p.id);
-              });
-              modePrefCleanupRanByUser.add(userId);
-              const removed = cleanupOrphanedModePrefs(validIds);
-              if (removed > 0) {
-                console.log(`[ModeGate] 정리: 삭제된 프로젝트의 모드 설정 ${removed}개 제거`);
-              }
-            })
-            .catch(err => {
-              console.warn('[ModeGate] 정리 건너뜀: 전체 프로젝트 목록 조회 실패', err?.message);
-            });
-        }
-      } else {
-        setProjects(result.projects.length > 0 ? result.projects : localData);
-      }
-      lastDocRef.current = result.lastDoc;
-      setHasMore(result.hasMore);
-      setSyncFailed(!result.fromCloud);
-      setIsSyncing(false);
-    }).catch(() => {
-      setIsSyncing(false);
-      setSyncFailed(true);
-    });
-  }, [userId]);
+  const handleManualRetry = useCallback(() => {
+    if (!userId) return;
+    loadFromCloud(userId, true);
+  }, [userId, loadFromCloud]);
 
   const loadMore = useCallback(async () => {
     if (!hasMore || loadingMore) return;
     setLoadingMore(true);
     try {
-      const result = await getProjectsPage(userId, lastDocRef.current);
+      const result = await getProjectsPage(userId, cursorRef.current);
       setProjects(prev => {
         const existingIds = new Set(prev.map(p => p.id));
         const newProjects = result.projects.filter(p => !existingIds.has(p.id));
         return [...prev, ...newProjects];
       });
-      lastDocRef.current = result.lastDoc;
+      cursorRef.current = result.cursor;
       setHasMore(result.hasMore);
     } catch (err) {
       console.error("Load more failed:", err);
@@ -135,23 +215,37 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
     if (onEditProject) onEditProject(project.id);
   };
 
+  const showOfflineBanner = syncState === 'failed' && projects.length > 0;
+  const isFirstSync = syncState === 'syncing' && projects.length === 0;
+  const isBackgroundSyncing = (syncState === 'syncing' || syncState === 'retrying') && projects.length > 0;
+
+  let statusLine: React.ReactNode;
+  if (isFirstSync) {
+    statusLine = (
+      <span className="flex items-center gap-2">
+        <Icons.Loader2 className="animate-spin w-4 h-4" />
+        클라우드와 동기화 중...
+      </span>
+    );
+  } else if (isBackgroundSyncing) {
+    statusLine = (
+      <span className="flex items-center gap-2 text-gray-400">
+        <Icons.Loader2 className="animate-spin w-3.5 h-3.5" />
+        {syncState === 'retrying' ? '재시도 중...' : '백그라운드 동기화 중...'}
+      </span>
+    );
+  } else if (showOfflineBanner) {
+    statusLine = '오프라인 모드 - 로컬 프로젝트만 표시됩니다.';
+  } else {
+    statusLine = 'Real-time synced AI video projects on Google Cloud.';
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 py-12">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-4">
         <div>
           <h1 className="text-4xl font-black tracking-tight">Cloud Workspace</h1>
-          <p className="text-gray-500 mt-1">
-            {isSyncing ? (
-              <span className="flex items-center gap-2">
-                <Icons.Loader2 className="animate-spin w-4 h-4" />
-                클라우드와 동기화 중...
-              </span>
-            ) : syncFailed ? (
-              '오프라인 모드 - 로컬 프로젝트만 표시됩니다.'
-            ) : (
-              'Real-time synced AI video projects on Google Cloud.'
-            )}
-          </p>
+          <p className="text-gray-500 mt-1">{statusLine}</p>
         </div>
         <button 
           onClick={() => onNavigate('create')}
@@ -161,9 +255,15 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
         </button>
       </div>
 
-      {syncFailed && !isSyncing && (
-        <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800">
-          클라우드 연결에 실패했습니다. 로컬에 저장된 프로젝트만 표시됩니다.
+      {showOfflineBanner && (
+        <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <span>클라우드 연결에 실패했습니다. 로컬에 저장된 프로젝트만 표시됩니다.</span>
+          <button
+            onClick={handleManualRetry}
+            className="self-start sm:self-auto px-4 py-2 rounded-full bg-yellow-500 hover:bg-yellow-600 text-white text-xs font-bold transition-colors"
+          >
+            다시 시도
+          </button>
         </div>
       )}
 
