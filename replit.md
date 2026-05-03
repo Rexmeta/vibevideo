@@ -1,86 +1,43 @@
 # VibeVideo AI
 
 ## Overview
-VibeVideo AI is a React + TypeScript frontend application designed for AI-powered video generation. It enables users to create videos from various inputs like text, images, or audio clips using advanced AI models. The project aims to provide a seamless and robust platform for AI-driven media creation, leveraging Firebase for core services and Google's Gemini API for AI functionalities.
+VibeVideo AI is a React + TypeScript frontend application for AI-powered video generation. It allows users to create videos from various inputs like text, images, or audio using advanced AI models. The platform leverages Firebase for core services and Google's Gemini API for AI functionalities, aiming to provide a seamless and robust experience for AI-driven media creation.
 
 ## User Preferences
 No specific user preferences were provided in the original `replit.md` file. The user is expected to provide these during the interaction.
 
 ## System Architecture
-The application is built with React 18 and TypeScript, using Vite 5 as the build tool. Styling is handled by Tailwind CSS, loaded via CDN. Firebase is extensively used for authentication, Firestore (database), and Storage. The core AI capabilities are powered by the Google Gemini API.
+The application is built with React 18, TypeScript, and Vite 5. Styling is managed with Tailwind CSS. Firebase is utilized for authentication, Firestore (database), and Storage, while Google Gemini API powers the core AI capabilities.
 
 ### UI/UX Decisions
-- **General Design**: The application incorporates a clear, step-by-step wizard for project creation (`ProjectWizard.tsx`).
-- **Admin Interface**: An `AdminPage.tsx` exists for managing AI models, providing CRUD operations, toggling activity, searching, and resetting models.
-- **Navigation**: A `NavBar.tsx` includes dynamic links, such as an admin link for authenticated admin users.
-- **Project Management**: `ProjectManagement.tsx` offers a paginated list of projects with a "더 보기" (Load More) button.
+The application features a step-by-step `ProjectWizard.tsx` for project creation, an `AdminPage.tsx` for managing AI models with CRUD operations, and a dynamic `NavBar.tsx`. Project management is handled by `ProjectManagement.tsx`, offering a paginated list of projects. Dual video modes are supported: `AI Video Mode` using models like Veo, and `Presentation Mode` which creates videos from images with transitions, motion effects, and text overlays.
 
 ### Technical Implementations
-- **Routing**: `App.tsx` handles main application routing, including a dedicated admin route.
-- **State Management**: React's built-in hooks are used for component state.
-- **Media Handling**: `mediaCache.ts` utilizes IndexedDB for caching large base64 media data, enhancing performance and offline capabilities.
-- **Video Processing**: `videoMergeService.ts` integrates `FFmpeg.wasm` for in-browser video merging and scene concatenation.
-- **AI Model Management**: `modelService.ts` handles CRUD operations for AI models, persisting data in Firestore and localStorage, and seeding default models.
-- **Cost Estimation**: `services/pricing.ts` holds approximate per-call USD prices for image, video, and vision-critic models. Step 4 and Step 6 cost chips multiply generation counters by these prices to surface an estimated USD spend with a tooltip clarifying it is an approximation.
-- **Data Persistence**: Firebase Firestore is used with offline persistence enabled for multi-tab support.
-- **Storage**: Firebase Storage manages media uploads, with structured paths and robust retry mechanisms.
+Key technical aspects include React hooks for state management, `mediaCache.ts` for IndexedDB-based media caching, and `videoMergeService.ts` integrating `FFmpeg.wasm` for in-browser video merging. `modelService.ts` manages AI models with Firestore persistence, and `pricing.ts` provides cost estimation for AI operations. Firebase Firestore is used for data persistence with offline support, and Firebase Storage for media uploads.
 
-### Feature Specifications
-- **AI Model Selection**: Users can select specific AI models for image and video generation within the `ProjectWizard`.
-- **Character Consistency**: The system supports maintaining character consistency across scenes by injecting character descriptions into prompts and using reference images.
-- **Audio Source Selection**: Users choose between Veo 3.1 built-in audio (default, with lip-sync/SFX/BGM) or separate TTS narration. When Veo audio is selected, Step 3 can be skipped and TTS audio sync/merge overlay is disabled.
-- **Per-Model API Key Management**: Admin page includes an "API 설정" tab for managing provider-level and per-model API keys. Keys are stored in localStorage (not Firestore) for security. Priority chain: model-specific key > provider key > global env API_KEY. `apiKeyService.ts` handles storage; `geminiService.ts` uses `getApiKeyForModel` to resolve the correct key. Non-Google providers that fall back to Google API always use the global key.
-- **Scene Duration Config**: Users set script length by total time (slider, 8-120s) or by scene count (2-10 cuts, 8s each). Both modes sync bidirectionally.
-- **Video & Audio Merging**: Facilitates merging per-scene video and audio into a single MP4 file client-side.
-- **Project Save/Restore**: Robust system to save project progress, including generated media, to Cloud, IndexedDB, and localStorage with conflict detection and priority-based restoration.
-- **Parallel Processing**: Audio, image, and video generation tasks run in parallel (with limits) to improve performance, including per-scene error tracking and retry mechanisms.
-- **Export Features**: Comprehensive export options, including individual scene downloads and full project video downloads.
-- **Director Pipeline (Task #6)**: Quality-focused refactor of the generation pipeline:
-  - **Genre & Platform Presets** (`services/presets.ts`): 5 genres (ad/explainer/story/vlog/social-hook) and 5 platforms (YouTube Shorts/TikTok/Reels/YouTube 16:9/Instagram 1:1) selectable in Step 1. Selecting a platform auto-applies aspect ratio, duration, and scene count.
-  - **2-Pass Script** (`generateScriptOutline` + `generateScript`): First pass produces a JSON outline (hook + beats + optional CTA), second pass writes the spoken script grounded in that outline. The first sentence is always a pattern-interrupt hook.
-  - **Shotlist-Based Scene Segmentation** (`segmentScriptIntoScenes`): Each scene now carries `shotType`, `cameraMovement`, `lighting`, `durationSec`, `beatRole`, `transitionTo`. The first scene is always tagged `hook`.
-  - **StyleSheet** (`generateStyleSheet`): Auto-extracted after segmentation — palette of 5 hex colors + lighting + mood. Editable inline in Step 4. Injected into every image and video prompt for cross-scene consistency.
-  - **Model-Aware Prompt Adapter** (`services/promptAdapter.ts`): `gemini-image` / `veo` / `generic-cinematic` targets with capability flags (e.g. negative prompt support). Builds the per-model prompt from {shot, styleSheet, characterProfile, negativePrompt, audioScript, continuity}.
-  - **Vision Critic** (`services/visionCritic.ts`): Optional Gemini multimodal scorer that grades each generated image on character consistency, composition, and intent alignment (0–10 each). If overall < 6, automatically refines once using the issue list as a director note. Toggleable in Step 1; default ON. Score badge shown on each scene card with a hover tooltip listing axes + issues. When a character reference image is set, the critic receives it as a second image part and uses it as the ground truth for `characterConsistency`.
-  - **Character Reference Image Lock (Task #12)**: Project-level `character_reference_image` (data URL or http URL) settable in Step 1 via upload or "AI로 자동 생성" (which calls the image model with a portrait prompt derived from the character profile). When set, `generateSceneImage` injects it as an additional `inlineData` part for `gemini-2.5-flash-image`, and the prompt adapter prepends a "match the attached reference" directive so every scene depicts the SAME character (face/hair/clothing/identity). A small reference-locked badge also appears on Step 4 above the StyleSheet panel, with a remove button.
-  - **Character Reference Image in Video (Task #14)**: `generateSceneVideo` now also accepts the project-level reference via `GenerateVideoOptions.referenceImage`. ProjectWizard's batch and single-video handlers pass `characterReferenceImage` through. When a per-scene seed image already exists it is still preferred (it already encodes both the reference identity and the scene composition), but when no per-scene image exists Veo is seeded with the reference image instead of going text-only. The Veo prompt adapter (`buildVeoPrompt`) also receives `hasReferenceImage` and adds an explicit "the attached still shows the locked main character — animate the SAME person" directive whenever a reference is in play.
-  - **Per-Character Cast (Task #15)**: Project-level `character_references: { name, description?, imageUrl }[]` array for stories with multiple recurring characters (host+guest, hero+villain, etc). New "Cast (Multiple Characters)" section in Step 1 lets users add/remove named entries with thumbnails (upload or AI-generate). `segmentScriptIntoScenes` receives the cast and tags each scene with a `characters: string[]` subset. `generateSceneImage` accepts `referenceImages: NamedReferenceImage[]`; for each scene it attaches only the references whose names are tagged on that scene (Gemini supports multiple `inlineData` parts), and the prompt adapter mentions the named cast and the order of attached refs. The single-character `character_reference_image` flow remains unchanged for backward compatibility — when a project has both, the main reference is attached first and named cast refs follow.
-  - **Per-Scene Veo Seed Selection (Task #27)**: Each scene now carries an optional `videoSeedSource` field (`'scene' | 'reference' | 'text-only'`). Step 5 video cards expose a 3-button toggle ("씬 이미지" / "캐릭터 레퍼런스" / "텍스트만") that updates the field per scene. Default is `'scene'` which keeps the previous behavior (per-scene image preferred, falling back to character reference). `'reference'` forces the locked character reference even when a scene image exists (useful when the scene image drifted from the locked identity). `'text-only'` suppresses any seed image. `GenerateVideoOptions.seedSource` plumbs the choice into `generateSceneVideo`, and both `handleSingleVideo` and `handleBatchVideos` pass `s.videoSeedSource` through.
-  - **Negative Prompt**: Project-level field plumbed through both image and video generation; only applied for models whose adapter capability flag enables it.
-  - **Backward Compatibility**: `migrateSceneFields` fills in missing shotlist defaults on restored scenes; all new Project fields are optional so legacy projects open without migration.
-  - Real API calls remain Google-only; `promptAdapter` is interface-only for non-Google providers (still falls back to Gemini at the network layer).
-- **Multi-Project Parallel Production + Context Packs (Task #73)**:
-  - **Scope**: The global `JobManager` (`services/jobManager.ts`) and Studio Dock cover the long-running video batch stage. Script, audio, and image stages stay wizard-bound because they complete in seconds.
-  - **JobManager**: Module-level singleton instance with a concurrency cap (default 2), a per-model token bucket (`acquireRateToken` is reused by single-scene retries in `useVideoActions.handleSingleVideo` so manual retries share the same budget), `AbortController`-based cancel/pause, and a `pausedFromQueued` map so jobs paused before they ran are restored to `queued` on resume.
-  - **Studio Dock** (`components/StudioDock.tsx`): Always-mounted floating panel that subscribes to `JobManager` and surfaces every running/queued/paused/interrupted job with elapsed time, model, context-pack name, and cancel/pause/resume actions plus completion/failure toasts.
-  - **Interruption recovery**: On unload, `JobManager` writes a `sessionStorage` breadcrumb of in-flight project IDs and fires Firestore `interrupted` writes. On next load, `loadInterruptedFromProjects` treats any project whose persisted `generation_run.status` is `running`/`interrupted` OR is in the breadcrumb as interrupted, hydrates a phantom dock card, and writes back `interrupted` to Firestore.
-  - **Resume uses persisted model**: `generation_run` snapshots `image_model`/`video_model`/`use_veo_audio`; `resumeInterrupted` rebuilds the `AIModel` from that snapshot.
-  - **Context Packs** (`services/contextPackService.ts`): Reusable creative-context bundles (character profile, references, style sheet, aspect ratio, model picks, etc.) with versioned linkage. Save flow opens a structured impact list modal when 2+ projects share the pack. Linked projects get `context_pack_dirty=true` on pack edit; Step1 surfaces a "팩 변경 후 미반영" badge with a one-click 적용 action that applies all inheritable fields (incl. caption_style/video_mode/genre/platform).
-  - **Pack linkage persistence**: `useSync` reads `linked_context_pack_id`/`context_pack_version`/`context_pack_dirty` from refs on every sync (debounced + unmount flush) so pack state cannot be overwritten by stale closures.
-  - **New-project entry**: NavBar Create, ProjectManagement Create, and ProjectWizard's "start fresh" all route through `NewProjectModal`, which offers blank / clone-from-pack / clone-from-project sources with pack-link inheritance and inline rename/delete on the pack picker.
-  - **Step1 inherited badges**: shows a "팩 상속" badge next to Aspect Ratio + Visual Style when the value matches the linked pack.
-- **Wizard Context Modularization (Task #47)**: The wizard's central provider (`components/wizard/WizardContext.tsx`) was reduced from ~1860 lines to ~570 by splitting action handlers into focused hooks under `components/wizard/hooks/`: `useAudioActions`, `useImageActions`, `useVideoActions`, `useExportActions`, `usePresentationActions`, `useAudioVideoSync`, `useSync` (sync + unmount flush), `useRestore` (cloud/local/IndexedDB hydration), and shared pure helpers/constants in `wizardHelpers.ts`. The `WizardContextValue` interface lives in `components/wizard/wizardTypes.ts` and is re-exported from `WizardContext.tsx` so existing consumers (`useWizard`, `WizardContextValue`) keep working unchanged. Behavior is preserved exactly, including the empty-deps unmount cleanup that intentionally captures initial values for non-ref props.
-- **Dual Video Modes**: Two video creation paths selectable in Step 1:
-  - **AI Video Mode** (`ai`): Uses AI models (Veo) for per-scene video generation with motion.
-  - **Presentation Mode** (`presentation`): Creates video from generated images with configurable transitions (fade, wipe, slide, circle, smooth), motion effects (zoom-in/out, pan directions), and Canvas-based text overlays with Korean font support. In this mode, Step 5 shows per-scene transition/motion/text config instead of AI video generation; the video model selector is hidden; and the export step renders the final video via `renderPresentationVideo` in `videoMergeService.ts`.
+Features include AI model selection, character consistency maintenance, audio source selection (Veo 3.1 built-in or separate TTS), and per-model API key management. Scene duration can be configured by total time or scene count. The system supports robust project save/restore with conflict detection, parallel processing of generation tasks, and comprehensive export options.
+
+The `Director Pipeline` refines the generation process with:
+- **Genre & Platform Presets**: Configurable in Step 1, influencing aspect ratio, duration, and scene count.
+- **2-Pass Scripting**: Generating a JSON outline followed by a detailed script.
+- **Shotlist-Based Scene Segmentation**: Each scene includes detailed shot properties.
+- **StyleSheet**: Auto-extracted palette, lighting, and mood for consistent prompting.
+- **Model-Aware Prompt Adapter**: Tailors prompts for specific AI models.
+- **Vision Critic**: An optional Gemini multimodal scorer for image quality, with auto-refinement.
+- **Character Reference Image Lock**: Ensures character consistency across scenes using a reference image.
+- **Per-Character Cast**: Supports multiple recurring characters with individual reference images.
+- **Per-Scene Veo Seed Selection**: Allows specifying `videoSeedSource` for each scene.
+- **Negative Prompt**: Project-level field for controlling undesirable elements in generation.
+
+The `JobManager` handles multi-project parallel production with a concurrency cap, cancel/pause functionality, and interruption recovery. `Studio Dock` provides a floating panel to monitor job progress. `Context Packs` allow reusable creative-context bundles for projects, with versioned linkage and impact assessment. The `Wizard Context` has been modularized into focused hooks for better maintainability.
 
 ### System Design Choices
-- **Firestore Structure**: A flat `projects` collection is used, with one document per project. Each project document includes summary fields (`scene_count`, `total_duration`) to avoid loading full scenes for list views.
-- **Conflict Detection**: A `version` field and Firestore transactions are used for optimistic concurrency control.
-- **Storage Strategy**: Blob-based uploads with aggressive caching headers and recursive cleanup for deleted projects.
-- **Client-Side Caching**: A multi-layered approach combines IndexedDB for large media, localStorage for light metadata, and Firestore's SDK persistence.
-- **Security Rules**: Firestore and Storage rules are configured to ensure that users can only access their own project data.
+Firestore utilizes a flat `projects` collection with summary fields for efficient list views. Optimistic concurrency control is implemented using a `version` field and Firestore transactions. Storage uses blob-based uploads with caching headers. Client-side caching combines IndexedDB, localStorage, and Firestore SDK persistence. Security rules ensure user-specific data access for Firestore and Storage.
 
 ## External Dependencies
-- **Firebase**:
-    - **Authentication**: User authentication.
-    - **Firestore**: NoSQL database for project data storage and retrieval.
-    - **Storage**: Blob storage for images, audio, and video files.
-- **Google Gemini API**: (@google/genai) Used for AI-powered text-to-speech (TTS), image generation, and video generation.
-    - **TTS Models**: `gemini-2.5-flash-preview-tts`
-    - **Image Models**: `gemini-2.5-flash-image`
-    - **Video Models**: `veo-3.1-fast-generate-preview`
-- **FFmpeg.wasm**: Integrated via `@ffmpeg/ffmpeg` and `@ffmpeg/util` for client-side video and audio processing.
-- **Lucide React**: For icons used throughout the application.
-- **Vite**: Build tool for the React application.
-- **Tailwind CSS**: Utility-first CSS framework for styling.
+- **Firebase**: Authentication, Firestore (NoSQL database), Storage (blob storage).
+- **Google Gemini API**: For AI-powered TTS (`gemini-2.5-flash-preview-tts`), image generation (`gemini-2.5-flash-image`), and video generation (`veo-3.1-fast-generate-preview`).
+- **FFmpeg.wasm**: Client-side video and audio processing.
+- **Lucide React**: Icon library.
+- **Vite**: Build tool.
+- **Tailwind CSS**: Styling framework.
