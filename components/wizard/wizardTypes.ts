@@ -18,6 +18,7 @@ import {
 } from '../../types';
 import { SyncFn } from './hooks/useSync';
 import type { WizardMode } from './ModeGate';
+import type { ExportRiskAssessment } from '../../services/ffmpegLimits';
 
 export interface WizardContextValue {
   // Identity
@@ -177,6 +178,7 @@ export interface WizardContextValue {
   handleBatchVideos: () => Promise<void>;
   handleSingleVideo: (idx: number) => Promise<void>;
   handleRenderPresentation: () => Promise<void>;
+  exportRiskAssessment: ExportRiskAssessment;
 
   // Presentation mode helpers
   getDefaultPresentation: (idx: number) => PresentationConfig;

@@ -638,6 +638,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     handleMergeExport,
     handleDownloadMerged,
     handleRenderPresentation,
+    exportRiskAssessment,
   } = useExportActions({
     scenes,
     captionStyle,
@@ -646,6 +647,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     aspectRatio,
     topic,
     mergedVideoUrl,
+    isPresentationMode: videoMode === 'presentation',
     setMerging,
     setMergeProgress,
     setMergePercent,
@@ -800,6 +802,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     handleBatchVideos,
     handleSingleVideo,
     handleRenderPresentation,
+    exportRiskAssessment,
     getDefaultPresentation,
     updateScenePresentation,
     updateSceneTextOverlay,

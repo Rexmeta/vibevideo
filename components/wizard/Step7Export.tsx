@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
+import { ConfirmModal } from './ConfirmModal';
 
 export const Step7Export: React.FC = () => {
   const w = useWizard();
@@ -23,7 +24,48 @@ export const Step7Export: React.FC = () => {
     downloadVideo,
     setStep,
     onNavigate,
+    exportRiskAssessment,
   } = w;
+
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const isBlocked = exportRiskAssessment.level === 'block';
+  const isWarn = exportRiskAssessment.level === 'warn';
+
+  const runExport = () => {
+    if (isPresentationMode) handleRenderPresentation();
+    else handleMergeExport();
+  };
+
+  const handlePrimaryClick = () => {
+    if (isWarn) setConfirmOpen(true);
+    else runExport();
+  };
+
+  const presentationDisabled = merging || !isImagesReady || isBlocked;
+  const mergeDisabled = merging || scenes.every(s => !s.video_path) || isBlocked;
+
+  const bannerStyle =
+    exportRiskAssessment.level === 'safe'
+      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+      : exportRiskAssessment.level === 'warn'
+      ? 'bg-amber-50 border-amber-200 text-amber-900'
+      : 'bg-red-50 border-red-200 text-red-900';
+
+  const bannerIcon =
+    exportRiskAssessment.level === 'safe' ? (
+      <Icons.Check size={18} />
+    ) : exportRiskAssessment.level === 'warn' ? (
+      <Icons.AlertTriangle size={18} />
+    ) : (
+      <Icons.AlertCircle size={18} />
+    );
+
+  const bannerLabel =
+    exportRiskAssessment.level === 'safe'
+      ? '안전'
+      : exportRiskAssessment.level === 'warn'
+      ? '주의'
+      : '위험';
 
   return (
     <div className="flex-1 flex flex-col animate-in fade-in zoom-in-95 duration-1000">
@@ -34,12 +76,40 @@ export const Step7Export: React.FC = () => {
         </p>
       </div>
 
+      <div className={`mb-6 rounded-3xl border-2 px-5 py-4 ${bannerStyle}`}>
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5">{bannerIcon}</span>
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[10px] font-black uppercase tracking-widest opacity-70">
+                내보내기 위험도
+              </span>
+              <span className="text-xs font-black uppercase tracking-widest">{bannerLabel}</span>
+            </div>
+            <p className="text-sm font-semibold leading-snug">{exportRiskAssessment.summary}</p>
+            {exportRiskAssessment.reasons.length > 0 && (
+              <ul className="mt-2 text-xs leading-relaxed list-disc list-inside space-y-0.5 opacity-90">
+                {exportRiskAssessment.reasons.map((r, i) => (
+                  <li key={`r-${i}`}>{r}</li>
+                ))}
+              </ul>
+            )}
+            {exportRiskAssessment.recommendations.length > 0 && (
+              <p className="mt-2 text-xs italic opacity-80">
+                권장: {exportRiskAssessment.recommendations.join(' · ')}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="mb-8 flex flex-col items-center gap-4">
         {isPresentationMode ? (
           <button
-            onClick={handleRenderPresentation}
-            disabled={merging || !isImagesReady}
-            className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${merging ? 'bg-gray-100 text-gray-400' : 'bg-gradient-to-r from-blue-600 to-brand-cyan text-white hover:scale-105 active:scale-95'}`}
+            onClick={handlePrimaryClick}
+            disabled={presentationDisabled}
+            title={isBlocked ? exportRiskAssessment.summary : undefined}
+            className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${merging || isBlocked ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-brand-cyan text-white hover:scale-105 active:scale-95'}`}
           >
             {merging ? (
               <><Icons.Loader2 className="animate-spin" size={20} /> {mergeProgress}</>
@@ -49,9 +119,10 @@ export const Step7Export: React.FC = () => {
           </button>
         ) : (
           <button
-            onClick={handleMergeExport}
-            disabled={merging || scenes.every(s => !s.video_path)}
-            className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${merging ? 'bg-gray-100 text-gray-400' : 'bg-gradient-to-r from-purple-600 to-brand-cyan text-white hover:scale-105 active:scale-95'}`}
+            onClick={handlePrimaryClick}
+            disabled={mergeDisabled}
+            title={isBlocked ? exportRiskAssessment.summary : undefined}
+            className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all flex items-center gap-3 ${merging || isBlocked ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-purple-600 to-brand-cyan text-white hover:scale-105 active:scale-95'}`}
           >
             {merging ? (
               <><Icons.Loader2 className="animate-spin" size={20} /> {mergeProgress}</>
@@ -64,6 +135,9 @@ export const Step7Export: React.FC = () => {
           <div className="w-64 h-2 bg-gray-200 rounded-full overflow-hidden">
             <div className="h-full bg-gradient-to-r from-purple-600 to-brand-cyan rounded-full transition-all duration-500" style={{ width: `${mergePercent}%` }}></div>
           </div>
+        )}
+        {!merging && mergeProgress.startsWith('오류') && (
+          <p className="text-sm text-red-500 font-semibold max-w-md text-center">{mergeProgress}</p>
         )}
         {mergedVideoUrl && (
           <div className="w-full max-w-2xl mt-4">
@@ -139,6 +213,38 @@ export const Step7Export: React.FC = () => {
           Go to Workspace <Icons.ChevronRight size={28} />
         </button>
       </div>
+
+      <ConfirmModal
+        open={confirmOpen}
+        title="메모리 부담이 큰 내보내기입니다"
+        description={
+          <div className="space-y-2">
+            <p>{exportRiskAssessment.summary}</p>
+            {exportRiskAssessment.reasons.length > 0 && (
+              <ul className="list-disc list-inside text-xs space-y-0.5 opacity-90">
+                {exportRiskAssessment.reasons.map((r, i) => (
+                  <li key={`m-${i}`}>{r}</li>
+                ))}
+              </ul>
+            )}
+            {exportRiskAssessment.recommendations.length > 0 && (
+              <p className="text-xs italic opacity-80">
+                권장: {exportRiskAssessment.recommendations.join(' · ')}
+              </p>
+            )}
+            <p className="text-xs">그래도 진행하시겠습니까?</p>
+          </div>
+        }
+        confirmLabel="계속 진행"
+        cancelLabel="취소"
+        tone="default"
+        icon={<Icons.AlertTriangle size={24} />}
+        onConfirm={() => {
+          setConfirmOpen(false);
+          runExport();
+        }}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   );
 };

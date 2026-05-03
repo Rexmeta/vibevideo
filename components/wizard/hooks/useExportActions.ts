@@ -5,8 +5,14 @@ import {
   MergeInput,
   renderPresentationVideo,
   PresentationSceneInput,
+  getResolution,
 } from '../../../services/videoMergeService';
 import { alignWordsToDuration } from '../../../services/captionService';
+import {
+  evaluateExportLimits,
+  isMemoryRelatedError,
+  FRIENDLY_OOM_MESSAGE,
+} from '../../../services/ffmpegLimits';
 
 interface ExportActionsDeps {
   scenes: Partial<Scene>[];
@@ -16,6 +22,7 @@ interface ExportActionsDeps {
   aspectRatio: '16:9' | '9:16' | '1:1' | '3:4';
   topic: string;
   mergedVideoUrl: string | null;
+  isPresentationMode: boolean;
   setMerging: React.Dispatch<React.SetStateAction<boolean>>;
   setMergeProgress: React.Dispatch<React.SetStateAction<string>>;
   setMergePercent: React.Dispatch<React.SetStateAction<number>>;
@@ -34,6 +41,7 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     aspectRatio,
     topic,
     mergedVideoUrl,
+    isPresentationMode,
     setMerging,
     setMergeProgress,
     setMergePercent,
@@ -42,6 +50,24 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     trackBlobUrl,
     getDefaultPresentation,
   } = deps;
+
+  const computeTotalDuration = (): number => {
+    const fallbackPerScene = scenes.length > 0 ? (duration / scenes.length) || 6 : 6;
+    const sum = scenes.reduce(
+      (acc, s) => acc + (s.audio_duration || fallbackPerScene),
+      0
+    );
+    return Math.max(sum, duration || 0);
+  };
+
+  const buildAssessment = () =>
+    evaluateExportLimits({
+      totalDurationSec: computeTotalDuration(),
+      sceneCount: scenes.length,
+      resolution: getResolution(aspectRatio),
+      hasCaptions: captionStyle.preset !== 'none',
+      isPresentationMode,
+    });
 
   const downloadVideo = async (url: string, filename: string) => {
     try {
@@ -74,6 +100,15 @@ export const useExportActions = (deps: ExportActionsDeps) => {
   };
 
   const handleMergeExport = async () => {
+    const assessment = buildAssessment();
+    if (assessment.level === 'block') {
+      const msg = `${assessment.summary} ${assessment.reasons[0] || ''}`.trim();
+      console.warn('[Merge] Blocked by limits:', assessment);
+      setMergeProgress(msg);
+      setMergePercent(0);
+      setMerging(false);
+      return;
+    }
     setMerging(true);
     setMergeProgress('FFmpeg 로딩 중...');
     setMergePercent(0);
@@ -108,7 +143,8 @@ export const useExportActions = (deps: ExportActionsDeps) => {
       setMergedVideoUrl(url);
     } catch (err: any) {
       console.error('[Merge] Failed:', err);
-      setMergeProgress(`오류: ${err?.message || '합치기 실패'}`);
+      const friendly = isMemoryRelatedError(err) ? FRIENDLY_OOM_MESSAGE : (err?.message || '합치기 실패');
+      setMergeProgress(`오류: ${friendly}`);
     } finally {
       setMerging(false);
     }
@@ -125,6 +161,15 @@ export const useExportActions = (deps: ExportActionsDeps) => {
   };
 
   const handleRenderPresentation = async () => {
+    const assessment = buildAssessment();
+    if (assessment.level === 'block') {
+      const msg = `${assessment.summary} ${assessment.reasons[0] || ''}`.trim();
+      console.warn('[Presentation Render] Blocked by limits:', assessment);
+      setMergeProgress(msg);
+      setMergePercent(0);
+      setMerging(false);
+      return;
+    }
     setMerging(true);
     setMergeProgress('프레젠테이션 비디오 렌더링 준비 중...');
     setMergePercent(0);
@@ -164,7 +209,8 @@ export const useExportActions = (deps: ExportActionsDeps) => {
       setMergedVideoUrl(url);
     } catch (err: any) {
       console.error('[Presentation Render] Failed:', err);
-      setMergeProgress(`오류: ${err?.message || '렌더링 실패'}`);
+      const friendly = isMemoryRelatedError(err) ? FRIENDLY_OOM_MESSAGE : (err?.message || '렌더링 실패');
+      setMergeProgress(`오류: ${friendly}`);
     } finally {
       setMerging(false);
     }
@@ -176,5 +222,6 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     handleMergeExport,
     handleDownloadMerged,
     handleRenderPresentation,
+    exportRiskAssessment: buildAssessment(),
   };
 };

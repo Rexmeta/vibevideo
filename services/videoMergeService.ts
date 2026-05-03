@@ -2,6 +2,70 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile } from '@ffmpeg/util';
 import type { TransitionType, MotionPreset, TextOverlay, CaptionWord, CaptionStyle } from '../types';
 import { renderCaptionFrame } from './captionService';
+import { FRIENDLY_OOM_MESSAGE, isMemoryRelatedError } from './ffmpegLimits';
+
+const STATIC_TEMP_FILES = [
+  'concat.txt',
+  'audio_concat.txt',
+  'vid_concat.txt',
+  'final_output.mp4',
+  'video_concat.mp4',
+  'video_transitions.mp4',
+  'pres_final.mp4',
+  'merged_audio.aac',
+  'input_video.mp4',
+  'input_audio.mp3',
+  'input_audio.wav',
+  'output.mp4',
+];
+
+/**
+ * Best-effort sweep of any temp files this module may have created. Called
+ * before each merge (clearing leftovers from a previous session) and again
+ * in finally — both on success and failure — so successive exports in the
+ * same tab don't accumulate memory.
+ */
+const sweepTempFiles = async (ffmpeg: FFmpeg, sceneCount: number): Promise<void> => {
+  const targets = new Set<string>(STATIC_TEMP_FILES);
+  const max = Math.max(sceneCount + 4, 8);
+  for (let i = 0; i < max; i++) {
+    targets.add(`scene_${i}.mp4`);
+    targets.add(`scene_${i}_silent.mp4`);
+    targets.add(`audio_${i}.mp3`);
+    targets.add(`audio_${i}.wav`);
+    targets.add(`merged_${i}.mp4`);
+    targets.add(`capped_${i}.mp4`);
+    targets.add(`clip_${i}.mp4`);
+    targets.add(`clip_${i}_capped.mp4`);
+    targets.add(`img_${i}.jpg`);
+    targets.add(`pres_audio_${i}.mp3`);
+    targets.add(`pres_audio_${i}.wav`);
+    targets.add(`ts_${i}.ts`);
+    targets.add(`part_${i}.ts`);
+  }
+  for (let k = 0; k < 400; k++) targets.add(`cap_${k}.png`);
+  for (const name of targets) {
+    try { await ffmpeg.deleteFile(name); } catch { /* file not present – ignore */ }
+  }
+};
+
+class FFmpegMemoryError extends Error {
+  override readonly name = 'FFmpegMemoryError';
+  readonly originalError: Error;
+  constructor(message: string, originalError: Error) {
+    super(message);
+    this.originalError = originalError;
+  }
+}
+
+const wrapFFmpegError = (err: unknown): Error => {
+  if (isMemoryRelatedError(err)) {
+    const orig = err instanceof Error ? err : new Error(String(err));
+    console.error('[FFmpeg] Memory-related failure:', orig);
+    return new FFmpegMemoryError(FRIENDLY_OOM_MESSAGE, orig);
+  }
+  return err instanceof Error ? err : new Error(String(err));
+};
 
 let ffmpegInstance: FFmpeg | null = null;
 let loadingPromise: Promise<FFmpeg> | null = null;
@@ -33,7 +97,7 @@ export interface MergeInput {
   captionDurationSec?: number;
 }
 
-const getResolution = (aspectRatio: string): { w: number; h: number } => {
+export const getResolution = (aspectRatio: string): { w: number; h: number } => {
   switch (aspectRatio) {
     case '9:16': return { w: 720, h: 1280 };
     case '1:1': return { w: 720, h: 720 };
@@ -188,8 +252,11 @@ export const mergeAllScenes = async (
 
   onProgress?.('준비 중...', 0);
 
+  await sweepTempFiles(ffmpeg, validInputs.length);
+
   const captionRes = aspectRatio ? getResolution(aspectRatio) : { w: 1280, h: 720 };
 
+  try {
   const mergedParts: string[] = [];
   for (let i = 0; i < validInputs.length; i++) {
     const input = validInputs[i];
@@ -303,6 +370,11 @@ export const mergeAllScenes = async (
   onProgress?.('완료!', 100);
 
   return new Blob([finalData], { type: 'video/mp4' });
+  } catch (err) {
+    throw wrapFFmpegError(err);
+  } finally {
+    try { await sweepTempFiles(ffmpeg, validInputs.length); } catch {}
+  }
 };
 
 export const isFFmpegSupported = (): boolean => {
@@ -442,6 +514,9 @@ export const renderPresentationVideo = async (
 
   onProgress?.('이미지 준비 중...', 5);
 
+  await sweepTempFiles(ffmpeg, scenes.length);
+
+  try {
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i];
     const pct = 5 + Math.round((i / scenes.length) * 20);
@@ -640,6 +715,11 @@ export const renderPresentationVideo = async (
   onProgress?.('완료!', 100);
 
   return new Blob([finalData], { type: 'video/mp4' });
+  } catch (err) {
+    throw wrapFFmpegError(err);
+  } finally {
+    try { await sweepTempFiles(ffmpeg, scenes.length); } catch {}
+  }
 };
 
 const concatClips = async (ffmpeg: FFmpeg, count: number): Promise<string> => {
