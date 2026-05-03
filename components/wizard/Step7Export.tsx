@@ -27,11 +27,20 @@ export const Step7Export: React.FC = () => {
     onNavigate,
     exportRiskAssessment,
     refreshExportLimits,
+    autoSplitPlan,
+    handleAutoSplitExport,
   } = w;
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const isBlocked = exportRiskAssessment.level === 'block';
   const isWarn = exportRiskAssessment.level === 'warn';
+  const canAutoSplit =
+    !merging &&
+    scenes.length > 0 &&
+    autoSplitPlan.needsSplit &&
+    (isPresentationMode
+      ? scenes.every(s => !!s.image_path)
+      : scenes.some(s => !!s.video_path));
 
   const runExport = () => {
     if (isPresentationMode) handleRenderPresentation();
@@ -102,6 +111,20 @@ export const Step7Export: React.FC = () => {
               <p className="mt-2 text-xs italic opacity-80">
                 권장: {exportRiskAssessment.recommendations.join(' · ')}
               </p>
+            )}
+            {exportRiskAssessment.level !== 'safe' && canAutoSplit && (
+              <div className="mt-3">
+                <button
+                  onClick={handleAutoSplitExport}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border-2 border-current text-xs font-black uppercase tracking-wider hover:scale-[1.02] active:scale-95 transition-all"
+                >
+                  <Icons.Scissors size={14} />
+                  자동으로 안전하게 {autoSplitPlan.chunks.length}개로 나눠서 내보내기
+                </button>
+                <p className="mt-1 text-[11px] opacity-70">
+                  씬을 안전 등급에 맞춰 묶어 part_1.mp4, part_2.mp4 ... 형식으로 순서대로 다운로드합니다.
+                </p>
+              </div>
             )}
           </div>
         </div>

@@ -220,6 +220,64 @@ export const evaluateExportLimits = (input: ExportRiskInput): ExportRiskAssessme
   };
 };
 
+export interface SafeChunkPlanInput {
+  durations: number[];
+  resolution: { w: number; h: number };
+  hasCaptions: boolean;
+  isPresentationMode: boolean;
+}
+
+export interface SafeChunkPlan {
+  chunks: number[][];
+  thresholds: ResolvedThresholds;
+  needsSplit: boolean;
+}
+
+/**
+ * Greedily group scene indices into chunks that each evaluate as 'safe'
+ * under the same threshold policy as `evaluateExportLimits`. A scene that
+ * by itself exceeds the safe limits is still placed alone in its own
+ * chunk (best effort), so the caller can always make forward progress.
+ */
+export const planSafeExportChunks = (input: SafeChunkPlanInput): SafeChunkPlan => {
+  const device = detectDevice();
+  const thresholds = resolveThresholds(device, input.resolution);
+
+  const evalChunk = (durations: number[]) =>
+    evaluateExportLimits({
+      totalDurationSec: durations.reduce((a, b) => a + b, 0),
+      sceneCount: durations.length,
+      resolution: input.resolution,
+      hasCaptions: input.hasCaptions,
+      isPresentationMode: input.isPresentationMode,
+    });
+
+  const chunks: number[][] = [];
+  let current: number[] = [];
+  let currentDur: number[] = [];
+
+  for (let i = 0; i < input.durations.length; i++) {
+    const d = Math.max(0, input.durations[i] || 0);
+    const tentative = [...currentDur, d];
+    const assess = evalChunk(tentative);
+    if (assess.level === 'safe' || current.length === 0) {
+      current.push(i);
+      currentDur.push(d);
+    } else {
+      chunks.push(current);
+      current = [i];
+      currentDur = [d];
+    }
+  }
+  if (current.length > 0) chunks.push(current);
+
+  return {
+    chunks,
+    thresholds,
+    needsSplit: chunks.length > 1,
+  };
+};
+
 export const FRIENDLY_OOM_MESSAGE =
   '브라우저 메모리 한계로 영상 합치기에 실패했습니다. 씬 수나 총 길이를 줄이거나 해상도를 낮춰 다시 시도해 주세요.';
 
