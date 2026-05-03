@@ -1033,11 +1033,25 @@ let backfillInFlight = false;
  * is re-enabled and the user reopens the workspace, their local progress
  * is mirrored back to the cloud so other devices see it again.
  */
+export interface BackfillTestDeps {
+  getCloud?: (id: string) => Promise<Project | undefined>;
+  save?: (p: Project, skip?: boolean) => Promise<void>;
+  resetGuard?: boolean;
+  ignoreDb?: boolean;
+}
+
 export const backfillLocalProjectsToCloud = async (
   userId: string,
-  opts: { force?: boolean } = {}
+  opts: { force?: boolean } = {},
+  _testDeps?: BackfillTestDeps,
 ): Promise<number> => {
-  if (!userId || !db) return 0;
+  if (_testDeps?.resetGuard) {
+    backfillRanForUser = null;
+    backfillInFlight = false;
+  }
+  const getCloud = _testDeps?.getCloud ?? getProjectFromCloud;
+  const save = _testDeps?.save ?? saveProjectToCloud;
+  if (!userId || (!db && !_testDeps?.ignoreDb)) return 0;
   if (isFirestoreDisabled()) return 0;
   if (backfillInFlight) return 0;
   if (!opts.force && backfillRanForUser === userId) return 0;
@@ -1063,7 +1077,7 @@ export const backfillLocalProjectsToCloud = async (
         // Compare against the current cloud doc.
         let cloud: Project | undefined;
         try {
-          cloud = await getProjectFromCloud(local.id);
+          cloud = await getCloud(local.id);
         } catch {
           // If the per-project read fails, the disabled flag would've been
           // set; bail out of the whole backfill.
@@ -1089,7 +1103,7 @@ export const backfillLocalProjectsToCloud = async (
           }) as Scene[] | undefined,
         };
         try {
-          await saveProjectToCloud(pushable, true);
+          await save(pushable, true);
           pushed++;
           console.log(
             `[Backfill] Cloud updated from local snapshot: ${local.id} ` +
