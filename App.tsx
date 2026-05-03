@@ -17,6 +17,7 @@ import { onAuthStateChanged, User } from 'firebase/auth';
 import { isAdminUser } from './services/modelService';
 import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from './services/apiKeyService';
 import { jobManager } from './services/jobManager';
+import { uploadQueue } from './services/uploadQueue';
 
 const AISTUDIO_CHECK_TIMEOUT_MS = 1500;
 
@@ -104,12 +105,23 @@ const App: React.FC = () => {
           pendingPostAuthRef.current = false;
           setCurrentView('projects');
         }
-        // On sign-in, hydrate the Studio Dock with phantom cards for any
-        // project whose persisted generation_run is 'interrupted', so a
-        // refresh during a batch leaves visible "이어서 진행" entries.
-        jobManager.loadInterruptedFromProjects(user.uid).catch(err =>
-          console.warn('[App] loadInterruptedFromProjects failed:', err)
+        // Task #83: recovery first. Replay the durable upload queue and
+        // auto-resume Veo polling for projects with in-flight ops BEFORE
+        // hydrating phantom 'interrupted' cards, so resumed jobs claim
+        // their slots and aren't masked by stale UI entries.
+        uploadQueue.resumeAll().catch(err =>
+          console.warn('[App] uploadQueue.resumeAll failed:', err)
         );
+        jobManager
+          .autoResumePendingOperations(user.uid)
+          .catch(err => console.warn('[App] autoResumePendingOperations failed:', err))
+          .finally(() => {
+            // Then hydrate phantom cards for any *other* interrupted
+            // projects (those without persisted operations).
+            jobManager.loadInterruptedFromProjects(user.uid).catch(err =>
+              console.warn('[App] loadInterruptedFromProjects failed:', err)
+            );
+          });
       }
     });
     return () => unsubscribe();

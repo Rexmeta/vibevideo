@@ -1,6 +1,7 @@
 import React from 'react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
+import { jobManager } from '../../services/jobManager';
 import { getModelsByType } from '../../services/modelService';
 import { generateStyleSheet } from '../../services/geminiService';
 import { estimateCost, formatUsd, resolveApiModelId } from '../../services/pricing';
@@ -388,6 +389,55 @@ export const StepsAudioImageVideo: React.FC = () => {
                       </span>
                     );
                   })()}
+                  {step === 5 && !isPresentationMode && s.video_meta?.resumed && (
+                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-200" title="이전 세션에서 제출된 작업이 새 세션에서 완료됨">
+                      재개됨
+                    </span>
+                  )}
+                  {step === 5 && !isPresentationMode && s.video_meta?.uploadStatus === 'pending-upload' && (
+                    <>
+                      <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-50 text-amber-800 border border-amber-200" title="Firebase Storage 업로드를 백그라운드에서 재시도 중">
+                        업로드 재시도 중
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => jobManager.retryUploadsNow(w.projectId)}
+                        className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-600 text-white hover:bg-amber-700 transition-colors"
+                        title="지금 업로드 재시도"
+                      >
+                        지금 다시 업로드
+                      </button>
+                    </>
+                  )}
+                  {step === 5 && !isPresentationMode && s.video_meta?.longWait && (
+                    <>
+                      <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-purple-50 text-purple-700 border border-purple-200" title="Veo 폴링이 30분을 초과했습니다 — 작업은 계속 추적됩니다">
+                        장시간 대기
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          jobManager.continueLongWait({
+                            projectId: w.projectId,
+                            userId: w.userId,
+                            sceneIdx: i,
+                          })
+                        }
+                        className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-purple-600 text-white hover:bg-purple-700 transition-colors"
+                        title="이 씬의 폴링을 다시 시작"
+                      >
+                        계속 추적
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => jobManager.abandonLongWait(w.projectId, i)}
+                        className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                        title="이 씬의 추적을 중단"
+                      >
+                        추적 중단
+                      </button>
+                    </>
+                  )}
                 </div>
                 <p className="text-brand-dark text-sm font-medium leading-relaxed italic mb-3">"{s.script_segment}"</p>
                 {step === 5 && !isPresentationMode && s.video_path && Array.isArray(s.videoCast) && (() => {

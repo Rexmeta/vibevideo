@@ -648,6 +648,16 @@ export interface GenerateVideoResult {
   // API call. False = text-only naming in the prompt. Currently always
   // false because the Veo wrapper only accepts a single seed image.
   videoCastAttached: boolean;
+  // Task #83: durable handle for the Veo long-running operation that
+  // produced this clip. Persisted in Scene.video_meta.operationName.
+  operationName?: string;
+  // Number of poll attempts before the operation completed.
+  pollAttempts?: number;
+  // The actual API model id used (after Veo alias resolution).
+  actualModelId?: string;
+  // Best-effort URL/path of the seed image that was used (so the wizard
+  // can show "이 이미지로 시드됨"). Empty when seedSource === 'text-only'.
+  seedAssetPath?: string;
 }
 
 async function callImageModel(
@@ -848,58 +858,140 @@ async function resizeImageForVideo(imageSource: string, maxDim: number = 768): P
   });
 }
 
+// Custom error raised when a Veo operation exceeds the 30-min poll budget.
+// JobManager catches this specifically to flip the scene into the
+// "long-wait" state instead of marking it failed (the operation may still
+// complete on Google's side; the durable poller can keep checking).
+export class VeoLongWaitError extends Error {
+  operationName: string;
+  attempts: number;
+  constructor(operationName: string, attempts: number) {
+    super(`비디오 생성 장시간 대기 (${attempts} polls, 30분 초과)`);
+    this.name = 'VeoLongWaitError';
+    this.operationName = operationName;
+    this.attempts = attempts;
+  }
+}
+
+// Public surface for the JobManager: submit-and-poll with backoff + a
+// callback so the caller can persist the operation handle as soon as it's
+// returned. Total poll budget defaults to 30 minutes; backoff schedule
+// starts at 15s and grows to a 90s cap.
+export interface VeoPollerOptions {
+  apiKey: string;
+  validRatio: '16:9' | '9:16';
+  videoModel?: string;
+  label?: string;
+  imageData?: { imageBytes: string; mimeType: string };
+  signal?: AbortSignal;
+  /** If provided, skip submit and resume polling this existing op. */
+  existingOperation?: { name: string };
+  /** Fired once with the freshly-submitted operation (or the resumed one). */
+  onOperationSubmitted?: (op: { name: string }) => void | Promise<void>;
+  /** Fired after every poll round-trip with the latest attempt count. */
+  onPollProgress?: (info: { attempts: number; elapsedMs: number; lastError?: string }) => void;
+  /** Hard cap in ms before throwing VeoLongWaitError. Default 30 min. */
+  maxPollMs?: number;
+}
+
+export interface VeoPollerResult {
+  videoUrl: string;
+  operationName: string;
+  attempts: number;
+}
+
+// Backoff schedule: 15s, 15s, 30s, 30s, 60s, 60s, 90s, 90s, ... capped at 90s.
+const POLL_INTERVALS_MS = [15_000, 15_000, 30_000, 30_000, 60_000, 60_000];
+const POLL_INTERVAL_CAP_MS = 90_000;
+
+const nextPollDelay = (attempt: number): number => {
+  if (attempt < POLL_INTERVALS_MS.length) return POLL_INTERVALS_MS[attempt];
+  return POLL_INTERVAL_CAP_MS;
+};
+
 async function attemptVideoGeneration(
-  prompt: string, 
-  apiKey: string, 
-  validRatio: '16:9' | '9:16', 
+  prompt: string,
+  apiKey: string,
+  validRatio: '16:9' | '9:16',
   imageData?: { imageBytes: string; mimeType: string },
   label: string = '',
   videoModel: string = VEO_MODEL,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<string> {
+  const result = await runVeoOperation(prompt, {
+    apiKey, validRatio, imageData, label, videoModel, signal,
+  });
+  return result.videoUrl;
+}
+
+/**
+ * Submit + poll a Veo operation with persistence callbacks. Used by the
+ * JobManager so it can durably remember the operation across tab close
+ * and resume polling on next session via {@link existingOperation}.
+ */
+export async function runVeoOperation(
+  prompt: string,
+  opts: VeoPollerOptions,
+): Promise<VeoPollerResult> {
+  const {
+    apiKey, validRatio, imageData, signal,
+    existingOperation, onOperationSubmitted, onPollProgress,
+  } = opts;
+  const label = opts.label || '';
+  const videoModel = opts.videoModel || VEO_MODEL;
+  const maxPollMs = opts.maxPollMs ?? 30 * 60_000;
+
   const throwIfAborted = () => {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   };
   throwIfAborted();
-  const ai = new GoogleGenAI({ apiKey });
-  const payload: any = {
-    model: videoModel,
-    prompt: `Cinematic smooth motion, high quality: ${prompt}`,
-    config: { numberOfVideos: 1, resolution: '720p', aspectRatio: validRatio }
-  };
 
-  if (imageData) {
-    payload.image = { imageBytes: imageData.imageBytes, mimeType: imageData.mimeType };
-    console.log(`[Video Gen][${label}] With seed image (${imageData.mimeType}, ${Math.round(imageData.imageBytes.length / 1024)}KB)`);
-  } else {
-    console.log(`[Video Gen][${label}] Text-only (no seed image)`);
-  }
-
-  console.log(`[Video Gen][${label}] Calling generateVideos API...`);
   let operation: any;
-  try {
-    operation = await ai.models.generateVideos(payload);
-  } catch (submitErr: any) {
-    console.error(`[Video Gen][${label}] generateVideos() threw:`, submitErr?.message || submitErr, JSON.stringify(submitErr).slice(0, 500));
-    throw submitErr;
-  }
-
-  console.log(`[Video Gen][${label}] Operation received. done=${operation.done}, name=${(operation as any).name || 'N/A'}`);
-
-  if (operation.done) {
-    console.log(`[Video Gen][${label}] Operation completed immediately. Checking response...`);
-    const opStr = JSON.stringify(operation).slice(0, 1000);
-    console.log(`[Video Gen][${label}] Operation data: ${opStr}`);
+  if (existingOperation && existingOperation.name) {
+    operation = { name: existingOperation.name, done: false };
+    console.log(`[Video Gen][${label}] Resuming poll for op ${existingOperation.name}`);
+    try { await onOperationSubmitted?.(operation); } catch {}
+  } else {
+    const ai = new GoogleGenAI({ apiKey });
+    const payload: any = {
+      model: videoModel,
+      prompt: `Cinematic smooth motion, high quality: ${prompt}`,
+      config: { numberOfVideos: 1, resolution: '720p', aspectRatio: validRatio },
+    };
+    if (imageData) {
+      payload.image = { imageBytes: imageData.imageBytes, mimeType: imageData.mimeType };
+      console.log(`[Video Gen][${label}] With seed image (${imageData.mimeType}, ${Math.round(imageData.imageBytes.length / 1024)}KB)`);
+    } else {
+      console.log(`[Video Gen][${label}] Text-only (no seed image)`);
+    }
+    console.log(`[Video Gen][${label}] Calling generateVideos API...`);
+    try {
+      operation = await ai.models.generateVideos(payload);
+    } catch (submitErr: any) {
+      console.error(`[Video Gen][${label}] generateVideos() threw:`, submitErr?.message || submitErr, JSON.stringify(submitErr).slice(0, 500));
+      throw submitErr;
+    }
+    console.log(`[Video Gen][${label}] Operation received. done=${operation.done}, name=${(operation as any).name || 'N/A'}`);
+    try {
+      if ((operation as any).name) {
+        await onOperationSubmitted?.({ name: (operation as any).name });
+      }
+    } catch (cbErr) {
+      console.warn(`[Video Gen][${label}] onOperationSubmitted callback err:`, cbErr);
+    }
   }
 
   let attempts = 0;
-  const maxAttempts = 40;
-  const pollInterval = 15000;
   let consecutivePollErrors = 0;
+  const startedAt = Date.now();
 
-  while (!operation.done && attempts < maxAttempts) {
+  while (!operation.done) {
+    if (Date.now() - startedAt >= maxPollMs) {
+      throw new VeoLongWaitError((operation as any).name || existingOperation?.name || '', attempts);
+    }
+    const delay = nextPollDelay(attempts);
     await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(resolve, pollInterval);
+      const t = setTimeout(resolve, delay);
       const onAbort = () => {
         clearTimeout(t);
         reject(new DOMException('Aborted', 'AbortError'));
@@ -914,23 +1006,24 @@ async function attemptVideoGeneration(
       const aiPoll = new GoogleGenAI({ apiKey });
       operation = await aiPoll.operations.getVideosOperation({ operation });
       consecutivePollErrors = 0;
-      console.log(`[Video Gen][${label}] Poll #${attempts}: done=${operation.done}`);
+      attempts++;
+      const elapsedMs = Date.now() - startedAt;
+      console.log(`[Video Gen][${label}] Poll #${attempts}: done=${operation.done} (elapsed ${Math.round(elapsedMs / 1000)}s)`);
+      try { onPollProgress?.({ attempts, elapsedMs }); } catch {}
     } catch (pollErr: any) {
       consecutivePollErrors++;
       const msg = pollErr?.message || String(pollErr);
       console.warn(`[Video Gen][${label}] Poll #${attempts} error (consecutive: ${consecutivePollErrors}):`, msg);
+      try { onPollProgress?.({ attempts, elapsedMs: Date.now() - startedAt, lastError: msg }); } catch {}
       if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
         await new Promise(r => setTimeout(r, 20000));
       }
-      if (consecutivePollErrors >= 5) {
-        throw new Error(`폴링 중 연속 ${consecutivePollErrors}회 오류`);
+      // Tolerate up to 8 consecutive errors before bailing — the durable
+      // poll budget gives plenty of room for transient backend hiccups.
+      if (consecutivePollErrors >= 8) {
+        throw new Error(`폴링 중 연속 ${consecutivePollErrors}회 오류: ${msg}`);
       }
     }
-    attempts++;
-  }
-
-  if (!operation.done) {
-    throw new Error(`비디오 생성 시간 초과 (${attempts} polls, ~${Math.round(attempts * pollInterval / 60000)}분)`);
   }
 
   const opResult = JSON.stringify(operation).slice(0, 1500);
@@ -938,15 +1031,18 @@ async function attemptVideoGeneration(
 
   const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
   if (!downloadLink) {
-    const errMsg = (operation as any).error?.message || 
+    const errMsg = (operation as any).error?.message ||
                    (operation as any).response?.error?.message || '';
     console.error(`[Video Gen][${label}] No video URI. Error: ${errMsg}`);
     throw new Error(errMsg || '비디오 URI 없음');
   }
-
   const separator = downloadLink.includes('?') ? '&' : '?';
   console.log(`[Video Gen][${label}] SUCCESS! URI obtained.`);
-  return `${downloadLink}${separator}key=${apiKey}`;
+  return {
+    videoUrl: `${downloadLink}${separator}key=${apiKey}`,
+    operationName: (operation as any).name || existingOperation?.name || '',
+    attempts,
+  };
 }
 
 const VEO_MODEL = 'veo-3.1-fast-generate-preview';
@@ -984,6 +1080,18 @@ export interface GenerateVideoOptions {
   // immediately with a thrown AbortError; the operation is left to the
   // backend to garbage collect.
   signal?: AbortSignal;
+  // Task #83: resume polling an existing Veo operation instead of
+  // submitting a new one. When provided we skip the seed-image work and
+  // jump straight into the poll loop with backoff.
+  existingOperation?: { name: string };
+  // Fired once with the freshly-submitted operation handle (or the
+  // resumed one). Caller persists this so a tab close mid-poll is
+  // recoverable.
+  onOperationSubmitted?: (op: { name: string }) => void | Promise<void>;
+  // Fired after every poll round-trip; useful for live "Poll #N" display.
+  onPollProgress?: (info: { attempts: number; elapsedMs: number; lastError?: string }) => void;
+  // Hard cap in ms before VeoLongWaitError is thrown. Defaults to 30 min.
+  maxPollMs?: number;
 }
 
 // NOTE: every video model currently integrated through this codebase
@@ -1118,25 +1226,83 @@ export const generateSceneVideo = async (
     : 'text-only';
 
   const signal = options.signal;
+  // Resumable path: if we were handed an in-flight operation, skip submit
+  // entirely and poll it. The withRetry wrapper is bypassed here because
+  // the operation has already been billed/submitted — we just need its
+  // result.
+  if (options.existingOperation && options.existingOperation.name) {
+    const resumed = await runVeoOperation(fullPrompt, {
+      apiKey,
+      validRatio,
+      videoModel: actualModel,
+      label: 'resume',
+      signal,
+      existingOperation: options.existingOperation,
+      onOperationSubmitted: options.onOperationSubmitted,
+      onPollProgress: options.onPollProgress,
+      maxPollMs: options.maxPollMs,
+    });
+    return {
+      videoUrl: resumed.videoUrl,
+      seedSource: actualSeedSource,
+      stats: { imagesGenerated: 0, criticCalls: 0, refineCalls: 0, videosGenerated: 1 },
+      videoCast: namedCharactersForPrompt.map(c => c.name),
+      videoCastAttached: false,
+      operationName: resumed.operationName,
+      pollAttempts: resumed.attempts,
+      actualModelId: actualModel,
+      seedAssetPath: actualSeedSource === 'text-only' ? undefined : effectiveSeedSource,
+    };
+  }
+
+  let pollerOpName = '';
+  let pollerAttempts = 0;
+  const submittedHook = (op: { name: string }) => {
+    pollerOpName = op.name;
+    return options.onOperationSubmitted?.(op);
+  };
+  const progressHook = (info: { attempts: number; elapsedMs: number; lastError?: string }) => {
+    pollerAttempts = info.attempts;
+    return options.onPollProgress?.(info);
+  };
+
+  const runOnce = async (data?: { imageBytes: string; mimeType: string }, label: string = ''): Promise<string> => {
+    const r = await runVeoOperation(fullPrompt, {
+      apiKey,
+      validRatio,
+      videoModel: actualModel,
+      label,
+      imageData: data,
+      signal,
+      onOperationSubmitted: submittedHook,
+      onPollProgress: progressHook,
+      maxPollMs: options.maxPollMs,
+    });
+    pollerOpName = r.operationName;
+    pollerAttempts = r.attempts;
+    return r.videoUrl;
+  };
+
   const videoUrl = await withRetry(async () => {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     if (imageData) {
       try {
-        return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, imageData, 'img', actualModel, signal);
+        return await runOnce(imageData, 'img');
       } catch (imgErr: any) {
         if (imgErr?.name === 'AbortError') throw imgErr;
+        if (imgErr?.name === 'VeoLongWaitError') throw imgErr;
         const msg = String(imgErr?.message || imgErr);
         console.warn(`[Video Gen] Image-based generation failed: ${msg}`);
         if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
           throw imgErr;
         }
         console.log(`[Video Gen] Falling back to text-only generation...`);
-        const url = await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt-fallback', actualModel, signal);
+        const url = await runOnce(undefined, 'txt-fallback');
         actualSeedSource = 'text-only';
         return url;
       }
     }
-    return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt', actualModel, signal);
+    return await runOnce(undefined, 'txt');
   }, 3, '비디오 생성');
   return {
     videoUrl,
@@ -1146,5 +1312,9 @@ export const generateSceneVideo = async (
     // See top-of-file note: every currently integrated video model only accepts
     // a single seed image, so multi-image cast attachment is not wired yet.
     videoCastAttached: false,
+    operationName: pollerOpName || undefined,
+    pollAttempts: pollerAttempts,
+    actualModelId: actualModel,
+    seedAssetPath: actualSeedSource === 'text-only' ? undefined : effectiveSeedSource,
   };
 }

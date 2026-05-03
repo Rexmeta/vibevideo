@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { jobManager, JobState } from '../services/jobManager';
+import { uploadQueue, UploadEntry } from '../services/uploadQueue';
 import { Icons } from './Icons';
 
 interface Props {
@@ -45,6 +46,8 @@ const statusBadge = (status: JobState['status']) => {
       return { label: '일시중지', cls: 'bg-gray-200 text-gray-700' };
     case 'interrupted':
       return { label: '중단됨', cls: 'bg-orange-100 text-orange-700' };
+    case 'long-wait':
+      return { label: '장시간 대기', cls: 'bg-purple-100 text-purple-700' };
     default:
       return { label: status, cls: 'bg-gray-100 text-gray-600' };
   }
@@ -64,6 +67,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
   );
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [resumingId, setResumingId] = useState<string | null>(null);
+  const [pendingUploads, setPendingUploads] = useState<UploadEntry[]>(uploadQueue.pending());
   // Tick once a second so elapsed timers refresh while a job is running.
   const [, setNow] = useState<number>(Date.now());
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -113,7 +117,10 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
       }
       setJobs(next);
     });
-    return () => unsub();
+    const unsubUp = uploadQueue.subscribe(() => {
+      setPendingUploads(uploadQueue.pending());
+    });
+    return () => { unsub(); unsubUp(); };
   }, []);
 
   // Auto-dismiss toasts after 6 seconds.
@@ -297,6 +304,9 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
         {visibleJobs.map(job => {
           const badge = statusBadge(job.status);
           const isInterrupted = job.status === 'interrupted';
+          const isLongWait = job.status === 'long-wait';
+          const projectUploads = pendingUploads.filter(u => u.projectId === job.projectId);
+          const longWaitCount = job.scenes.filter(s => s.status === 'long-wait').length;
           const elapsed =
             (job.endedAt || Date.now()) - job.startedAt;
           const currentScene = job.scenes.find(s => s.status === 'running');
@@ -368,6 +378,59 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
                 <p className="text-[10px] text-red-500 font-medium mb-2 line-clamp-2">
                   {job.lastError}
                 </p>
+              )}
+
+              {(projectUploads.length > 0 || longWaitCount > 0) && (
+                <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                  {projectUploads.length > 0 && (
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 inline-flex items-center gap-1">
+                      <Icons.Cloud size={10} /> 업로드 재시도 중 · {projectUploads.length}
+                    </span>
+                  )}
+                  {longWaitCount > 0 && (
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 inline-flex items-center gap-1">
+                      <Icons.Clock size={10} /> 장시간 대기 · {longWaitCount}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {projectUploads.length > 0 && (
+                <button
+                  onClick={() => jobManager.retryUploadsNow(job.projectId)}
+                  className="w-full mb-2 px-3 py-1.5 rounded-xl text-[11px] font-black bg-amber-500 text-white hover:bg-amber-600 transition-colors flex items-center justify-center gap-1.5"
+                >
+                  <Icons.RotateCcw size={11} /> 지금 다시 업로드
+                </button>
+              )}
+
+              {longWaitCount > 0 && (
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    onClick={() => {
+                      const target = job.scenes.find(s => s.status === 'long-wait');
+                      if (target) {
+                        jobManager.continueLongWait({
+                          projectId: job.projectId,
+                          userId: job.userId,
+                          sceneIdx: target.idx,
+                        });
+                      }
+                    }}
+                    className="flex-1 px-3 py-1.5 rounded-xl text-[11px] font-black bg-purple-600 text-white hover:bg-purple-700 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Icons.RotateCcw size={11} /> 계속 추적
+                  </button>
+                  <button
+                    onClick={() => {
+                      const target = job.scenes.find(s => s.status === 'long-wait');
+                      if (target) jobManager.abandonLongWait(job.projectId, target.idx);
+                    }}
+                    className="flex-1 px-3 py-1.5 rounded-xl text-[11px] font-black bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Icons.X size={11} /> 추적 중단
+                  </button>
+                </div>
               )}
 
               <div className="flex items-center gap-2">

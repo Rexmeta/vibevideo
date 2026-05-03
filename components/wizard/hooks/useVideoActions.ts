@@ -202,7 +202,8 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
         if (
           j.status === 'completed' ||
           j.status === 'failed' ||
-          j.status === 'cancelled'
+          j.status === 'cancelled' ||
+          j.status === 'long-wait'
         ) {
           unsub();
           resolve();
@@ -222,77 +223,82 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
     }
   };
 
+  /**
+   * Single-scene generation now routes through the same JobManager +
+   * durable uploadQueue pipeline used by batch (task #83). This gives
+   * the per-scene retry button operation persistence, auto-resume on
+   * tab reopen, and durable upload retry — identical resilience to the
+   * batch path.
+   */
   const handleSingleVideo = async (idx: number) => {
     setProcessingType('video');
     setProcessingSet(new Set([idx]));
-    setLoadingMessage(`비디오 생성 중... (씬 ${idx + 1}) — 최대 5분 소요`);
-    const currentScene = scenes[idx];
+    const vidModel = allModels.find(m => m.id === selectedVideoModel);
+    const sceneSnapshot = [...scenes];
     const fKey = `video-${idx}`;
-    try {
-      const vidModel = allModels.find(m => m.id === selectedVideoModel);
-      const seedImage = currentScene.image_path;
-      const prevContext = idx > 0 ? scenes[idx - 1]?.visual_prompt : undefined;
-      const rateKey = vidModel?.modelId || vidModel?.id || 'default-video';
-      await jobManager.acquireRateToken(rateKey);
-      const videoResult = await generateSceneVideo(
-        currentScene.visual_prompt!,
-        seedImage,
-        aspectRatio,
-        vidModel?.modelId,
-        vidModel?.provider,
-        currentScene.script_segment || currentScene.audio_script,
-        characterProfile || undefined,
-        prevContext,
-        idx,
-        {
-          scene: currentScene,
-          styleSheet,
-          negativePrompt: negativePrompt || currentScene.negativePrompt,
-          referenceImage: characterReferenceImage,
-          seedPreference: currentScene.videoSeedPreference,
+    setLoadingMessage(
+      `비디오 생성 큐에 등록되었습니다 — Studio Dock에서 진행 상황을 확인하세요. (${vidModel?.name || ''} | 씬 ${idx + 1})`
+    );
+
+    const jobId = jobManager.enqueueVideoBatch({
+      projectId,
+      projectTitle: topic || '제목 없음',
+      userId,
+      scenes: sceneSnapshot,
+      aspectRatio,
+      model: vidModel,
+      characterProfile: characterProfile || undefined,
+      styleSheet,
+      negativePrompt: negativePrompt || undefined,
+      characterReferenceImage,
+      contextPackId: linkedContextPackId,
+      contextPackName: linkedContextPackName,
+      onlyIndices: [idx],
+      onSceneUpdate: (sIdx, updates) => {
+        if (updates.video_path && updates.video_path.startsWith('blob:')) {
+          trackBlobUrl(updates.video_path);
         }
-      );
-      if (videoResult?.videoUrl) {
-        addStats(videoResult.stats);
-        const { blobUrl, blob } = await fetchVideoAsBlob(videoResult.videoUrl, idx);
-        updateSceneAt(idx, {
-          video_path: blobUrl,
-          seedSource: videoResult.seedSource,
-          videoCast: videoResult.videoCast,
-          videoCastAttached: videoResult.videoCastAttached,
-          videoSeedPreferenceUsed: currentScene.videoSeedPreference || 'scene-image',
-        });
-        console.log(
-          `[Single Video] Scene ${idx + 1} generated successfully (model: ${vidModel?.modelId || 'default'}, seed: ${videoResult.seedSource}, cast: [${videoResult.videoCast.join(', ')}], attached: ${videoResult.videoCastAttached})`
-        );
-        try {
-          const url = await uploadFileToCloud(
-            `users/${userId}/projects/${projectId}/videos/s${idx}.mp4`,
-            blob,
-            'blob'
-          );
-          updateSceneAt(idx, { video_path: url });
-        } catch (uploadErr) {
-          console.warn(
-            `[Video Upload] Scene ${idx} upload failed, keeping blob URL for preview`,
-            uploadErr
-          );
-        }
+        updateSceneAt(sIdx, updates);
         setFailedScenes(prev => {
           const n = new Map(prev);
-          n.delete(fKey);
+          n.delete(`video-${sIdx}`);
           return n;
         });
         sync();
-      }
-    } catch (e: any) {
-      const errMsg = e?.message || String(e);
-      console.error(`[Single Video] Scene ${idx + 1} FAILED:`, errMsg);
-      setFailedScenes(prev => new Map(prev).set(fKey, errMsg));
-    }
+      },
+      onStatsDelta: delta => addStats(delta),
+    });
+
+    await new Promise<void>(resolve => {
+      const unsub = jobManager.subscribe(jobs => {
+        const j = jobs.find(x => x.id === jobId);
+        if (!j) return;
+        const failedMap = new Map<string, string>();
+        j.scenes.forEach(s => {
+          if (s.status === 'failed' && s.error)
+            failedMap.set(`video-${s.idx}`, s.error);
+        });
+        setFailedScenes(prev => {
+          const next = new Map(prev);
+          if (failedMap.has(fKey)) next.set(fKey, failedMap.get(fKey)!);
+          return next;
+        });
+        if (
+          j.status === 'completed' ||
+          j.status === 'failed' ||
+          j.status === 'cancelled' ||
+          j.status === 'long-wait'
+        ) {
+          unsub();
+          resolve();
+        }
+      });
+    });
+
     setProcessingSet(new Set());
     setProcessingType(null);
     setLoadingMessage('');
+    sync();
   };
 
   return { handleBatchVideos, handleSingleVideo };

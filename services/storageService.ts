@@ -691,6 +691,29 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
           project.saved_scenes = scenesMapToArray(raw.saved_scenes_map) as Scene[];
         }
         delete (project as any).saved_scenes_map;
+        // Task #83 lazy migration: legacy scenes that already have a
+        // final cloud video_path but no video_meta get a synthesized
+        // record so the wizard can render seed/cost badges without a
+        // forced full-rewrite migration.
+        if (project.saved_scenes && project.saved_scenes.length > 0) {
+          project.saved_scenes = project.saved_scenes.map(s => {
+            if (!s) return s;
+            if (s.video_path && s.video_path.startsWith('http') && !s.video_meta) {
+              return {
+                ...s,
+                video_meta: {
+                  uploadStatus: 'ok',
+                  seedSource: s.seedSource,
+                  videoCast: s.videoCast,
+                  videoCastAttached: s.videoCastAttached,
+                  modelId: project.generation_run?.videoModelId,
+                  provider: project.generation_run?.videoProvider,
+                },
+              } as Scene;
+            }
+            return s;
+          });
+        }
         try { 
           const lightProject = { ...project };
           if (lightProject.saved_scenes) {
@@ -1111,6 +1134,42 @@ export const syncProjectsFromCloud = async (userId: string, localProjects: Proje
       console.warn('[Database] 클라우드 동기화 실패:', (fallbackError as Error)?.message);
       return { projects: localProjects, fromCloud: false };
     }
+  }
+};
+
+/**
+ * Task #83: list full project docs whose generation_run.status is in
+ * one of the "active" states (running / interrupted / long-wait), so
+ * autoResumePendingOperations can find resumable Veo operations even
+ * when the slim card cache omits generation_run entirely. Returns full
+ * Project objects (not slim cards).
+ */
+export const listProjectsWithActiveGenerationRun = async (
+  userId: string
+): Promise<Project[]> => {
+  if (!userId || !db) return [];
+  try {
+    const q = query(
+      collection(db, PROJECTS_COLLECTION),
+      where('user_id', '==', userId),
+      where('generation_run.status', 'in', ['running', 'interrupted', 'long-wait'])
+    );
+    const snap = await withTimeout(getDocs(q), 15000, '진행 중 프로젝트 조회');
+    const out: Project[] = [];
+    snap.forEach(docSnap => {
+      const data = docSnap.data() as any;
+      if (data?.saved_scenes_map && !data.saved_scenes) {
+        data.saved_scenes = scenesMapToArray(data.saved_scenes_map);
+      }
+      // Firestore stores the document id separately from data; without
+      // copying it the Project.id is undefined and downstream callers
+      // (autoResumePendingOperations) cannot address the project.
+      out.push({ ...data, id: data.id || docSnap.id } as Project);
+    });
+    return out;
+  } catch (e) {
+    console.warn('[Database] listProjectsWithActiveGenerationRun 실패:', (e as Error)?.message);
+    return [];
   }
 };
 

@@ -100,7 +100,7 @@ export interface Project {
 // enough that resume is not needed.
 export interface GenerationRun {
   id: string;
-  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'long-wait';
   stage: 'video';
   startedAt: string;
   updatedAt: string;
@@ -113,6 +113,40 @@ export interface GenerationRun {
   videoModelId?: string;
   videoProvider?: string;
   videoModelLabel?: string;
+  // Task #83: in-flight Veo operations keyed by scene index. Persisted as
+  // soon as `generateVideos` returns so a tab close mid-poll can be picked
+  // up by the next session via `operations.getVideosOperation({ name })`.
+  // Keys are zero-padded 2-digit scene indices (e.g. "00", "01") to avoid
+  // Firestore numeric-key array coercion ambiguity.
+  operations?: Record<string, OperationRecord>;
+  // Scene indices that exceeded the 30-min poll budget and entered the
+  // "long-wait" tracking state. Surfaced as a badge in the dock + Step 5.
+  longWaitIndices?: number[];
+  // Scene indices whose Veo download succeeded but Firebase Storage upload
+  // is being retried by the durable upload queue.
+  pendingUploadIndices?: number[];
+}
+
+// Veo long-running operation snapshot — persisted per scene so we can
+// resume polling after a tab close. Includes the seed source actually used
+// and an estimated USD cost so the wizard can surface a rich post-mortem.
+export interface OperationRecord {
+  name: string;            // operations/...
+  sceneIdx?: number;
+  modelId?: string;
+  provider?: string;
+  submittedAt: string;
+  lastPolledAt?: string;
+  attempts: number;
+  status: 'pending' | 'long-wait' | 'done' | 'failed';
+  seedSource?: SeedSource;
+  seedAssetPath?: string;
+  costUsd?: number;
+  // Sticky flag set when this scene was picked up by a fresh session
+  // (i.e. submitted before, polled after a reload). Surfaces "재개됨".
+  resumed?: boolean;
+  // Last error message from the most recent poll attempt (informational).
+  lastPollError?: string;
 }
 
 // ContextPack: a reusable bundle of "creative context" (character
@@ -273,6 +307,53 @@ export interface Scene {
   // "applies on next regeneration" hint. Legacy scenes without this field
   // suppress the hint to avoid false positives.
   videoSeedPreferenceUsed?: SeedSource;
+  // Task #83: rich, durable metadata about the most recent Veo run for
+  // this scene. Persisted alongside `video_path` so the wizard can show
+  // model/seed/cost/operation post-facto and so retries know what was
+  // actually used. `uploadStatus` is the only field that may flip after
+  // initial generation (when the durable upload queue eventually succeeds
+  // or gives up).
+  video_meta?: VideoMeta;
+}
+
+export type VideoUploadStatus = 'ok' | 'pending-upload' | 'upload-failed';
+
+export interface VideoMeta {
+  modelId?: string;
+  modelLabel?: string;
+  provider?: string;
+  aspectRatio?: '16:9' | '9:16' | '1:1' | '3:4';
+  videoCast?: string[];
+  videoCastAttached?: boolean;
+  generationDurationMs?: number;
+  seedSource?: SeedSource;
+  // Best-effort URL/path of the asset used as the seed image (so users can
+  // trace which image actually drove this clip). Empty for text-only.
+  seedAssetPath?: string;
+  // Veo long-running operation name. Useful for support / debugging and
+  // for re-attaching to the operation if upload later needs to recover.
+  operationName?: string;
+  // Estimated USD cost of this clip (per `services/pricing.ts`).
+  costUsd?: number;
+  generatedAt?: string;
+  // Number of poll attempts the operation took before completing.
+  pollAttempts?: number;
+  // Number of upload attempts (incl. successful one). 0 means uploaded on
+  // the first try; >1 means the durable queue had to retry.
+  uploadAttempts?: number;
+  uploadStatus?: VideoUploadStatus;
+  // Epoch-ms at which the durable upload queue will retry next. Mirrored
+  // into Firestore on every failed attempt so other devices/sessions can
+  // surface "업로드 재시도 중" without an in-memory queue.
+  uploadNextAttemptAt?: number;
+  uploadLastError?: string;
+  // True if this scene was completed by a session different from the one
+  // that submitted the operation (i.e. the user closed the tab and came
+  // back). Surfaces a "재개됨" badge.
+  resumed?: boolean;
+  // True if the run hit the 30-min poll budget. After this, the upload
+  // queue keeps tracking but the UI surfaces "장시간 대기".
+  longWait?: boolean;
 }
 
 export type ModelType = 'image' | 'video' | 'audio';
