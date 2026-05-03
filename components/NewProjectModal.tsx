@@ -30,6 +30,7 @@ export const NewProjectModal: React.FC<Props> = ({
   const [packSource, setPackSource] = useState<PackListSource>('cloud');
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [retryingPacks, setRetryingPacks] = useState(false);
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [creating, setCreating] = useState(false);
   const [step, setStep] = useState<'choice' | 'pickPack' | 'pickProject'>(
@@ -46,6 +47,20 @@ export const NewProjectModal: React.FC<Props> = ({
       .catch(e => console.warn('[NewProjectModal] listPacks failed:', e))
       .finally(() => setLoading(false));
   }, [userId]);
+
+  const retryLoadPacks = async () => {
+    if (!userId || retryingPacks) return;
+    setRetryingPacks(true);
+    try {
+      const { packs: list, source } = await listPacksWithSource(userId);
+      setPacks(list);
+      setPackSource(source);
+    } catch (e) {
+      console.warn('[NewProjectModal] retry listPacks failed:', e);
+    } finally {
+      setRetryingPacks(false);
+    }
+  };
 
   // Lazy-load projects only when the user opens the copy step.
   useEffect(() => {
@@ -259,9 +274,39 @@ export const NewProjectModal: React.FC<Props> = ({
                       : `${packs.length}개의 팩 중 선택 — 캐릭터, 스타일, 모델 설정 자동 상속`}
                 </p>
                 {!loading && packSource === 'cache' && (
-                  <p className="mt-2 text-[10px] font-black uppercase tracking-wider text-amber-600">
-                    오프라인 캐시로 표시 중
-                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <p className="text-[10px] font-black uppercase tracking-wider text-amber-600">
+                      오프라인 캐시로 표시 중
+                    </p>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={e => {
+                        e.stopPropagation();
+                        retryLoadPacks();
+                      }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          retryLoadPacks();
+                        }
+                      }}
+                      aria-disabled={retryingPacks}
+                      className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border border-amber-300 text-amber-700 hover:bg-amber-50 ${
+                        retryingPacks ? 'opacity-60 pointer-events-none' : ''
+                      }`}
+                    >
+                      {retryingPacks ? (
+                        <>
+                          <Icons.Loader2 size={10} className="animate-spin" />
+                          재시도 중
+                        </>
+                      ) : (
+                        '다시 시도'
+                      )}
+                    </span>
+                  </div>
                 )}
               </button>
 
