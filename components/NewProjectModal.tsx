@@ -5,8 +5,9 @@ import {
   applyPackToProjectFields,
   deletePack,
   generatePackId,
-  listPacks,
+  listPacksWithSource,
   savePack,
+  type PackListSource,
 } from '../services/contextPackService';
 import {
   generateProjectId,
@@ -26,6 +27,7 @@ export const NewProjectModal: React.FC<Props> = ({
   onCreated,
 }) => {
   const [packs, setPacks] = useState<ContextPack[]>([]);
+  const [packSource, setPackSource] = useState<PackListSource>('cloud');
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingProjects, setLoadingProjects] = useState(false);
@@ -36,8 +38,11 @@ export const NewProjectModal: React.FC<Props> = ({
 
   useEffect(() => {
     if (!userId) return;
-    listPacks(userId)
-      .then(setPacks)
+    listPacksWithSource(userId)
+      .then(({ packs: list, source }) => {
+        setPacks(list);
+        setPackSource(source);
+      })
       .catch(e => console.warn('[NewProjectModal] listPacks failed:', e))
       .finally(() => setLoading(false));
   }, [userId]);
@@ -253,6 +258,11 @@ export const NewProjectModal: React.FC<Props> = ({
                       ? '저장된 컨텍스트 팩이 없습니다. 위저드에서 만든 후 다시 시도하세요.'
                       : `${packs.length}개의 팩 중 선택 — 캐릭터, 스타일, 모델 설정 자동 상속`}
                 </p>
+                {!loading && packSource === 'cache' && (
+                  <p className="mt-2 text-[10px] font-black uppercase tracking-wider text-amber-600">
+                    오프라인 캐시로 표시 중
+                  </p>
+                )}
               </button>
 
               <button

@@ -76,25 +76,60 @@ const removeLocal = (userId: string, packId: string) => {
   );
 };
 
-export const listPacks = async (userId: string): Promise<ContextPack[]> => {
-  if (!userId) return [];
+const CLOUD_TIMEOUT_MS = 8000;
+
+const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} 시간 초과 (${ms / 1000}초)`)),
+      ms
+    );
+    promise.then(
+      val => { clearTimeout(timer); resolve(val); },
+      err => { clearTimeout(timer); reject(err); }
+    );
+  });
+};
+
+const sortPacks = (list: ContextPack[]): ContextPack[] =>
+  [...list].sort(
+    (a, b) =>
+      new Date(b.updated_at || b.created_at).getTime() -
+      new Date(a.updated_at || a.created_at).getTime()
+  );
+
+export type PackListSource = 'cloud' | 'cache' | 'empty';
+
+export interface ListPacksResult {
+  packs: ContextPack[];
+  source: PackListSource;
+}
+
+export const listPacksWithSource = async (
+  userId: string
+): Promise<ListPacksResult> => {
+  if (!userId) return { packs: [], source: 'empty' };
   const local = readLocal(userId);
-  if (!db) return local;
+  const fallback = (): ListPacksResult => ({
+    packs: sortPacks(local),
+    source: local.length > 0 ? 'cache' : 'empty',
+  });
+  if (!db) return fallback();
   try {
-    const snap = await getDocs(subcol(userId));
+    const snap = await withTimeout(getDocs(subcol(userId)), CLOUD_TIMEOUT_MS, '컨텍스트 팩 목록 조회');
     const cloud: ContextPack[] = [];
     snap.forEach(d => cloud.push(d.data() as ContextPack));
-    // Cloud is authoritative. Cache locally for offline use.
     writeLocal(userId, cloud);
-    return cloud.sort(
-      (a, b) =>
-        new Date(b.updated_at || b.created_at).getTime() -
-        new Date(a.updated_at || a.created_at).getTime()
-    );
+    return { packs: sortPacks(cloud), source: 'cloud' };
   } catch (e) {
     console.warn('[ContextPack] cloud list failed, using local:', e);
-    return local;
+    return fallback();
   }
+};
+
+export const listPacks = async (userId: string): Promise<ContextPack[]> => {
+  const { packs } = await listPacksWithSource(userId);
+  return packs;
 };
 
 export const getPack = async (
@@ -105,7 +140,11 @@ export const getPack = async (
   const local = readLocal(userId).find(p => p.id === packId);
   if (!db) return local || null;
   try {
-    const d = await getDoc(doc(subcol(userId), packId));
+    const d = await withTimeout(
+      getDoc(doc(subcol(userId), packId)),
+      CLOUD_TIMEOUT_MS,
+      '컨텍스트 팩 조회'
+    );
     if (d.exists()) {
       const pack = d.data() as ContextPack;
       upsertLocal(userId, pack);
@@ -202,7 +241,7 @@ export const findLinkedProjects = async (
         where('user_id', '==', userId),
         where('linked_context_pack_id', '==', packId)
       );
-      const snap = await getDocs(q);
+      const snap = await withTimeout(getDocs(q), CLOUD_TIMEOUT_MS, '연결 프로젝트 조회');
       snap.forEach(d => out.push(d.data() as Project));
       return out;
     } catch (e) {
