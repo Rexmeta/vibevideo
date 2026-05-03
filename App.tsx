@@ -94,7 +94,7 @@ const App: React.FC = () => {
       setCurrentUser(user);
       setAuthLoading(false);
       if (!user) {
-        if (currentView === 'projects' || currentView === 'create' || currentView === 'profile' || currentView === 'admin') {
+        if (currentView === 'projects' || currentView === 'create' || currentView === 'profile' || currentView === 'admin' || currentView === 'api-keys') {
           setCurrentView('landing');
         }
       } else {
@@ -131,12 +131,12 @@ const App: React.FC = () => {
       // Outside AI Studio there is no host picker — direct user to the
       // admin / settings page where they can paste a Google Cloud key.
       setHasApiKey(hasAnyGoogleApiKey());
-      if (currentUser) setCurrentView('admin');
+      if (currentUser) setCurrentView('api-keys');
     }
   };
 
   const handleNavigate = (view: ViewState) => {
-    if (!currentUser && (view === 'projects' || view === 'create' || view === 'profile' || view === 'admin')) {
+    if (!currentUser && (view === 'projects' || view === 'create' || view === 'profile' || view === 'admin' || view === 'api-keys')) {
       setCurrentView('login');
       return;
     }
@@ -177,10 +177,12 @@ const App: React.FC = () => {
     );
   }
 
-  // Only surface the key banner on screens where users are about to *do*
-  // something Veo-backed (create / open a project). Landing, login, signup,
-  // pricing, profile, admin all stay clean per task #81 acceptance criteria.
-  const showApiKeyBanner = !hasApiKey && !!currentUser && (currentView === 'projects' || currentView === 'create');
+  // Surface the key banner on every authenticated working surface so users
+  // who haven't registered a key always have a one-click path into the API
+  // key settings page. Hide it on landing/login/signup (pre-auth) and on the
+  // api-keys / admin screens themselves where the same CTA would be redundant.
+  const bannerHiddenViews: ViewState[] = ['landing', 'login', 'signup', 'api-keys', 'admin'];
+  const showApiKeyBanner = !hasApiKey && !!currentUser && !bannerHiddenViews.includes(currentView);
   const aistudioMode = isAiStudioEnv();
 
   return (
@@ -277,6 +279,15 @@ const App: React.FC = () => {
 
         {currentView === 'admin' && (
           <AdminPage userId={currentUser?.uid || ''} onNavigate={handleNavigate} />
+        )}
+
+        {currentView === 'api-keys' && (
+          <AdminPage
+            userId={currentUser?.uid || ''}
+            onNavigate={handleNavigate}
+            initialTab="api"
+            apiKeysOnly
+          />
         )}
 
         {(currentView === 'login' || currentView === 'signup') && (

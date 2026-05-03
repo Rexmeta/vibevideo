@@ -7,6 +7,8 @@ import { Icons } from './Icons';
 interface AdminPageProps {
   userId: string;
   onNavigate: (view: ViewState) => void;
+  initialTab?: 'image' | 'video' | 'api';
+  apiKeysOnly?: boolean;
 }
 
 const emptyModel = (type: ModelType): AIModel => ({
@@ -23,10 +25,12 @@ const emptyModel = (type: ModelType): AIModel => ({
 
 const KNOWN_PROVIDERS = ['Google', 'OpenAI', 'ByteDance', 'Kuaishou', 'Minimax', 'Alibaba', 'Midjourney', 'xAI', 'Black Forest Labs', 'Ideogram', 'NanoBanana', 'Vidu'];
 
-export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
+export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate, initialTab, apiKeysOnly }) => {
   const [models, setModels] = useState<AIModel[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'image' | 'video' | 'api'>('image');
+  const [activeTab, setActiveTab] = useState<'image' | 'video' | 'api'>(
+    apiKeysOnly ? 'api' : (initialTab || 'image')
+  );
   const [editingModel, setEditingModel] = useState<AIModel | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newModel, setNewModel] = useState<AIModel>(emptyModel('image'));
@@ -169,7 +173,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
   const getProviderModels = (provider: string) => models.filter(m => m.provider === provider);
   const activeProviders = [...new Set(models.map(m => m.provider))].sort();
 
-  if (!isAdminUser(userId)) {
+  if (!apiKeysOnly && !isAdminUser(userId)) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-20 text-center">
         <Icons.Shield size={48} className="mx-auto mb-4 text-red-400" />
@@ -198,20 +202,26 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
             <Icons.ArrowLeft size={20} />
           </button>
           <div>
-            <h1 className="text-3xl font-black">AI 모델 관리</h1>
-            <p className="text-gray-500 text-sm mt-1">모델을 추가, 수정, 삭제하고 API 키를 관리할 수 있습니다</p>
+            <h1 className="text-3xl font-black">{apiKeysOnly ? 'API 키 설정' : 'AI 모델 관리'}</h1>
+            <p className="text-gray-500 text-sm mt-1">
+              {apiKeysOnly
+                ? '비디오/이미지 생성을 위한 API 키를 등록하고 관리합니다'
+                : '모델을 추가, 수정, 삭제하고 API 키를 관리할 수 있습니다'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button
-            onClick={handleResetDefaults}
-            disabled={saving}
-            className="flex items-center gap-2 px-4 py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
-          >
-            <Icons.RotateCcw size={16} />
-            기본값 초기화
-          </button>
-          {activeTab !== 'api' && (
+          {!apiKeysOnly && (
+            <button
+              onClick={handleResetDefaults}
+              disabled={saving}
+              className="flex items-center gap-2 px-4 py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
+            >
+              <Icons.RotateCcw size={16} />
+              기본값 초기화
+            </button>
+          )}
+          {!apiKeysOnly && activeTab !== 'api' && (
             <button
               onClick={() => { setNewModel(emptyModel(activeTab)); setShowAddForm(true); }}
               className="flex items-center gap-2 px-4 py-2.5 bg-black text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-colors"
@@ -225,6 +235,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
 
       <GoogleApiKeyStatusBadge source={googleKeySource} onGoToApi={() => setActiveTab('api')} />
 
+      {!apiKeysOnly && (
       <div className="flex items-center gap-4 mb-6">
         <div className="flex bg-gray-100 rounded-xl p-1">
           <button
@@ -274,6 +285,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate }) => {
           </>
         )}
       </div>
+      )}
 
       {activeTab === 'api' ? (
         <div className="space-y-6">

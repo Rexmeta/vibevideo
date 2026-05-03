@@ -90,6 +90,9 @@ export const NavBar: React.FC<NavBarProps> = ({ onNavigate, currentView, isLogge
                     <button onClick={() => onNavigate('profile')} className="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2">
                        <Icons.User size={14} /> Profile
                     </button>
+                    <button onClick={() => onNavigate('api-keys')} className={`w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2 ${currentView === 'api-keys' ? 'text-brand-cyan' : ''}`}>
+                       <Icons.Key size={14} /> API 키 설정
+                    </button>
                     {isAdmin && (
                       <button onClick={() => onNavigate('admin')} className="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2">
                          <Icons.Settings size={14} /> AI 모델 관리
