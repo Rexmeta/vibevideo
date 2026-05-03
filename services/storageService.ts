@@ -24,6 +24,7 @@ import {
   deleteField,
   documentId,
   serverTimestamp,
+  increment,
   runTransaction,
   DocumentSnapshot,
   QueryDocumentSnapshot
@@ -210,14 +211,58 @@ const removeUndefined = (obj: Record<string, any>): Record<string, any> => {
   return cleaned;
 };
 
+/**
+ * Returns the cloud-storable form of a scene field value.
+ * - Drops local-only payloads (data: URLs, base64 blobs, blob: URLs).
+ * - Returns `undefined` to signal "do not write this field".
+ */
+export const sanitizeSceneFieldForFirestore = (field: string, value: unknown): unknown => {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') {
+    if (field === 'audio_path' && (isDataUrl(value) || isBase64Only(value))) return undefined;
+    if (field === 'image_path' && (isDataUrl(value) || isBase64Only(value))) return undefined;
+    if (field === 'video_path' && (isDataUrl(value) || isBlobUrl(value))) return undefined;
+  }
+  return value;
+};
+
+/** Cloud-storable form of a single scene (drops local-only paths, undefineds). */
+export const sanitizeSceneForFirestore = (s: Partial<Scene>): Record<string, any> => {
+  const cleaned: Record<string, any> = {};
+  for (const [k, v] of Object.entries(s)) {
+    const sv = sanitizeSceneFieldForFirestore(k, v);
+    if (sv !== undefined) cleaned[k] = sv;
+  }
+  return removeUndefined(cleaned);
+};
+
 const sanitizeScenesForFirestore = (scenes: Partial<Scene>[]): Record<string, any>[] => {
-  return scenes.map(s => {
-    const cleaned: Record<string, any> = { ...s };
-    if (isDataUrl(s.audio_path) || isBase64Only(s.audio_path)) delete cleaned.audio_path;
-    if (isDataUrl(s.image_path) || isBase64Only(s.image_path)) delete cleaned.image_path;
-    if (isDataUrl(s.video_path) || isBlobUrl(s.video_path)) delete cleaned.video_path;
-    return removeUndefined(cleaned);
+  return scenes.map(s => sanitizeSceneForFirestore(s));
+};
+
+/** Zero-padded 2-digit index used as the map key for `saved_scenes_map`. */
+export const sceneMapKey = (idx: number): string => idx.toString().padStart(2, '0');
+
+/**
+ * Convert an ordered array of scenes into the Firestore map representation
+ * (`saved_scenes_map`). Map keys preserve the original index ordering when
+ * sorted lexically (we always pad to 2 digits).
+ */
+export const scenesArrayToMap = (scenes: Array<Record<string, any>>): Record<string, any> => {
+  const map: Record<string, any> = {};
+  scenes.forEach((s, i) => {
+    map[sceneMapKey(i)] = s;
   });
+  return map;
+};
+
+/** Reverse of `scenesArrayToMap`: rebuild an ordered array from the map. */
+export const scenesMapToArray = (map: Record<string, any>): Array<Record<string, any>> => {
+  if (!map || typeof map !== 'object') return [];
+  return Object.keys(map)
+    .sort()
+    .map(k => map[k])
+    .filter(v => v && typeof v === 'object');
 };
 
 const base64ToBlob = (base64: string, contentType: string): Blob => {
@@ -442,8 +487,15 @@ export const saveProjectToCloud = async (project: Project, skipLocalSave: boolea
       dataToSave.scenes_blob_path = blobInfo.path;
       dataToSave.scenes_blob_updated_at = new Date().toISOString();
       dataToSave.saved_scenes = deleteField();
+      // Scenes are stored out-of-doc; clear any stale map mirror so reads
+      // don't pick up an outdated per-scene snapshot. Wizard partial-save
+      // path will not be used for projects that fall back to blob storage.
+      dataToSave.saved_scenes_map = deleteField();
     } else if (sanitizedScenes) {
       dataToSave.saved_scenes = sanitizedScenes.slice(0, MAX_DOC_SCENES);
+      // Mirror as a map so partial per-scene patches via dotted paths
+      // (`saved_scenes_map.<idx>.<field>`) can target individual scenes.
+      dataToSave.saved_scenes_map = scenesArrayToMap(sanitizedScenes.slice(0, MAX_DOC_SCENES));
       dataToSave.scenes_blob_url = deleteField();
       dataToSave.scenes_blob_path = deleteField();
       dataToSave.scenes_blob_updated_at = deleteField();
@@ -469,6 +521,61 @@ export const saveProjectToCloud = async (project: Project, skipLocalSave: boolea
       localStorage.setItem(`vibe_video_backup_emergency_${project.id}`, JSON.stringify(emergencyData));
     } catch(e) {}
   }
+};
+
+/**
+ * Partial save: writes only the supplied keys to the project doc using
+ * `updateDoc`, which interprets dotted keys as nested field paths.
+ *
+ * Callers may pass:
+ *   - top-level scalar fields (e.g. `saved_step`, `title`)
+ *   - dotted scene-level paths (e.g. `saved_scenes_map.05.image_path`,
+ *     `saved_scenes_map.07`) for true per-scene patches
+ *   - Firestore sentinels (`deleteField()`, etc.) as values
+ *
+ * The function:
+ *   - Strips top-level `undefined` values (Firestore rejects them).
+ *   - Always bumps `version` via atomic `increment(1)`.
+ *   - Always refreshes `updated_at` / `server_updated_at`.
+ *   - Honors the `character_reference_image` deletion rule.
+ *
+ * Requires the document to exist (callers gate this on a prior successful
+ * full save). Throws on failure so callers can fall back.
+ */
+export const saveProjectFieldsToCloud = async (
+  projectId: string,
+  fields: Record<string, any>,
+): Promise<void> => {
+  if (!projectId || !db) return;
+  if (!fields || Object.keys(fields).length === 0) return;
+
+  const data: Record<string, any> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined) continue; // updateDoc rejects undefined
+    data[k] = v;
+  }
+
+  if ('character_reference_image' in data) {
+    const refImg = data.character_reference_image;
+    if (
+      refImg === null ||
+      refImg === '' ||
+      (typeof refImg === 'string' && !refImg.startsWith('http'))
+    ) {
+      data.character_reference_image = deleteField();
+    }
+  }
+
+  data.updated_at = new Date().toISOString();
+  data.server_updated_at = serverTimestamp();
+  data.version = increment(1);
+
+  const projectRef = doc(db, PROJECTS_COLLECTION, projectId);
+  await withTimeout(updateDoc(projectRef, data), 20000, '프로젝트 부분 저장');
+  const keyCount = Object.keys(fields).length;
+  console.log(
+    `[Database] Partial save: ${projectId} (${keyCount} field${keyCount === 1 ? '' : 's'})`,
+  );
 };
 
 export const saveProjectWithConflictCheck = async (project: Project): Promise<{ saved: boolean; conflict: boolean }> => {
@@ -523,8 +630,10 @@ export const saveProjectWithConflictCheck = async (project: Project): Promise<{ 
         dataToSave.scenes_blob_path = precomputedBlob.path;
         dataToSave.scenes_blob_updated_at = new Date().toISOString();
         dataToSave.saved_scenes = deleteField();
+        dataToSave.saved_scenes_map = deleteField();
       } else if (sanitizedScenes) {
         dataToSave.saved_scenes = sanitizedScenes.slice(0, MAX_DOC_SCENES);
+        dataToSave.saved_scenes_map = scenesArrayToMap(sanitizedScenes.slice(0, MAX_DOC_SCENES));
         dataToSave.scenes_blob_url = deleteField();
         dataToSave.scenes_blob_path = deleteField();
         dataToSave.scenes_blob_updated_at = deleteField();
@@ -550,7 +659,14 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
       const projectRef = doc(db, PROJECTS_COLLECTION, id);
       const docSnap = await withTimeout(getDoc(projectRef), 15000, '프로젝트 조회');
       if (docSnap.exists()) {
-        const project = docSnap.data() as Project;
+        const raw = docSnap.data() as Project & { saved_scenes_map?: Record<string, any> };
+        const project: Project = { ...raw };
+        // Resolution order for scenes:
+        //   1. scenes_blob_url / scenes_blob_path  (large projects offloaded
+        //      to Firebase Storage by the full-save path).
+        //   2. saved_scenes_map  (source of truth when the wizard has been
+        //      doing per-scene partial updates via dotted paths).
+        //   3. saved_scenes inline array  (legacy / small-project full saves).
         if (project.scenes_blob_url || project.scenes_blob_path) {
           let blobScenes: Partial<Scene>[] | null = null;
           if (project.scenes_blob_url) {
@@ -571,7 +687,10 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
           if (blobScenes && blobScenes.length > 0) {
             project.saved_scenes = blobScenes as Scene[];
           }
+        } else if (raw.saved_scenes_map && typeof raw.saved_scenes_map === 'object') {
+          project.saved_scenes = scenesMapToArray(raw.saved_scenes_map) as Scene[];
         }
+        delete (project as any).saved_scenes_map;
         try { 
           const lightProject = { ...project };
           if (lightProject.saved_scenes) {

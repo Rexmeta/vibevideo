@@ -11,7 +11,14 @@ import {
   StyleSheet,
   VideoMode,
 } from '../../../types';
-import { saveProjectToCloud } from '../../../services/storageService';
+import {
+  saveProjectToCloud,
+  saveProjectFieldsToCloud,
+  sanitizeSceneForFirestore,
+  sanitizeSceneFieldForFirestore,
+  sceneMapKey,
+} from '../../../services/storageService';
+import { deleteField } from 'firebase/firestore';
 import { saveProjectMeta } from '../../../services/mediaCache';
 import type { WizardMode } from '../ModeGate';
 
@@ -110,6 +117,137 @@ export const useSync = (deps: SyncDeps): SyncFn => {
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSyncRef = useRef<(() => Promise<void>) | null>(null);
   const syncParamsRef = useRef<any>(null);
+  // Cloud-form snapshot of the last successful cloud write.
+  // - top-level fields are stored as-is from the most recent `proj`
+  // - `saved_scenes` is stored as the sanitized cloud form
+  // null means "no successful write yet" -> next sync does a full save.
+  type CloudSnapshot = { saved_scenes: Array<Record<string, any>> } & Record<string, any>;
+  const lastSyncedRef = useRef<CloudSnapshot | null>(null);
+
+  // Top-level keys we never diff/send via the partial path.
+  // - id/user_id/created_at: identity (set by full save).
+  // - updated_at/version: bumped server-side by storageService.
+  // - saved_scenes: handled separately (per-scene dotted-path patches into
+  //   `saved_scenes_map` plus `scene_count` / `total_duration`).
+  // - scene_count / total_duration: derived; emitted only when scenes change.
+  const FIELDS_NEVER_DIFFED = new Set([
+    'id',
+    'user_id',
+    'created_at',
+    'updated_at',
+    'version',
+    'saved_scenes',
+    'scene_count',
+    'total_duration',
+  ]);
+
+  const stableEq = (a: unknown, b: unknown): boolean => {
+    if (a === b) return true;
+    let sa: string;
+    let sb: string;
+    try { sa = JSON.stringify(a); } catch { sa = String(a); }
+    try { sb = JSON.stringify(b); } catch { sb = String(b); }
+    return sa === sb;
+  };
+
+  /** Build the cloud-form snapshot we store in `lastSyncedRef`. */
+  const buildSnapshot = (proj: Project): CloudSnapshot => {
+    const { saved_scenes, ...rest } = proj;
+    const top: Record<string, any> = {};
+    for (const [k, v] of Object.entries(rest)) {
+      if (v === undefined) continue;
+      top[k] = v;
+    }
+    const scenes = (saved_scenes || []).slice(0, 50).map(sanitizeSceneForFirestore);
+    // Deep-clone so subsequent in-place mutations to `proj` cannot leak in.
+    return JSON.parse(JSON.stringify({ ...top, saved_scenes: scenes }));
+  };
+
+  /**
+   * Diff `proj` against the previous cloud-form snapshot and produce the
+   * minimal payload for `saveProjectFieldsToCloud`. Per-scene field changes
+   * become dotted paths like `saved_scenes_map.05.image_path`.
+   */
+  const computePartialPayload = (
+    proj: Project,
+    prev: CloudSnapshot,
+  ): Record<string, any> => {
+    const payload: Record<string, any> = {};
+
+    // ---- Top-level scalar / object fields ----
+    const topKeys = new Set<string>([
+      ...Object.keys(prev),
+      ...Object.keys(proj as Record<string, any>),
+    ]);
+    for (const k of topKeys) {
+      if (FIELDS_NEVER_DIFFED.has(k)) continue;
+      const a = (proj as any)[k];
+      const b = (prev as any)[k];
+      if (stableEq(a, b)) continue;
+      // Send raw proj value (storageService handles deletion sentinels for
+      // character_reference_image; everything else is plain JSON).
+      payload[k] = a === undefined ? deleteField() : a;
+    }
+
+    // ---- Per-scene dotted-path patches ----
+    const prevScenes: Array<Record<string, any>> = Array.isArray(prev.saved_scenes)
+      ? prev.saved_scenes
+      : [];
+    const currRawScenes = (proj.saved_scenes || []).slice(0, 50);
+    const currScenes = currRawScenes.map(sanitizeSceneForFirestore);
+
+    let scenesTouched = false;
+    const maxLen = Math.max(prevScenes.length, currScenes.length);
+    for (let i = 0; i < maxLen; i++) {
+      const key = sceneMapKey(i);
+      const prevS = prevScenes[i];
+      const currS = currScenes[i];
+
+      if (!prevS && currS) {
+        // New scene: write whole scene at this index.
+        payload[`saved_scenes_map.${key}`] = currS;
+        scenesTouched = true;
+      } else if (prevS && !currS) {
+        // Scene removed: delete this map entry.
+        payload[`saved_scenes_map.${key}`] = deleteField();
+        scenesTouched = true;
+      } else if (prevS && currS) {
+        // Per-field diff (cloud form vs cloud form).
+        const fieldKeys = new Set<string>([
+          ...Object.keys(prevS),
+          ...Object.keys(currS),
+        ]);
+        for (const f of fieldKeys) {
+          const a = currS[f];
+          const b = prevS[f];
+          if (stableEq(a, b)) continue;
+          if (a === undefined) {
+            payload[`saved_scenes_map.${key}.${f}`] = deleteField();
+          } else {
+            // Belt-and-braces: ensure the field value is cloud-storable.
+            const sv = sanitizeSceneFieldForFirestore(f, a);
+            if (sv === undefined) {
+              payload[`saved_scenes_map.${key}.${f}`] = deleteField();
+            } else {
+              payload[`saved_scenes_map.${key}.${f}`] = sv;
+            }
+          }
+          scenesTouched = true;
+        }
+      }
+    }
+
+    if (scenesTouched) {
+      payload['scene_count'] = currScenes.length;
+      const totalDuration = currScenes.reduce(
+        (sum, s) => sum + (Number(s.audio_duration) || 0),
+        0,
+      );
+      payload['total_duration'] = Math.round(totalDuration * 10) / 10;
+    }
+
+    return payload;
+  };
 
   const sync: SyncFn = (targetStep, scenesOverride, extraData = {}, overrides = {}) => {
     if (!userId) return;
@@ -240,10 +378,44 @@ export const useSync = (deps: SyncDeps): SyncFn => {
       try {
         setSyncing(true);
         setSyncError(false);
-        await saveProjectToCloud(proj, true);
+
+        const prevSnapshot = lastSyncedRef.current;
+        if (!prevSnapshot) {
+          // No baseline yet: do a full save so the doc (and `saved_scenes_map`)
+          // exist before we start firing dotted-path patches at it.
+          await saveProjectToCloud(proj, true);
+          lastSyncedRef.current = buildSnapshot(proj);
+        } else {
+          const payload = computePartialPayload(proj, prevSnapshot);
+          const keyCount = Object.keys(payload).length;
+          if (keyCount === 0) {
+            // Nothing actually changed in cloud-storable form. Skip the write.
+          } else {
+            try {
+              await saveProjectFieldsToCloud(projectId, payload);
+              lastSyncedRef.current = buildSnapshot(proj);
+              const sceneKeys = Object.keys(payload).filter(k =>
+                k.startsWith('saved_scenes_map.'),
+              );
+              console.log(
+                `[Sync] partial cloud write: ${keyCount} key(s)` +
+                  (sceneKeys.length ? ` (${sceneKeys.length} scene patch(es))` : ''),
+              );
+            } catch (partialErr) {
+              console.warn(
+                '[Sync] partial save failed, falling back to full save:',
+                (partialErr as Error)?.message,
+              );
+              await saveProjectToCloud(proj, true);
+              lastSyncedRef.current = buildSnapshot(proj);
+            }
+          }
+        }
       } catch (e) {
         console.error('Sync error:', e);
         setSyncError(true);
+        // Force a full re-sync on the next attempt to recover from any drift.
+        lastSyncedRef.current = null;
       } finally {
         setSyncing(false);
       }
