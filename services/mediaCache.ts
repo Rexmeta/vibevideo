@@ -128,6 +128,39 @@ export const getAllProjectMetas = async (): Promise<any[]> => {
   }
 };
 
+/**
+ * Returns the (sceneIdx, type) pairs cached in IndexedDB for this project.
+ * Used by the restore flow to synthesize empty scene slots when the cloud
+ * document lost its `saved_scenes` (e.g. earlier Firestore 403 outage)
+ * but the locally-generated media is still recoverable.
+ */
+export const listProjectMediaIndices = async (
+  projectId: string,
+): Promise<{ idx: number; type: 'audio' | 'image' | 'video' }[]> => {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const request = tx.objectStore(STORE_NAME).getAllKeys();
+    return await new Promise((resolve, reject) => {
+      request.onsuccess = () => {
+        const keys = (request.result || []) as IDBValidKey[];
+        const prefix = `${projectId}__s`;
+        const out: { idx: number; type: 'audio' | 'image' | 'video' }[] = [];
+        for (const k of keys) {
+          if (typeof k !== 'string' || !k.startsWith(prefix)) continue;
+          const m = k.match(/__s(\d+)__(audio|image|video)$/);
+          if (m) out.push({ idx: parseInt(m[1], 10), type: m[2] as 'audio' | 'image' | 'video' });
+        }
+        resolve(out);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  } catch (e) {
+    console.warn('[MediaCache] listProjectMediaIndices failed:', e);
+    return [];
+  }
+};
+
 export const saveBatchMedia = async (projectId: string, scenes: { idx: number; type: 'audio' | 'image' | 'video'; data: string }[]): Promise<void> => {
   try {
     const db = await openDB();

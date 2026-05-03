@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Project,
   Scene,
@@ -11,10 +11,38 @@ import {
   VideoMode,
 } from '../../../types';
 import type { WizardMode } from '../ModeGate';
-import { getProjectFromCloud } from '../../../services/storageService';
-import { saveMedia, getMedia, getProjectMeta } from '../../../services/mediaCache';
+import {
+  getProjectFromCloud,
+  getFirestoreHealthInfo,
+} from '../../../services/storageService';
+import {
+  saveMedia,
+  getMedia,
+  getProjectMeta,
+  listProjectMediaIndices,
+} from '../../../services/mediaCache';
 import { migrateSceneFields } from '../../../services/geminiService';
 import { DEFAULT_CAPTION_STYLE } from '../../../services/captionService';
+
+export type RestoreSourceStatus = 'pending' | 'ok' | 'empty' | 'timeout' | 'error';
+
+export interface RestoreStatus {
+  cloud: RestoreSourceStatus;
+  local: RestoreSourceStatus;
+  idb: RestoreSourceStatus;
+  scenes: 'present' | 'missing' | 'unknown';
+}
+
+export type RestoreErrorKind =
+  | { kind: 'no_scenes'; cloudOk: boolean; firestoreDisabled: boolean }
+  | { kind: 'all_failed'; firestoreDisabled: boolean };
+
+export interface UseRestoreReturn {
+  restoreStatus: RestoreStatus;
+  restoreError: RestoreErrorKind | null;
+  restoreSlow: boolean;
+  retryRestore: () => void;
+}
 
 interface RestoreDeps {
   userId: string;
@@ -51,7 +79,6 @@ interface RestoreDeps {
   setNegativePrompt: React.Dispatch<React.SetStateAction<string>>;
   setStats: React.Dispatch<React.SetStateAction<ProjectStats>>;
   setCaptionStyle: React.Dispatch<React.SetStateAction<CaptionStyle>>;
-  // ContextPack linkage
   setLinkedContextPackId: React.Dispatch<React.SetStateAction<string | undefined>>;
   setContextPackVersion: React.Dispatch<React.SetStateAction<number | undefined>>;
   setContextPackDirty: React.Dispatch<React.SetStateAction<boolean>>;
@@ -61,8 +88,21 @@ interface RestoreDeps {
   trackBlobUrl: (url: string) => void;
 }
 
-export const useRestore = (deps: RestoreDeps) => {
+const INITIAL_STATUS: RestoreStatus = {
+  cloud: 'pending',
+  local: 'pending',
+  idb: 'pending',
+  scenes: 'unknown',
+};
+
+export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
   const restoredRef = useRef(false);
+  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const [restoreStatus, setRestoreStatus] = useState<RestoreStatus>(INITIAL_STATUS);
+  const [restoreError, setRestoreError] = useState<RestoreErrorKind | null>(null);
+  const [restoreSlow, setRestoreSlow] = useState(false);
+
   const {
     userId,
     initialProjectId,
@@ -107,39 +147,81 @@ export const useRestore = (deps: RestoreDeps) => {
     trackBlobUrl,
   } = deps;
 
+  const retryRestore = useCallback(() => {
+    restoredRef.current = false;
+    setRestoreError(null);
+    setRestoreSlow(false);
+    setRestoreStatus(INITIAL_STATUS);
+    setRetryNonce(n => n + 1);
+  }, []);
+
   useEffect(() => {
     if (!userId || restoredRef.current) return;
     restoredRef.current = true;
+
+    const idToLoad = initialProjectId || projectId;
+    const isExisting = !!initialProjectId;
+
     const load = async () => {
       setLoading(true);
       setLoadingMessage('Cloud Workspace 로딩 중...');
-      try {
-        let p: Project | undefined;
-        const idToLoad = initialProjectId || projectId;
+      setRestoreError(null);
+      setRestoreSlow(false);
 
+      // Show "slow" message after 5s of waiting on the cloud.
+      slowTimerRef.current = setTimeout(() => {
+        setRestoreSlow(true);
+        setLoadingMessage('클라우드 응답이 느립니다, 캐시본을 사용 중...');
+      }, 5000);
+
+      try {
         let cloudProject: Project | undefined;
         let localProject: Project | undefined;
         let idbProject: Project | undefined;
+        let cloudStatus: RestoreSourceStatus = 'pending';
+        let localStatus: RestoreSourceStatus = 'pending';
+        let idbStatus: RestoreSourceStatus = 'pending';
 
         if (initialProjectId) {
           try {
             cloudProject = await getProjectFromCloud(initialProjectId);
-          } catch (e) {
+            cloudStatus = cloudProject ? 'ok' : 'empty';
+          } catch (e: any) {
+            const msg = String(e?.message || '');
+            cloudStatus = msg.includes('시간 초과') ? 'timeout' : 'error';
             console.warn('[Restore] Cloud fetch failed:', e);
           }
+        } else {
+          cloudStatus = 'empty';
         }
 
-        const localData = localStorage.getItem(`vibe_video_backup_${idToLoad}`);
-        if (localData) {
-          try {
-            localProject = JSON.parse(localData);
-          } catch {}
+        try {
+          const localData = localStorage.getItem(`vibe_video_backup_${idToLoad}`);
+          if (localData) {
+            try {
+              localProject = JSON.parse(localData);
+              localStatus = 'ok';
+            } catch {
+              localStatus = 'error';
+            }
+          } else {
+            localStatus = 'empty';
+          }
+        } catch {
+          localStatus = 'error';
         }
 
         try {
           const idbData = await getProjectMeta(idToLoad);
-          if (idbData) idbProject = idbData;
-        } catch {}
+          if (idbData) {
+            idbProject = idbData;
+            idbStatus = 'ok';
+          } else {
+            idbStatus = 'empty';
+          }
+        } catch {
+          idbStatus = 'error';
+        }
 
         const scoreProject = (proj: Project): number => {
           const maxStep = proj.saved_max_step || proj.saved_step || 1;
@@ -159,6 +241,7 @@ export const useRestore = (deps: RestoreDeps) => {
         };
 
         const candidates = [cloudProject, idbProject, localProject].filter(Boolean) as Project[];
+        let p: Project | undefined;
         if (candidates.length > 0) {
           p = candidates.reduce((best, current) =>
             scoreProject(current) > scoreProject(best) ? current : best
@@ -250,7 +333,31 @@ export const useRestore = (deps: RestoreDeps) => {
           }
           if (p.caption_style) setCaptionStyle({ ...DEFAULT_CAPTION_STYLE, ...p.caption_style });
 
-          const restoredScenes = migrateSceneFields(p.saved_scenes || []);
+          let restoredScenes = migrateSceneFields(p.saved_scenes || []);
+
+          // Cloud (and the other caches) returned a project record but with
+          // zero scenes. If IndexedDB still has media for this project,
+          // synthesize empty scene slots and let the per-scene media
+          // recovery loop slot the cached media back in. This is the
+          // recovery path for projects whose cloud writes failed in past
+          // sessions due to the Firestore 403 outage.
+          if (restoredScenes.length === 0 && isExisting) {
+            try {
+              const mediaIndices = await listProjectMediaIndices(p.id);
+              if (mediaIndices.length > 0) {
+                const maxIdx = mediaIndices.reduce((m, x) => Math.max(m, x.idx), -1);
+                restoredScenes = Array.from({ length: maxIdx + 1 }, (_, i) => ({
+                  scene_number: i + 1,
+                })) as Partial<Scene>[];
+                console.log(
+                  `[Restore] Synthesized ${restoredScenes.length} scene slot(s) from IndexedDB media (${mediaIndices.length} files).`,
+                );
+              }
+            } catch (e) {
+              console.warn('[Restore] IDB media scan failed:', e);
+            }
+          }
+
           const maxForRestore = Math.max(restoredMaxStep, restoredStep);
           const recoveredScenes = await Promise.all(
             restoredScenes.map(async (s, i) => {
@@ -317,13 +424,76 @@ export const useRestore = (deps: RestoreDeps) => {
               computedMax = Math.max(computedMax, 4);
           }
           setMaxStep(computedMax);
+
+          const scenesPresent = recoveredScenes.length > 0;
+          setRestoreStatus({
+            cloud: cloudStatus,
+            local: localStatus,
+            idb: idbStatus,
+            scenes: scenesPresent ? 'present' : 'missing',
+          });
+
+          // Loaded a project record but zero scenes recovered from any
+          // source. Surface explicit guidance instead of dropping the user
+          // onto an empty Step 1 wizard. Brand new "untouched" projects
+          // (no script, no topic, no media — i.e. the user just created
+          // a shell) are excluded so they can still fall into the normal
+          // step 1 flow.
+          if (isExisting && !scenesPresent) {
+            const isUntouched =
+              !p.saved_topic &&
+              !p.saved_script &&
+              (p.saved_step || 1) <= 1 &&
+              (p.saved_max_step || 1) <= 1;
+            if (!isUntouched) {
+              const health = getFirestoreHealthInfo();
+              setRestoreError({
+                kind: 'no_scenes',
+                cloudOk: cloudStatus === 'ok',
+                firestoreDisabled: health.disabled,
+              });
+            }
+          }
+        } else {
+          setRestoreStatus({
+            cloud: cloudStatus,
+            local: localStatus,
+            idb: idbStatus,
+            scenes: 'missing',
+          });
+          if (isExisting) {
+            const health = getFirestoreHealthInfo();
+            setRestoreError({
+              kind: 'all_failed',
+              firestoreDisabled: health.disabled,
+            });
+          }
         }
       } catch (err) {
         console.error('Restore failed:', err);
+        if (isExisting) {
+          const health = getFirestoreHealthInfo();
+          setRestoreError({ kind: 'all_failed', firestoreDisabled: health.disabled });
+        }
       } finally {
+        if (slowTimerRef.current) {
+          clearTimeout(slowTimerRef.current);
+          slowTimerRef.current = null;
+        }
         setLoading(false);
       }
     };
+
     load();
-  }, [initialProjectId, userId]);
+
+    return () => {
+      if (slowTimerRef.current) {
+        clearTimeout(slowTimerRef.current);
+        slowTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialProjectId, userId, retryNonce]);
+
+  return { restoreStatus, restoreError, restoreSlow, retryRestore };
 };

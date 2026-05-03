@@ -1,7 +1,7 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { initializeFirestore, getFirestore, Firestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
-import { getAuth, Auth } from 'firebase/auth';
+import { getAuth, Auth, onAuthStateChanged } from 'firebase/auth';
 
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY || '',
@@ -39,6 +39,20 @@ if (isFirebaseConfigured()) {
     storage = getStorage(app);
     auth = getAuth(app);
     console.log("[Firebase] 서비스가 정상적으로 초기화되었습니다.");
+    // Once a user is signed in, ping the Firestore REST API to detect a
+    // wrong/disabled GCP project early. Result is cached in storageService
+    // and surfaced to the UI through getFirestoreHealthInfo().
+    try {
+      let pinged = false;
+      const off = onAuthStateChanged(auth, (u) => {
+        if (!u || pinged) return;
+        pinged = true;
+        import('./storageService')
+          .then(m => m.pingFirestoreHealth?.())
+          .catch(() => {});
+        try { off(); } catch {}
+      });
+    } catch {}
   } catch (e) {
     console.error("[Firebase] 초기화 실패:", e);
   }

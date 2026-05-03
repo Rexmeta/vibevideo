@@ -47,6 +47,80 @@ const runIdle = (cb: () => void, timeout: number = 2000) => {
   setTimeout(cb, 0);
 };
 
+// ---- Session-level Firestore health flag ----------------------------
+// When the Firestore REST API returns a permanent 403 (Cloud Firestore API
+// not enabled / wrong GCP project / IAM permission denied) we record it
+// here so subsequent cloud reads can fail fast (5s) instead of waiting on
+// the SDK's WebChannel listen for 15-60s. The flag is intentionally
+// session-scoped: refreshing the page will reattempt.
+let firestoreDisabledReason: string | null = null;
+let firestoreDisabledStatus: number | null = null;
+let firestoreDisabledProject: string | null = null;
+
+export const isFirestoreDisabled = (): boolean => firestoreDisabledReason !== null;
+export interface FirestoreHealthInfo {
+  disabled: boolean;
+  reason: string | null;
+  status: number | null;
+  projectId: string | null;
+}
+export const getFirestoreHealthInfo = (): FirestoreHealthInfo => ({
+  disabled: firestoreDisabledReason !== null,
+  reason: firestoreDisabledReason,
+  status: firestoreDisabledStatus,
+  projectId: firestoreDisabledProject,
+});
+
+const detectPermanentRestFailure = (status: number, body: string): string | null => {
+  if (status !== 403 && status !== 404) return null;
+  if (body.includes('SERVICE_DISABLED')) return 'service_disabled';
+  if (body.includes('has not been used in project') || body.includes('it is disabled'))
+    return 'service_disabled';
+  if (body.includes('PERMISSION_DENIED') && body.includes('Cloud Firestore'))
+    return 'permission_denied';
+  if (status === 404 && body.includes('database')) return 'database_not_found';
+  return null;
+};
+
+const markFirestoreDisabled = (status: number, reason: string): void => {
+  if (firestoreDisabledReason) return;
+  firestoreDisabledReason = reason;
+  firestoreDisabledStatus = status;
+  firestoreDisabledProject = getFirebaseProjectId();
+  console.error(
+    `[Config] Firestore project mismatch / disabled: status=${status} reason=${reason} project=${firestoreDisabledProject}. ` +
+      `환경 변수 FIREBASE_PROJECT_ID와 실제 Firestore가 활성화된 GCP 프로젝트가 일치하는지 확인하세요.`
+  );
+};
+
+let firestoreHealthPinged = false;
+export const pingFirestoreHealth = async (): Promise<FirestoreHealthInfo> => {
+  if (firestoreHealthPinged) return getFirestoreHealthInfo();
+  firestoreHealthPinged = true;
+  const projectId = getFirebaseProjectId();
+  const user = auth?.currentUser;
+  if (!projectId || !user) return getFirestoreHealthInfo();
+  try {
+    const token = await user.getIdToken();
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/__health__/__ping__`;
+    const resp = await withTimeout(
+      fetch(url, { headers: { Authorization: `Bearer ${token}` } }),
+      8000,
+      'Firestore health ping',
+    );
+    // 200 (doc exists) means healthy. 404 usually means "doc missing but
+    // service responded" — but it can also indicate a missing default
+    // database, so we still inspect the body for that signal.
+    if (resp.ok) return getFirestoreHealthInfo();
+    const text = await resp.text().catch(() => '');
+    const reason = detectPermanentRestFailure(resp.status, text);
+    if (reason) markFirestoreDisabled(resp.status, reason);
+  } catch {
+    // Network errors → leave flag clear; per-request paths will retry.
+  }
+  return getFirestoreHealthInfo();
+};
+
 const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} 시간 초과 (${ms / 1000}초)`)), ms);
@@ -653,8 +727,14 @@ export const saveProjectWithConflictCheck = async (project: Project): Promise<{ 
 
 export const getProjectFromCloud = async (id: string): Promise<Project | undefined> => {
   if (!id) return undefined;
-  
+
   if (db) {
+    // If we already know Firestore is permanently disabled in this session,
+    // skip the SDK entirely so the restore flow can fall through to
+    // IndexedDB / localStorage immediately instead of waiting on WebChannel.
+    if (isFirestoreDisabled()) {
+      throw new Error('Firestore disabled in this session — skipping cloud fetch');
+    }
     try {
       const projectRef = doc(db, PROJECTS_COLLECTION, id);
       const docSnap = await withTimeout(getDoc(projectRef), 15000, '프로젝트 조회');
@@ -813,9 +893,29 @@ const restDocToProject = (doc: RestDocument): Project => {
   return out as unknown as Project;
 };
 
+let projectIdMismatchChecked = false;
 const getFirebaseProjectId = (): string | null => {
   const opts = auth?.app?.options as { projectId?: string } | undefined;
-  return opts?.projectId || null;
+  const sdkId = opts?.projectId || null;
+  // Cross-check the SDK-resolved project id against the env var so a
+  // misconfigured FIREBASE_PROJECT_ID is surfaced (and the disabled flag
+  // pre-set) before we ever issue a REST call that would 403. We only
+  // log/mark once per session.
+  if (!projectIdMismatchChecked && sdkId) {
+    projectIdMismatchChecked = true;
+    try {
+      const envId =
+        (typeof process !== 'undefined' && (process as any)?.env?.FIREBASE_PROJECT_ID) || null;
+      if (envId && envId !== sdkId) {
+        console.error(
+          `[Config] Firebase project id mismatch: env FIREBASE_PROJECT_ID="${envId}" but SDK resolved "${sdkId}". ` +
+            `이 프로젝트로 보내는 Firestore REST 호출은 403 SERVICE_DISABLED를 반환할 수 있어요.`,
+        );
+        markFirestoreDisabled(0, 'project_id_mismatch');
+      }
+    } catch {}
+  }
+  return sdkId;
 };
 
 type SlimPageResult = {
@@ -868,6 +968,8 @@ const fetchSlimPageViaRest = async (
 
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
+    const reason = detectPermanentRestFailure(resp.status, text);
+    if (reason) markFirestoreDisabled(resp.status, reason);
     throw new Error(`Firestore REST ${resp.status}: ${text.slice(0, 200)}`);
   }
 
@@ -893,6 +995,15 @@ export const getProjectsPage = async (
     return { projects: local, cursor: null, hasMore: false, fromCloud: false };
   }
 
+  // If we already detected a permanent Firestore failure earlier in this
+  // session, skip the REST + SDK paths (which would each take 15s to time
+  // out) and serve from local cache directly.
+  if (isFirestoreDisabled()) {
+    console.warn('[Database] Firestore disabled in this session — serving local cache only');
+    const local = getLocalProjectsList(userId);
+    return { projects: local, cursor: null, hasMore: false, fromCloud: false };
+  }
+
   try {
     const slim = await fetchSlimPageViaRest(userId, pageSize, cursor);
     persistCardsIdle(userId, slim.projects);
@@ -901,6 +1012,12 @@ export const getProjectsPage = async (
   } catch (restError) {
     const msg = (restError as Error)?.message;
     console.warn('[Database] REST slim 실패, SDK로 재시도:', msg);
+    // REST handler may have set the disabled flag — if so, do not waste
+    // 15+15s on SDK fallbacks; serve cached cards immediately.
+    if (isFirestoreDisabled()) {
+      const local = getLocalProjectsList(userId);
+      return { projects: local, cursor: null, hasMore: false, fromCloud: false };
+    }
   }
 
   const trySdk = async (useCompoundIndex: boolean): Promise<PaginatedResult> => {
@@ -928,7 +1045,10 @@ export const getProjectsPage = async (
       );
     }
 
-    const querySnapshot = await withTimeout(getDocs(q), 15000, '프로젝트 목록 조회');
+    // Once the disabled flag is set, the SDK calls will hang on WebChannel
+    // for 60+ seconds. Cap to 5s so we fall through to local cache fast.
+    const sdkTimeout = isFirestoreDisabled() ? 5000 : 15000;
+    const querySnapshot = await withTimeout(getDocs(q), sdkTimeout, '프로젝트 목록 조회');
     const projects: Project[] = [];
     let lastUpdated: string | null = null;
     querySnapshot.forEach((docSnap) => {
@@ -963,6 +1083,12 @@ export const getProjectsPage = async (
   } catch (error) {
     const msg = (error as Error)?.message;
     console.warn('[Database] SDK compound 실패, simple로 재시도:', msg);
+    // Skip the simple fallback when we've already flagged Firestore as
+    // disabled — it will fail the same way and waste another 5s.
+    if (isFirestoreDisabled()) {
+      const local = getLocalProjectsList(userId);
+      return { projects: local, cursor: null, hasMore: false, fromCloud: false };
+    }
     try {
       return await trySdk(false);
     } catch (fallbackError) {

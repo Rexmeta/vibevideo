@@ -9,6 +9,7 @@ import {
   deleteProjectFromCloud, 
   duplicateProjectInCloud,
   subscribeToProjectsList,
+  getFirestoreHealthInfo,
   PaginatedResult,
   ProjectsListSubscription
 } from '../services/storageService';
@@ -308,6 +309,36 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
           }}
         />
       )}
+
+      {(() => {
+        const health = getFirestoreHealthInfo();
+        if (!health.disabled) return null;
+        const reasonText =
+          health.reason === 'project_id_mismatch'
+            ? 'Firebase 프로젝트 ID가 환경 변수와 일치하지 않습니다.'
+            : health.reason === 'service_disabled'
+              ? 'Cloud Firestore API가 활성화되어 있지 않습니다.'
+              : health.reason === 'permission_denied'
+                ? 'Cloud Firestore 권한이 거부되었습니다.'
+                : health.reason === 'database_not_found'
+                  ? '기본 Firestore 데이터베이스를 찾을 수 없습니다.'
+                  : 'Firestore에 접근할 수 없습니다.';
+        return (
+          <div className="mb-6 bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-900 flex flex-col gap-2">
+            <div className="font-bold flex items-center gap-2">
+              <Icons.VideoOff size={16} className="text-amber-700" />
+              Firestore 설정 점검 필요
+            </div>
+            <div className="text-amber-800">
+              {reasonText} 환경 변수 <code className="font-mono bg-amber-100 px-1.5 py-0.5 rounded text-xs">FIREBASE_PROJECT_ID</code>
+              {health.projectId && (
+                <> (현재: <code className="font-mono bg-amber-100 px-1.5 py-0.5 rounded text-xs">{health.projectId}</code>)</>
+              )}
+              와 실제 Firestore가 활성화된 GCP 프로젝트가 일치하는지 확인해 주세요. 그 동안 클라우드 동기화는 일시 중단되고 로컬 캐시만 사용됩니다.
+            </div>
+          </div>
+        );
+      })()}
 
       {showOfflineBanner && (
         <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">

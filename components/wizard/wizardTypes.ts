@@ -17,6 +17,7 @@ import {
   ContextPack,
 } from '../../types';
 import { SyncFn } from './hooks/useSync';
+import type { RestoreErrorKind, RestoreStatus } from './hooks/useRestore';
 import type { WizardMode } from './ModeGate';
 import type { ExportRiskAssessment, SafeChunkPlan } from '../../services/ffmpegLimits';
 
@@ -114,6 +115,12 @@ export interface WizardContextValue {
   setFailedScenes: React.Dispatch<React.SetStateAction<Map<string, string>>>;
   syncing: boolean;
   syncError: boolean;
+
+  // Restore (initial project load) status & UX.
+  restoreStatus: RestoreStatus;
+  restoreError: RestoreErrorKind | null;
+  restoreSlow: boolean;
+  retryRestore: () => void;
 
   // Audio / preview
   audioRef: React.MutableRefObject<HTMLAudioElement | null>;

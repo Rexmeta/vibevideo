@@ -354,7 +354,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   syncRef.current = sync;
 
   // ---- Restore on mount ----
-  useRestore({
+  const { restoreStatus, restoreError, restoreSlow, retryRestore } = useRestore({
     userId,
     initialProjectId,
     projectId,
@@ -759,6 +759,10 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setFailedScenes,
     syncing,
     syncError,
+    restoreStatus,
+    restoreError,
+    restoreSlow,
+    retryRestore,
     audioRef,
     syncAudioRef,
     playingAudioIdx,
