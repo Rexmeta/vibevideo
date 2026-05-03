@@ -40,11 +40,75 @@ export interface ExportRiskAssessment {
   device: DeviceProfile;
 }
 
-const BASE_THRESHOLDS: ResolvedThresholds = {
+export const DEFAULT_THRESHOLDS: ResolvedThresholds = {
   warnDurationSec: 90,
   blockDurationSec: 180,
   warnScenes: 12,
   blockScenes: 20,
+};
+
+export const THRESHOLD_OVERRIDES_STORAGE_KEY = 'ffmpegExportThresholdOverrides.v1';
+
+export type ThresholdOverrides = Partial<ResolvedThresholds>;
+
+const isFiniteNumber = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isFinite(v) && v > 0;
+
+const sanitizeOverrides = (raw: unknown): ThresholdOverrides => {
+  if (!raw || typeof raw !== 'object') return {};
+  const o = raw as Record<string, unknown>;
+  const out: ThresholdOverrides = {};
+  if (isFiniteNumber(o.warnDurationSec)) out.warnDurationSec = o.warnDurationSec;
+  if (isFiniteNumber(o.blockDurationSec)) out.blockDurationSec = o.blockDurationSec;
+  if (isFiniteNumber(o.warnScenes)) out.warnScenes = Math.round(o.warnScenes);
+  if (isFiniteNumber(o.blockScenes)) out.blockScenes = Math.round(o.blockScenes);
+  return out;
+};
+
+export const getUserThresholdOverrides = (): ThresholdOverrides => {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(THRESHOLD_OVERRIDES_STORAGE_KEY);
+    if (!raw) return {};
+    return sanitizeOverrides(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+};
+
+export const setUserThresholdOverrides = (overrides: ThresholdOverrides): ThresholdOverrides => {
+  const clean = sanitizeOverrides(overrides);
+  if (typeof localStorage !== 'undefined') {
+    try {
+      if (Object.keys(clean).length === 0) {
+        localStorage.removeItem(THRESHOLD_OVERRIDES_STORAGE_KEY);
+      } else {
+        localStorage.setItem(THRESHOLD_OVERRIDES_STORAGE_KEY, JSON.stringify(clean));
+      }
+    } catch {
+      /* ignore quota / disabled storage */
+    }
+  }
+  return clean;
+};
+
+export const resetUserThresholdOverrides = (): void => {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(THRESHOLD_OVERRIDES_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+};
+
+export const getEffectiveBaseThresholds = (): ResolvedThresholds => {
+  const overrides = getUserThresholdOverrides();
+  return {
+    warnDurationSec: overrides.warnDurationSec ?? DEFAULT_THRESHOLDS.warnDurationSec,
+    blockDurationSec: overrides.blockDurationSec ?? DEFAULT_THRESHOLDS.blockDurationSec,
+    warnScenes: overrides.warnScenes ?? DEFAULT_THRESHOLDS.warnScenes,
+    blockScenes: overrides.blockScenes ?? DEFAULT_THRESHOLDS.blockScenes,
+  };
 };
 
 const PIXELS_720P = 1280 * 720;
@@ -71,11 +135,12 @@ const resolveThresholds = (
   const px = Math.max(1, resolution.w * resolution.h);
   if (px >= PIXELS_1080P) scale *= 0.5;
   else if (px > PIXELS_720P) scale *= 0.75;
+  const base = getEffectiveBaseThresholds();
   return {
-    warnDurationSec: Math.max(20, BASE_THRESHOLDS.warnDurationSec * scale),
-    blockDurationSec: Math.max(40, BASE_THRESHOLDS.blockDurationSec * scale),
-    warnScenes: Math.max(3, Math.round(BASE_THRESHOLDS.warnScenes * scale)),
-    blockScenes: Math.max(5, Math.round(BASE_THRESHOLDS.blockScenes * scale)),
+    warnDurationSec: Math.max(20, base.warnDurationSec * scale),
+    blockDurationSec: Math.max(40, base.blockDurationSec * scale),
+    warnScenes: Math.max(3, Math.round(base.warnScenes * scale)),
+    blockScenes: Math.max(5, Math.round(base.blockScenes * scale)),
   };
 };
 

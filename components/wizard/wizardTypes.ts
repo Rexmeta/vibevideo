@@ -179,6 +179,7 @@ export interface WizardContextValue {
   handleSingleVideo: (idx: number) => Promise<void>;
   handleRenderPresentation: () => Promise<void>;
   exportRiskAssessment: ExportRiskAssessment;
+  refreshExportLimits: () => void;
 
   // Presentation mode helpers
   getDefaultPresentation: (idx: number) => PresentationConfig;

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
 import { ConfirmModal } from './ConfirmModal';
+import { ExportLimitsSettings } from './ExportLimitsSettings';
 
 export const Step7Export: React.FC = () => {
   const w = useWizard();
@@ -25,6 +26,7 @@ export const Step7Export: React.FC = () => {
     setStep,
     onNavigate,
     exportRiskAssessment,
+    refreshExportLimits,
   } = w;
 
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -75,6 +77,8 @@ export const Step7Export: React.FC = () => {
           모든 씬을 하나의 비디오로 합치거나, 개별 씬을 다운로드하세요.
         </p>
       </div>
+
+      <ExportLimitsSettings onChanged={refreshExportLimits} />
 
       <div className={`mb-6 rounded-3xl border-2 px-5 py-4 ${bannerStyle}`}>
         <div className="flex items-start gap-3">

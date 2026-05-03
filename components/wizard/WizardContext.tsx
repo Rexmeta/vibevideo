@@ -632,6 +632,12 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     applyDefaultMotion,
   } = usePresentationActions({ setScenes });
 
+  const [exportLimitsVersion, setExportLimitsVersion] = useState(0);
+  const refreshExportLimits = React.useCallback(
+    () => setExportLimitsVersion(v => v + 1),
+    []
+  );
+
   const {
     downloadVideo,
     handleDownloadAll,
@@ -655,6 +661,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setDownloadingAll,
     trackBlobUrl,
     getDefaultPresentation,
+    limitsVersion: exportLimitsVersion,
   });
 
   // ---- Derived state ----
@@ -803,6 +810,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     handleSingleVideo,
     handleRenderPresentation,
     exportRiskAssessment,
+    refreshExportLimits,
     getDefaultPresentation,
     updateScenePresentation,
     updateSceneTextOverlay,

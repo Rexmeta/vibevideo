@@ -30,6 +30,7 @@ interface ExportActionsDeps {
   setDownloadingAll: React.Dispatch<React.SetStateAction<boolean>>;
   trackBlobUrl: (url: string) => void;
   getDefaultPresentation: (idx: number) => PresentationConfig;
+  limitsVersion?: number;
 }
 
 export const useExportActions = (deps: ExportActionsDeps) => {
