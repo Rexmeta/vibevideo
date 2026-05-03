@@ -12,9 +12,10 @@ import {
 interface AuthPageProps {
   onNavigate: (view: ViewState) => void;
   initialMode?: 'login' | 'signup';
+  onAuthSuccess?: () => void;
 }
 
-export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, initialMode = 'login' }) => {
+export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, initialMode = 'login', onAuthSuccess }) => {
   const [mode, setMode] = useState<'login' | 'signup'>(initialMode);
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
@@ -81,7 +82,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onNavigate, initialMode = 'l
       } else {
         await signInWithEmailAndPassword(auth, email, password);
       }
-      onNavigate('projects');
+      // Don't navigate immediately — App.tsx waits for onAuthStateChanged
+      // to populate currentUser, then routes to 'projects'. Navigating now
+      // would race the gate in handleNavigate and bounce back to /login.
+      if (onAuthSuccess) {
+        onAuthSuccess();
+      } else {
+        onNavigate('projects');
+      }
     } catch (err: any) {
       console.error("Auth Error:", err);
       setError(getFirebaseErrorMessage(err.code || ''));

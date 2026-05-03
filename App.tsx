@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { NavBar } from './components/NavBar';
 import { LandingPage } from './components/LandingPage';
 import { ProjectWizard } from './components/ProjectWizard';
@@ -18,33 +18,49 @@ import { isAdminUser } from './services/modelService';
 import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from './services/apiKeyService';
 import { jobManager } from './services/jobManager';
 
+const AISTUDIO_CHECK_TIMEOUT_MS = 1500;
+
+const isAiStudioEnv = (): boolean => {
+  try { return typeof window !== 'undefined' && !!(window as any).aistudio; } catch { return false; }
+};
+
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewState>('landing');
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [wizardSessionKey, setWizardSessionKey] = useState(0);
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
-  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
+  const [hasApiKey, setHasApiKey] = useState<boolean>(() => hasAnyGoogleApiKey());
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const pendingPostAuthRef = useRef(false);
+  const setPendingPostAuth = (v: boolean) => { pendingPostAuthRef.current = v; };
 
-  // 1. Mandatory check for billing-enabled API key for Veo models
+  // 1. Non-blocking API key probe. We never gate the whole app on this —
+  //    the result only powers an inline banner / "Select Key" CTA. Veo and
+  //    other paid calls already throw their own friendly errors at call time.
   useEffect(() => {
     let cancelled = false;
 
     const checkKey = async () => {
-      try {
-        if (hasAnyGoogleApiKey()) {
-          if (!cancelled) setHasApiKey(true);
-          return;
+      // Local store first — instant, no network.
+      if (hasAnyGoogleApiKey()) {
+        if (!cancelled) setHasApiKey(true);
+        return;
+      }
+      // AI Studio embedded environment may have a host-selected key.
+      // Guard with a timeout so a hung host bridge never freezes UI.
+      if (isAiStudioEnv()) {
+        try {
+          const selected = await Promise.race<boolean>([
+            Promise.resolve((window as any).aistudio.hasSelectedApiKey()).then(v => !!v),
+            new Promise<boolean>(resolve => setTimeout(() => resolve(false), AISTUDIO_CHECK_TIMEOUT_MS)),
+          ]);
+          if (!cancelled) setHasApiKey(selected || hasAnyGoogleApiKey());
+        } catch (err) {
+          console.warn("[App] aistudio.hasSelectedApiKey failed:", err);
+          if (!cancelled) setHasApiKey(hasAnyGoogleApiKey());
         }
-        if ((window as any).aistudio) {
-          const selected = await (window as any).aistudio.hasSelectedApiKey();
-          if (!cancelled) setHasApiKey(!!selected || hasAnyGoogleApiKey());
-        } else {
-          if (!cancelled) setHasApiKey(false);
-        }
-      } catch (err) {
-        console.error("API Key check failed:", err);
+      } else {
         if (!cancelled) setHasApiKey(hasAnyGoogleApiKey());
       }
     };
@@ -52,11 +68,8 @@ const App: React.FC = () => {
     checkKey();
 
     const handleKeyChange = () => {
-      if (hasAnyGoogleApiKey()) {
-        setHasApiKey(true);
-      } else {
-        checkKey();
-      }
+      if (hasAnyGoogleApiKey()) setHasApiKey(true);
+      else checkKey();
     };
     const handleStorage = (e: StorageEvent) => {
       if (!e.key || e.key === 'vibe_model_api_keys' || e.key === 'vibe_ai_models') handleKeyChange();
@@ -80,13 +93,20 @@ const App: React.FC = () => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
       setAuthLoading(false);
-      if (!user && (currentView === 'projects' || currentView === 'create' || currentView === 'profile')) {
-        setCurrentView('landing');
-      }
-      // On sign-in, hydrate the Studio Dock with phantom cards for any
-      // project whose persisted generation_run is 'interrupted', so a
-      // refresh during a batch leaves visible "이어서 진행" entries.
-      if (user) {
+      if (!user) {
+        if (currentView === 'projects' || currentView === 'create' || currentView === 'profile' || currentView === 'admin') {
+          setCurrentView('landing');
+        }
+      } else {
+        // Defer post-auth navigation until the user object is in state, so
+        // the projects screen mounts with a populated uid in one shot.
+        if (pendingPostAuthRef.current) {
+          pendingPostAuthRef.current = false;
+          setCurrentView('projects');
+        }
+        // On sign-in, hydrate the Studio Dock with phantom cards for any
+        // project whose persisted generation_run is 'interrupted', so a
+        // refresh during a batch leaves visible "이어서 진행" entries.
         jobManager.loadInterruptedFromProjects(user.uid).catch(err =>
           console.warn('[App] loadInterruptedFromProjects failed:', err)
         );
@@ -96,16 +116,22 @@ const App: React.FC = () => {
   }, [currentView]);
 
   const handleSelectKey = async () => {
-    if ((window as any).aistudio) {
-      await (window as any).aistudio.openSelectKey();
+    if (isAiStudioEnv()) {
       try {
-        const selected = await (window as any).aistudio.hasSelectedApiKey();
-        setHasApiKey(!!selected || hasAnyGoogleApiKey());
+        await (window as any).aistudio.openSelectKey();
+        const selected = await Promise.race<boolean>([
+          Promise.resolve((window as any).aistudio.hasSelectedApiKey()).then(v => !!v),
+          new Promise<boolean>(resolve => setTimeout(() => resolve(false), AISTUDIO_CHECK_TIMEOUT_MS)),
+        ]);
+        setHasApiKey(selected || hasAnyGoogleApiKey());
       } catch {
         setHasApiKey(hasAnyGoogleApiKey());
       }
     } else {
+      // Outside AI Studio there is no host picker — direct user to the
+      // admin / settings page where they can paste a Google Cloud key.
       setHasApiKey(hasAnyGoogleApiKey());
+      if (currentUser) setCurrentView('admin');
     }
   };
 
@@ -143,7 +169,7 @@ const App: React.FC = () => {
     setWizardSessionKey(k => k + 1);
   };
 
-  if (authLoading || hasApiKey === null) {
+  if (authLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <Icons.Loader2 className="animate-spin text-brand-cyan" size={48} />
@@ -151,37 +177,11 @@ const App: React.FC = () => {
     );
   }
 
-  if (hasApiKey === false) {
-    return (
-      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center">
-        <div className="max-w-md w-full">
-          <div className="w-20 h-20 bg-brand-cyan/20 rounded-3xl flex items-center justify-center mx-auto mb-8">
-            <div className="w-10 h-10 bg-brand-cyan rounded-full animate-pulse shadow-[0_0_30px_rgba(0,255,255,0.5)]"></div>
-          </div>
-          <h1 className="text-4xl font-black mb-4 tracking-tight">API Key Required</h1>
-          <p className="text-gray-400 mb-10 leading-relaxed font-medium">
-            VibeVideo requires a billing-enabled API key from a paid Google Cloud project to generate professional AI videos with Veo 3.1.
-          </p>
-          <div className="space-y-4">
-            <button 
-              onClick={handleSelectKey}
-              className="w-full bg-brand-cyan text-black py-4 rounded-full font-black text-lg hover:scale-[1.02] active:scale-95 transition-all shadow-[0_10px_40px_rgba(0,255,255,0.3)]"
-            >
-              Select Paid API Key
-            </button>
-            <a 
-              href="https://ai.google.dev/gemini-api/docs/billing" 
-              target="_blank" 
-              rel="noreferrer"
-              className="block text-sm font-bold text-gray-500 hover:text-white transition-colors"
-            >
-              View Billing Documentation
-            </a>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // Only surface the key banner on screens where users are about to *do*
+  // something Veo-backed (create / open a project). Landing, login, signup,
+  // pricing, profile, admin all stay clean per task #81 acceptance criteria.
+  const showApiKeyBanner = !hasApiKey && !!currentUser && (currentView === 'projects' || currentView === 'create');
+  const aistudioMode = isAiStudioEnv();
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 font-sans selection:bg-brand-cyan selection:text-black">
@@ -191,6 +191,28 @@ const App: React.FC = () => {
         isLoggedIn={!!currentUser}
         isAdmin={!!currentUser && isAdminUser(currentUser.uid)}
       />
+
+      {showApiKeyBanner && (
+        <div className="bg-sky-50 border-b border-sky-200 px-4 py-3">
+          <div className="container mx-auto flex flex-col sm:flex-row sm:items-center gap-3 text-sm">
+            <Icons.Key size={16} className="text-sky-600 flex-shrink-0" />
+            <p className="text-sky-900 flex-1">
+              <span className="font-bold">
+                {aistudioMode ? 'Google AI Studio API 키가 선택되지 않았습니다.' : 'Google Cloud API 키가 설정되지 않았습니다.'}
+              </span>{' '}
+              {aistudioMode
+                ? '비디오 생성을 시작하기 전에 결제가 활성화된 키를 선택해주세요.'
+                : '비디오 생성을 시작하기 전에 결제가 활성화된 Google Cloud 프로젝트의 키를 등록해주세요.'}
+            </p>
+            <button
+              onClick={handleSelectKey}
+              className="self-start sm:self-auto px-4 py-2 rounded-full bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold transition-colors whitespace-nowrap"
+            >
+              {aistudioMode ? 'Select API Key' : '키 설정으로 이동'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {!isFirebaseConfigured() && (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
@@ -259,7 +281,8 @@ const App: React.FC = () => {
         {(currentView === 'login' || currentView === 'signup') && (
           <AuthPage 
             onNavigate={handleNavigate} 
-            initialMode={currentView === 'login' ? 'login' : 'signup'} 
+            initialMode={currentView === 'login' ? 'login' : 'signup'}
+            onAuthSuccess={() => setPendingPostAuth(true)}
           />
         )}
       </main>
