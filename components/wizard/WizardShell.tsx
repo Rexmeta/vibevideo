@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
+import { getFirestoreHealthInfo } from '../../services/storageService';
 import { Step1Setup } from './Step1Setup';
 import { Step2Script } from './Step2Script';
 import { StepsAudioImageVideo } from './StepsAudioImageVideo';
@@ -34,6 +35,7 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode, onStartF
   } = w;
 
   const projectHasProgress = (scenes && scenes.length > 0) || maxStep > 1 || step > 1;
+  const cloudDisabled = getFirestoreHealthInfo().disabled;
   const canShowSwitch = !!onSwitchMode && !syncing && !loading && !isProcessing;
 
   const [switchConfirmOpen, setSwitchConfirmOpen] = useState(false);
@@ -74,6 +76,18 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode, onStartF
           </span>
         </div>
       </div>
+
+      {/* Cloud-disabled badge: signals to the user that the workspace is
+          running off the local backup only, so cross-device visibility
+          will return once Firestore is re-enabled. */}
+      {cloudDisabled && (
+        <div className="max-w-5xl mx-auto mb-4 flex justify-center">
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-bold uppercase tracking-wider">
+            <Icons.AlertTriangle size={12} />
+            로컬 전용 모드 — 이 기기에만 저장됩니다
+          </div>
+        </div>
+      )}
 
       {/* Mode Toggle */}
       {canShowSwitch && (

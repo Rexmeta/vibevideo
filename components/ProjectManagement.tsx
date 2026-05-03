@@ -10,6 +10,7 @@ import {
   duplicateProjectInCloud,
   subscribeToProjectsList,
   getFirestoreHealthInfo,
+  backfillLocalProjectsToCloud,
   PaginatedResult,
   ProjectsListSubscription
 } from '../services/storageService';
@@ -148,6 +149,15 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
           setHasMore(result.hasMore);
           setSyncState('idle');
           runCleanupIdle(uid);
+          // Firestore answered cleanly. If any local-only snapshots
+          // accumulated while the API was down, mirror them back up.
+          backfillLocalProjectsToCloud(uid)
+            .then(n => {
+              if (n > 0) {
+                console.log(`[ProjectManagement] backfill pushed ${n} project(s) to cloud`);
+              }
+            })
+            .catch(err => console.warn('[ProjectManagement] backfill failed:', err?.message));
           return true;
         } else {
           lastError = new Error('fromCloud=false');
@@ -375,6 +385,10 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
                 <> (현재: <code className="font-mono bg-amber-100 px-1.5 py-0.5 rounded text-xs">{health.projectId}</code>)</>
               )}
               와 실제 Firestore가 활성화된 GCP 프로젝트가 일치하는지 확인해 주세요. 그 동안 클라우드 동기화는 일시 중단되고 로컬 캐시만 사용됩니다.
+            </div>
+            <div className="text-amber-700 text-xs flex items-center gap-1.5 mt-1">
+              <Icons.AlertTriangle size={12} />
+              이 기기에만 저장되고 있습니다 — 다른 기기에서는 보이지 않을 수 있어요.
             </div>
           </div>
         );

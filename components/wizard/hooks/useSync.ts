@@ -265,10 +265,138 @@ export const useSync = (deps: SyncDeps): SyncFn => {
     return payload;
   };
 
+  // Build the project snapshot synchronously from the latest refs/props.
+  // Used both by the immediate local-backup write and by the debounced
+  // cloud sync, so a step transition followed by a fast tab-close still
+  // leaves a complete local snapshot behind even though the cloud write
+  // never fires.
+  const buildProjectSnapshot = (
+    targetStep?: number,
+    scenesOverride?: Partial<Scene>[],
+    extraData: Partial<Project> = {},
+    overrides: { script?: string; topic?: string; duration?: number; maxStep?: number } = {},
+  ): Project => {
+    const currentStep = targetStep || stepRef.current;
+    const currentScenes = (scenesOverride || scenesRef.current) as Scene[];
+    const currentMaxStep = overrides.maxStep ?? Math.max(maxStepRef.current, currentStep);
+    return {
+      id: projectId,
+      user_id: userId,
+      title: overrides.topic || topicRef.current || '새 비디오 프로젝트',
+      aspect_ratio: aspectRatio,
+      style_template: videoStyle,
+      status: ProjectStatus.DRAFT,
+      created_at: createdAt,
+      updated_at: new Date().toISOString(),
+      saved_step: currentStep,
+      saved_max_step: currentMaxStep,
+      saved_mode: savedModeRef.current ?? undefined,
+      saved_script: overrides.script ?? scriptRef.current,
+      saved_scenes: currentScenes,
+      saved_topic: overrides.topic || topicRef.current,
+      saved_duration: overrides.duration ?? duration,
+      thumbnail: extraData.thumbnail || thumbnailRef.current,
+      selected_image_model: selectedImageModel,
+      selected_video_model: selectedVideoModel,
+      character_profile: characterProfileRef.current,
+      use_reference_image: useReferenceImage,
+      character_reference_image: characterReferenceImageRef.current?.startsWith('http')
+        ? characterReferenceImageRef.current
+        : (null as any),
+      character_references: (characterReferencesRef.current || []).filter(
+        c => c && c.name && c.imageUrl && c.imageUrl.startsWith('http'),
+      ),
+      scene_duration_mode: sceneDurationMode,
+      target_scene_count: targetSceneCount,
+      use_veo_audio: useVeoAudio,
+      video_mode: videoMode,
+      genre,
+      platform,
+      style_sheet: styleSheet,
+      vision_critic_enabled: visionCriticEnabled,
+      quality_threshold: qualityThreshold,
+      negative_prompt: negativePrompt || undefined,
+      stats: statsRef.current,
+      caption_style: captionStyle,
+      linked_context_pack_id: linkedContextPackIdRef.current,
+      context_pack_version: contextPackVersionRef.current,
+      context_pack_dirty: contextPackDirtyRef.current,
+      ...extraData,
+    } as Project;
+  };
+
+  // Strip in-memory media payloads from a project so it fits in
+  // localStorage / IndexedDB without ballooning the row.
+  const toLocalForm = (proj: Project): Project => ({
+    ...proj,
+    saved_scenes: proj.saved_scenes?.map(s => {
+      const c = { ...s };
+      if (c.audio_path && !c.audio_path.startsWith('http')) c.audio_path = '[local-audio]';
+      if (c.image_path && !c.image_path.startsWith('http')) c.image_path = '[local-image]';
+      if (c.video_path && !c.video_path.startsWith('http')) c.video_path = '[local-video]';
+      return c;
+    }),
+  });
+
+  const writeLocalBackupNow = (proj: Project): void => {
+    const localProj = toLocalForm(proj);
+    saveProjectMeta(projectId, localProj).catch(() => {});
+    try {
+      const lsProj = {
+        ...localProj,
+        saved_scenes: localProj.saved_scenes?.map(s => {
+          const c = { ...s };
+          delete (c as any).visual_prompt;
+          delete (c as any).audio_script;
+          return c;
+        }),
+      };
+      localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(lsProj));
+    } catch {
+      try {
+        const metaOnly = {
+          id: localProj.id,
+          user_id: localProj.user_id,
+          title: localProj.title,
+          aspect_ratio: localProj.aspect_ratio,
+          style_template: localProj.style_template,
+          status: localProj.status,
+          created_at: localProj.created_at,
+          updated_at: localProj.updated_at,
+          saved_step: localProj.saved_step,
+          saved_max_step: localProj.saved_max_step,
+          saved_mode: localProj.saved_mode,
+          saved_topic: localProj.saved_topic,
+          saved_duration: localProj.saved_duration,
+          thumbnail: localProj.thumbnail,
+          selected_image_model: localProj.selected_image_model,
+          selected_video_model: localProj.selected_video_model,
+          saved_scenes: localProj.saved_scenes?.map(s => ({
+            scene_number: s.scene_number,
+            audio_path: s.audio_path,
+            image_path: s.image_path,
+            video_path: s.video_path,
+            audio_duration: s.audio_duration,
+          })),
+        };
+        localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(metaOnly));
+      } catch {}
+    }
+  };
+
   const sync: SyncFn = (targetStep, scenesOverride, extraData = {}, overrides = {}) => {
     if (!userId) return;
     syncParamsRef.current = { targetStep, scenesOverride, extraData, overrides };
     syncPendingRef.current = true;
+
+    // Local backup is the single source of truth when the cloud is
+    // unavailable. Write it synchronously now (before the cloud debounce)
+    // so a quick tab close doesn't lose the latest step/scenes.
+    try {
+      writeLocalBackupNow(buildProjectSnapshot(targetStep, scenesOverride, extraData, overrides));
+    } catch (e) {
+      console.warn('[Sync] immediate local backup failed:', (e as Error)?.message);
+    }
 
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     pendingSyncRef.current = null;

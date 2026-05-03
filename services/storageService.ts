@@ -985,6 +985,116 @@ const fetchSlimPageViaRest = async (
   return { projects, cursor, hasMore: projects.length === pageSize };
 };
 
+/**
+ * Score a project for "richness" — used to decide which side wins when
+ * reconciling local backups against the cloud during a backfill. Same
+ * formula as the wizard's restore picker so behavior stays consistent.
+ */
+const projectProgressScore = (proj: Project | undefined | null): number => {
+  if (!proj) return -1;
+  const maxStep = (proj.saved_max_step as number) || (proj.saved_step as number) || 1;
+  const sceneCount = proj.saved_scenes?.length || 0;
+  const mediaCount =
+    proj.saved_scenes?.reduce((sum, s) => {
+      let c = 0;
+      if (s?.audio_path) c++;
+      if (s?.image_path) c++;
+      if (s?.video_path) c++;
+      return sum + c;
+    }, 0) || 0;
+  return maxStep * 1000 + sceneCount * 100 + mediaCount * 10;
+};
+
+let backfillRanForUser: string | null = null;
+let backfillInFlight = false;
+
+/**
+ * Pushes any local-only project snapshots whose progress is richer than
+ * the cloud copy back up to Firestore. Runs at most once per session per
+ * userId, and is a no-op when Firestore is currently flagged as disabled.
+ *
+ * Designed to recover from past sessions where the GCP project's
+ * Firestore API was off and every cloud write failed: as soon as the API
+ * is re-enabled and the user reopens the workspace, their local progress
+ * is mirrored back to the cloud so other devices see it again.
+ */
+export const backfillLocalProjectsToCloud = async (userId: string): Promise<number> => {
+  if (!userId || !db) return 0;
+  if (isFirestoreDisabled()) return 0;
+  if (backfillInFlight) return 0;
+  if (backfillRanForUser === userId) return 0;
+  backfillInFlight = true;
+  let pushed = 0;
+  try {
+    const localList = getLocalProjects(userId);
+    if (localList.length === 0) {
+      backfillRanForUser = userId;
+      return 0;
+    }
+    for (const card of localList) {
+      try {
+        const raw = localStorage.getItem(`vibe_video_backup_${card.id}`);
+        if (!raw) continue;
+        let local: Project;
+        try {
+          local = JSON.parse(raw) as Project;
+        } catch {
+          continue;
+        }
+        if (!local || local.user_id !== userId) continue;
+        // Compare against the current cloud doc.
+        let cloud: Project | undefined;
+        try {
+          cloud = await getProjectFromCloud(local.id);
+        } catch {
+          // If the per-project read fails, the disabled flag would've been
+          // set; bail out of the whole backfill.
+          if (isFirestoreDisabled()) break;
+          cloud = undefined;
+        }
+        const localScore = projectProgressScore(local);
+        const cloudScore = projectProgressScore(cloud);
+        if (localScore <= cloudScore) continue;
+        // Strip placeholder paths so the cloud doc doesn't end up with
+        // "[local-audio]" sentinels — those are local-only markers.
+        const pushable: Project = {
+          ...local,
+          saved_scenes: local.saved_scenes?.map(s => {
+            const c: Partial<Scene> = { ...s };
+            if (typeof c.audio_path === 'string' && !c.audio_path.startsWith('http'))
+              c.audio_path = undefined;
+            if (typeof c.image_path === 'string' && !c.image_path.startsWith('http'))
+              c.image_path = undefined;
+            if (typeof c.video_path === 'string' && !c.video_path.startsWith('http'))
+              c.video_path = undefined;
+            return c as Scene;
+          }) as Scene[] | undefined,
+        };
+        try {
+          await saveProjectToCloud(pushable, true);
+          pushed++;
+          console.log(
+            `[Backfill] Cloud updated from local snapshot: ${local.id} ` +
+              `(local=${localScore} cloud=${cloudScore})`,
+          );
+        } catch (e: any) {
+          console.warn(`[Backfill] push failed for ${local.id}:`, e?.message);
+          if (isFirestoreDisabled()) break;
+        }
+      } catch (e: any) {
+        console.warn('[Backfill] entry failed:', e?.message);
+      }
+    }
+    backfillRanForUser = userId;
+    if (pushed > 0) {
+      console.log(`[Backfill] 완료: ${pushed}개 프로젝트를 클라우드에 동기화했습니다.`);
+    }
+  } finally {
+    backfillInFlight = false;
+  }
+  return pushed;
+};
+
 export const getProjectsPage = async (
   userId: string,
   cursor?: string | null,

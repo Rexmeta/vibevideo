@@ -19,6 +19,7 @@ import {
   saveMedia,
   getMedia,
   getProjectMeta,
+  saveProjectMeta,
   listProjectMediaIndices,
 } from '../../../services/mediaCache';
 import { migrateSceneFields } from '../../../services/geminiService';
@@ -348,6 +349,7 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
           if (p.caption_style) setCaptionStyle({ ...DEFAULT_CAPTION_STYLE, ...p.caption_style });
 
           let restoredScenes = migrateSceneFields(p.saved_scenes || []);
+          let synthesizedFromIdb = false;
 
           // Cloud (and the other caches) returned a project record but with
           // zero scenes. If IndexedDB still has media for this project,
@@ -363,6 +365,7 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
                 restoredScenes = Array.from({ length: maxIdx + 1 }, (_, i) => ({
                   scene_number: i + 1,
                 })) as Partial<Scene>[];
+                synthesizedFromIdb = true;
                 console.log(
                   `[Restore] Synthesized ${restoredScenes.length} scene slot(s) from IndexedDB media (${mediaIndices.length} files).`,
                 );
@@ -372,7 +375,12 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
             }
           }
 
-          const maxForRestore = Math.max(restoredMaxStep, restoredStep);
+          // Always probe IndexedDB for media when a slot has no http(s) path.
+          // Earlier revisions gated this on `maxForRestore >= 3/4/5`, but
+          // legacy "corrupted" projects (saved_max_step=1, scenes synthesized
+          // from IDB) would then never re-attach their cached media. The
+          // probe is cheap (single keyed get per slot/type) and short-circuits
+          // when nothing is cached.
           const recoveredScenes = await Promise.all(
             restoredScenes.map(async (s, i) => {
               const sc = { ...s };
@@ -382,23 +390,17 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
                   (sc.audio_path.length > 200 && !sc.audio_path.startsWith('http')))
               ) {
                 saveMedia(p!.id, i, 'audio', sc.audio_path);
-              } else if (
-                sc.audio_path === '[local-audio]' ||
-                (!sc.audio_path && maxForRestore >= 3)
-              ) {
+              } else if (sc.audio_path === '[local-audio]' || !sc.audio_path) {
                 const cached = await getMedia(p!.id, i, 'audio');
                 if (cached) sc.audio_path = cached;
               }
               if (sc.image_path && sc.image_path.startsWith('data:')) {
                 saveMedia(p!.id, i, 'image', sc.image_path);
-              } else if (
-                sc.image_path === '[local-image]' ||
-                (!sc.image_path && maxForRestore >= 4)
-              ) {
+              } else if (sc.image_path === '[local-image]' || !sc.image_path) {
                 const cached = await getMedia(p!.id, i, 'image');
                 if (cached) sc.image_path = cached;
               }
-              if (sc.video_path === '[local-video]' || (!sc.video_path && maxForRestore >= 5)) {
+              if (sc.video_path === '[local-video]' || !sc.video_path) {
                 const cachedVideo = await getMedia(p!.id, i, 'video');
                 if (cachedVideo) {
                   try {
@@ -426,18 +428,77 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
           setScenes(recoveredScenes);
           let computedMax = restoredMaxStep;
           if (recoveredScenes.length > 0) {
-            if (recoveredScenes.some(s => s.video_path))
-              computedMax = Math.max(computedMax, 6);
-            if (recoveredScenes.every(s => s.video_path))
-              computedMax = Math.max(computedMax, 7);
+            // A non-empty scene list means script generation finished
+            // (we left Step 2). Bump baseline so legacy "saved_max_step=1
+            // but scenes exist" rows climb back to at least Step 3.
+            computedMax = Math.max(computedMax, 3);
+            if (recoveredScenes.some(s => s.audio_path))
+              computedMax = Math.max(computedMax, 4);
             if (recoveredScenes.some(s => s.image_path))
               computedMax = Math.max(computedMax, 5);
             if (recoveredScenes.every(s => s.image_path))
               computedMax = Math.max(computedMax, 5);
-            if (recoveredScenes.some(s => s.audio_path))
-              computedMax = Math.max(computedMax, 4);
+            if (recoveredScenes.some(s => s.video_path))
+              computedMax = Math.max(computedMax, 6);
+            if (recoveredScenes.every(s => s.video_path))
+              computedMax = Math.max(computedMax, 7);
           }
           setMaxStep(computedMax);
+
+          // If we found stronger evidence in IDB media than the picked
+          // record reflected (legacy corruption / failed cloud writes),
+          // also bump the visible step so the user lands on the last
+          // stage they actually reached, and write the healed snapshot
+          // back to local storage so the next reload doesn't regress.
+          const healedStep = Math.max(restoredStep, Math.min(computedMax, 7)) as 1 | 2 | 3 | 4 | 5 | 6 | 7;
+          if (healedStep !== restoredStep) {
+            setStep(healedStep);
+          }
+          if (
+            isExisting &&
+            (synthesizedFromIdb ||
+              computedMax > (p.saved_max_step || p.saved_step || 1) ||
+              healedStep > (p.saved_step || 1))
+          ) {
+            try {
+              const healed: Project = {
+                ...p,
+                saved_step: healedStep,
+                saved_max_step: computedMax,
+                saved_scenes: (recoveredScenes as Scene[]).map(s => {
+                  const c = { ...s };
+                  if (c.audio_path && !c.audio_path.startsWith('http'))
+                    c.audio_path = '[local-audio]';
+                  if (c.image_path && !c.image_path.startsWith('http'))
+                    c.image_path = '[local-image]';
+                  if (c.video_path && !c.video_path.startsWith('http'))
+                    c.video_path = '[local-video]';
+                  return c;
+                }),
+              };
+              try {
+                const lsHealed = {
+                  ...healed,
+                  saved_scenes: healed.saved_scenes?.map(s => {
+                    const c = { ...s };
+                    delete (c as any).visual_prompt;
+                    delete (c as any).audio_script;
+                    return c;
+                  }),
+                };
+                localStorage.setItem(
+                  `vibe_video_backup_${p.id}`,
+                  JSON.stringify(lsHealed),
+                );
+              } catch {}
+              saveProjectMeta(p.id, healed).catch(() => {});
+              console.log(
+                `[Restore] Healed local snapshot: step=${healedStep} maxStep=${computedMax} scenes=${recoveredScenes.length}`,
+              );
+            } catch (e) {
+              console.warn('[Restore] Healing local snapshot failed:', e);
+            }
+          }
 
           const scenesPresent = recoveredScenes.length > 0;
           setRestoreStatus({
