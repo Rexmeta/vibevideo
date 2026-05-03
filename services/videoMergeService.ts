@@ -356,11 +356,21 @@ export const mergeAllScenes = async (
   try {
   const isMulti = validInputs.length > 1;
   const partFiles: string[] = [];
+  const N = validInputs.length;
+  // Reserve 0..75 for the per-scene loop, 75..92 for the final concat,
+  // 92..100 for reading the result. Each scene further reports sub-progress
+  // (load → audio merge → caption/TS encode) so the bar advances smoothly
+  // even when N is small.
+  const sceneRange = isMulti ? 75 : 90;
+  const reportScene = (i: number, frac: number, stage: string) => {
+    const base = (i / N) * sceneRange;
+    const span = sceneRange / N;
+    onProgress?.(stage, Math.min(sceneRange, Math.round(base + frac * span)));
+  };
 
   for (let i = 0; i < validInputs.length; i++) {
     const input = validInputs[i];
-    const pct = Math.round((i / validInputs.length) * 80);
-    onProgress?.(`씬 ${i + 1} 처리 중...`, pct);
+    reportScene(i, 0, `씬 ${i + 1} 처리 중...`);
 
     const videoData = await fetchAsUint8Array(input.videoUrl);
     const videoFile = `scene_${i}.mp4`;
@@ -399,6 +409,8 @@ export const mergeAllScenes = async (
       ]);
       await ffmpeg.deleteFile(videoFile);
     }
+
+    reportScene(i, 0.45, `씬 ${i + 1} 인코딩 중...`);
 
     const hasCaptions = !!(captionStyle && captionStyle.preset !== 'none'
       && input.captionWords && input.captionWords.length > 0);
@@ -468,17 +480,19 @@ export const mergeAllScenes = async (
       try { await ffmpeg.deleteFile(mergedFile); } catch {}
       partFiles.push(tsFile);
     }
+
+    reportScene(i, 1, `씬 ${i + 1} 완료`);
   }
 
   if (partFiles.length === 1) {
-    onProgress?.('최종 파일 생성 중...', 95);
+    onProgress?.('최종 파일 생성 중...', 94);
     const data = await ffmpeg.readFile(partFiles[0]);
     try { await ffmpeg.deleteFile(partFiles[0]); } catch {}
     onProgress?.('완료!', 100);
     return new Blob([data], { type: 'video/mp4' });
   }
 
-  onProgress?.('최종 파일 생성 중...', 90);
+  onProgress?.('파트 합치는 중...', 80);
 
   const concatStr = partFiles.map(f => `file '${f}'`).join('\n');
   await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(concatStr));
@@ -492,6 +506,7 @@ export const mergeAllScenes = async (
     'final_output.mp4'
   ]);
 
+  onProgress?.('최종 파일 생성 중...', 94);
   const finalData = await ffmpeg.readFile('final_output.mp4');
 
   for (const f of partFiles) {
@@ -670,12 +685,22 @@ export const renderPresentationVideo = async (
   const useTsForConcat = !hasTransitions && scenes.length > 1;
   const clipFiles: string[] = [];
 
+  // Per-scene loop reserves 30..68 (38pp). Each scene reports sub-progress at
+  // start (motion render), mid (caption burn), and end (TS remux) so the bar
+  // doesn't sit still while a single scene is being encoded.
+  const clipLoopBase = 30;
+  const clipLoopRange = 38;
+  const reportClip = (i: number, frac: number, stage: string) => {
+    const base = clipLoopBase + (i / scenes.length) * clipLoopRange;
+    const span = clipLoopRange / scenes.length;
+    onProgress?.(stage, Math.min(clipLoopBase + clipLoopRange, Math.round(base + frac * span)));
+  };
+
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i];
     const dur = scene.duration;
     const frames = Math.round(dur * 25);
-    const pct = 30 + Math.round((i / scenes.length) * 30);
-    onProgress?.(`씬 ${i + 1} 모션 렌더링 중...`, pct);
+    reportClip(i, 0, `씬 ${i + 1} 모션 렌더링 중...`);
 
     if (scene.motion && scene.motion !== 'none') {
       const zpFilter = getZoomPanFilter(scene.motion, frames, w, h);
@@ -711,6 +736,7 @@ export const renderPresentationVideo = async (
       && scene.captionWords && scene.captionWords.length > 0);
 
     if (hasCaptions) {
+      reportClip(i, 0.45, `씬 ${i + 1} 자막 합성 중...`);
       const cappedFile = useTsForConcat ? `ts_${i}.ts` : `clip_${i}_capped.mp4`;
       const ok = await applyCaptionsToClip(
         ffmpeg,
@@ -732,6 +758,7 @@ export const renderPresentationVideo = async (
     }
 
     if (useTsForConcat && !currentClip.endsWith('.ts')) {
+      reportClip(i, 0.8, `씬 ${i + 1} 인코딩 정리 중...`);
       // Captions pass didn't run or failed for this clip — remux to TS so the
       // final concat can stay `-c copy`.
       const tsFile = `ts_${i}.ts`;
@@ -748,9 +775,10 @@ export const renderPresentationVideo = async (
     }
 
     clipFiles.push(currentClip);
+    reportClip(i, 1, `씬 ${i + 1} 완료`);
   }
 
-  onProgress?.('전환 효과 적용 중...', 65);
+  onProgress?.(hasTransitions && scenes.length > 1 ? '전환 효과 적용 중...' : '클립 합치는 중...', 72);
 
   let finalVideoFile: string;
 
@@ -809,7 +837,7 @@ export const renderPresentationVideo = async (
     try { await ffmpeg.deleteFile(f); } catch {}
   }
 
-  onProgress?.('오디오 합성 중...', 80);
+  onProgress?.('오디오 합성 중...', 84);
 
   const audioInputs = scenes.filter(s => s.audioUrl);
   let outputFile = finalVideoFile;
@@ -872,7 +900,7 @@ export const renderPresentationVideo = async (
     try { await ffmpeg.deleteFile(finalVideoFile); } catch {}
   }
 
-  onProgress?.('최종 파일 생성 중...', 95);
+  onProgress?.('최종 파일 생성 중...', 94);
 
   const finalData = await ffmpeg.readFile(outputFile);
   try { await ffmpeg.deleteFile(outputFile); } catch {}
