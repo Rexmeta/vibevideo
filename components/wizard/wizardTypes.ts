@@ -14,6 +14,7 @@ import {
   ProjectStats,
   CaptionStyle,
   CharacterReference,
+  ContextPack,
 } from '../../types';
 import { SyncFn } from './hooks/useSync';
 import type { WizardMode } from './ModeGate';
@@ -67,6 +68,17 @@ export interface WizardContextValue {
   setUseVeoAudio: React.Dispatch<React.SetStateAction<boolean>>;
   videoMode: VideoMode;
   setVideoMode: React.Dispatch<React.SetStateAction<VideoMode>>;
+  // ContextPack linkage on the active project. The wizard
+  // surfaces a "팩에서 상속됨" badge and a "팩 변경 적용" action when
+  // dirty.
+  linkedContextPackId?: string;
+  setLinkedContextPackId: React.Dispatch<React.SetStateAction<string | undefined>>;
+  linkedContextPackName?: string;
+  linkedContextPack?: ContextPack;
+  contextPackVersion?: number;
+  setContextPackVersion: React.Dispatch<React.SetStateAction<number | undefined>>;
+  contextPackDirty: boolean;
+  setContextPackDirty: React.Dispatch<React.SetStateAction<boolean>>;
   scenes: Partial<Scene>[];
   setScenes: React.Dispatch<React.SetStateAction<Partial<Scene>[]>>;
   thumbnail: string | undefined;

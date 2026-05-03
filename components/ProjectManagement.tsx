@@ -14,6 +14,8 @@ import {
 } from '../services/storageService';
 import { Icons } from './Icons';
 import { clearStoredMode, cleanupOrphanedModePrefs } from './wizard/ModeGate';
+import { NewProjectModal } from './NewProjectModal';
+import { jobManager } from '../services/jobManager';
 
 const modePrefCleanupRanByUser = new Set<string>();
 
@@ -57,6 +59,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
   const [syncState, setSyncState] = useState<SyncState>('idle');
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [showNewModal, setShowNewModal] = useState(false);
   const cursorRef = useRef<string | null>(null);
   const initialLoadDone = useRef(false);
   const mountedRef = useRef(true);
@@ -287,12 +290,24 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
           <p className="text-gray-500 mt-1">{statusLine}</p>
         </div>
         <button 
-          onClick={() => onNavigate('create')}
+          onClick={() => setShowNewModal(true)}
           className="bg-black text-white px-8 py-3 rounded-full font-bold flex items-center gap-2 hover:scale-105 transition-transform shadow-xl"
         >
           <Icons.Wand2 size={20} /> Create New Video
         </button>
       </div>
+
+      {showNewModal && (
+        <NewProjectModal
+          userId={userId}
+          onClose={() => setShowNewModal(false)}
+          onCreated={(id) => {
+            setShowNewModal(false);
+            if (onEditProject) onEditProject(id);
+            else onNavigate('create');
+          }}
+        />
+      )}
 
       {showOfflineBanner && (
         <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -344,6 +359,73 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
                   <div className="flex justify-between items-center text-[10px] font-black text-gray-400 uppercase tracking-widest">
                     <span>{new Date(project.updated_at || project.created_at).toLocaleDateString()}</span>
                     <span className="text-brand-cyan">Step {project.saved_step || 1}/7</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 mt-3">
+                    {project.linked_context_pack_id && (
+                      <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded-full bg-brand-dark text-brand-cyan flex items-center gap-1">
+                        <Icons.Layers size={9} /> 팩 연결
+                      </span>
+                    )}
+                    {project.context_pack_dirty && (
+                      <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded-full bg-amber-100 text-amber-800">
+                        팩 변경 있음
+                      </span>
+                    )}
+                    {project.generation_run?.status === 'interrupted' && (() => {
+                      const lastTs = project.generation_run.updatedAt || project.updated_at || project.created_at;
+                      const lastMs = lastTs ? new Date(lastTs).getTime() : 0;
+                      const diffMin = lastMs ? Math.max(1, Math.round((Date.now() - lastMs) / 60000)) : 0;
+                      const relLabel = !lastMs
+                        ? '마지막 실행이 중단됐습니다'
+                        : diffMin < 60
+                        ? `마지막 실행이 ${diffMin}분 전에 중단됐습니다`
+                        : diffMin < 60 * 24
+                        ? `마지막 실행이 ${Math.round(diffMin / 60)}시간 전에 중단됐습니다`
+                        : `마지막 실행이 ${Math.round(diffMin / (60 * 24))}일 전에 중단됐습니다`;
+                      return (
+                        <div className="basis-full flex flex-col gap-1.5 mt-1 p-2 rounded-lg bg-orange-50 border border-orange-200">
+                          <span className="text-[10px] font-bold text-orange-800">
+                            {relLabel} — 이어서 진행
+                          </span>
+                          <button
+                            onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            const id = await jobManager.resumeInterrupted({
+                              projectId: project.id,
+                              userId,
+                            });
+                            if (!id) {
+                              alert('이어서 처리할 미완료 씬이 없습니다.');
+                              setProjects(prev =>
+                                prev.map(p =>
+                                  p.id === project.id
+                                    ? { ...p, generation_run: undefined }
+                                    : p
+                                )
+                              );
+                              return;
+                            }
+                            // Open the project so the user sees the dock progress.
+                            if (onEditProject) onEditProject(project.id);
+                            else onNavigate('create');
+                          } catch (err: any) {
+                            alert(`재시작 실패: ${err?.message || err}`);
+                          }
+                        }}
+                            className="self-start text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded-full bg-orange-500 text-white hover:bg-orange-600 transition flex items-center gap-1"
+                            title="비디오 생성을 다시 시작하면 미완료 씬만 처리됩니다"
+                          >
+                            <Icons.RotateCcw size={9} /> 이어서 진행
+                          </button>
+                        </div>
+                      );
+                    })()}
+                    {project.generation_run?.status === 'running' && (
+                      <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 animate-pulse">
+                        진행 중
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

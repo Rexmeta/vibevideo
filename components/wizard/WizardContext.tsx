@@ -2,6 +2,8 @@ import React, { createContext, useContext, useEffect, useRef, useState } from 'r
 import { generateProjectId } from '../../services/storageService';
 import { getModels, getModelsByType } from '../../services/modelService';
 import { DEFAULT_CAPTION_STYLE } from '../../services/captionService';
+import { listPacks } from '../../services/contextPackService';
+import { jobManager } from '../../services/jobManager';
 import {
   Scene,
   ViewState,
@@ -13,6 +15,7 @@ import {
   ProjectStats,
   CaptionStyle,
   CharacterReference,
+  ContextPack,
 } from '../../types';
 import type { WizardMode } from './ModeGate';
 
@@ -79,6 +82,12 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const [targetSceneCount, setTargetSceneCount] = useState(4);
   const [useVeoAudio, setUseVeoAudio] = useState(true);
   const [videoMode, setVideoMode] = useState<VideoMode>('ai');
+  // ContextPack linkage state.
+  const [linkedContextPackId, setLinkedContextPackId] = useState<string | undefined>(undefined);
+  const [linkedContextPackName, setLinkedContextPackName] = useState<string | undefined>(undefined);
+  const [linkedContextPack, setLinkedContextPack] = useState<ContextPack | undefined>(undefined);
+  const [contextPackVersion, setContextPackVersion] = useState<number | undefined>(undefined);
+  const [contextPackDirty, setContextPackDirty] = useState<boolean>(false);
   const [scenes, setScenes] = useState<Partial<Scene>[]>([]);
   const [thumbnail, setThumbnail] = useState<string | undefined>(undefined);
   const [genre, setGenre] = useState<GenreId | undefined>(undefined);
@@ -137,6 +146,9 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const statsRef = useRef(stats);
   const characterReferenceImageRef = useRef(characterReferenceImage);
   const characterReferencesRef = useRef(characterReferences);
+  const linkedContextPackIdRef = useRef(linkedContextPackId);
+  const contextPackVersionRef = useRef(contextPackVersion);
+  const contextPackDirtyRef = useRef(contextPackDirty);
   const savedModeRef = useRef<WizardMode | null>(savedMode);
   const syncRef = useRef<WizardContextValue['sync'] | null>(null);
   const syncPendingRef = useRef<boolean>(false);
@@ -186,6 +198,15 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   useEffect(() => {
     characterReferencesRef.current = characterReferences;
   }, [characterReferences]);
+  useEffect(() => {
+    linkedContextPackIdRef.current = linkedContextPackId;
+  }, [linkedContextPackId]);
+  useEffect(() => {
+    contextPackVersionRef.current = contextPackVersion;
+  }, [contextPackVersion]);
+  useEffect(() => {
+    contextPackDirtyRef.current = contextPackDirty;
+  }, [contextPackDirty]);
 
   // ---- Blob URL tracking ----
   const trackBlobUrl = (url: string) => {
@@ -226,6 +247,29 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Resolve the linked ContextPack's display name whenever the linkage
+  // changes — used by the Studio Dock card subtitle so users can tell
+  // which pack a running batch was started from.
+  useEffect(() => {
+    if (!linkedContextPackId) {
+      setLinkedContextPackName(undefined);
+      setLinkedContextPack(undefined);
+      return;
+    }
+    let cancelled = false;
+    listPacks(userId)
+      .then(packs => {
+        if (cancelled) return;
+        const pack = packs.find(p => p.id === linkedContextPackId);
+        setLinkedContextPackName(pack?.name);
+        setLinkedContextPack(pack);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, linkedContextPackId]);
+
   // ---- Audio↔video sync (Step 6 preview) ----
   const { syncAudioWithVideo, syncCleanupRef } = useAudioVideoSync({ syncAudioRef });
 
@@ -251,6 +295,9 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     qualityThreshold,
     negativePrompt,
     captionStyle,
+    linkedContextPackIdRef,
+    contextPackVersionRef,
+    contextPackDirtyRef,
     scenesRef,
     stepRef,
     maxStepRef,
@@ -306,6 +353,9 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setNegativePrompt,
     setStats,
     setCaptionStyle,
+    setLinkedContextPackId,
+    setContextPackVersion,
+    setContextPackDirty,
     setScenes,
     characterReferencesRef,
     statsRef,
@@ -397,6 +447,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const { handleBatchVideos, handleSingleVideo } = useVideoActions({
     userId,
     projectId,
+    topic,
     aspectRatio,
     scenes,
     failedScenes,
@@ -406,6 +457,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     styleSheet,
     negativePrompt,
     characterReferenceImage,
+    linkedContextPackId,
+    linkedContextPackName,
     setProcessingType,
     setProcessingSet,
     setFailedScenes,
@@ -415,6 +468,33 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     trackBlobUrl,
     sync,
   });
+
+  // If an in-flight job for this project already exists in the global
+  // JobManager (because it started in a previous wizard mount, and the
+  // wizard has now been reopened), rebind its per-scene callbacks to
+  // this mount's updaters so live progress shows up in the wizard, not
+  // just the Studio Dock.
+  useEffect(() => {
+    if (!projectId) return;
+    const existing = jobManager.findByProject(projectId);
+    if (
+      existing &&
+      (existing.status === 'running' ||
+        existing.status === 'queued' ||
+        existing.status === 'paused')
+    ) {
+      jobManager.rebindCallbacks(existing.id, {
+        onSceneUpdate: (idx, updates) => {
+          if (updates.video_path && updates.video_path.startsWith('blob:')) {
+            trackBlobUrl(updates.video_path);
+          }
+          updateSceneAt(idx, updates);
+        },
+        onStatsDelta: delta => addStats(delta),
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   const {
     getDefaultPresentation,
@@ -500,6 +580,14 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setUseVeoAudio,
     videoMode,
     setVideoMode,
+    linkedContextPackId,
+    setLinkedContextPackId,
+    linkedContextPackName,
+    linkedContextPack,
+    contextPackVersion,
+    setContextPackVersion,
+    contextPackDirty,
+    setContextPackDirty,
     scenes,
     setScenes,
     thumbnail,

@@ -8,17 +8,21 @@ import { ProfilePage } from './components/ProfilePage';
 import { PricingPage } from './components/PricingPage';
 import { AuthPage } from './components/AuthPage';
 import { AdminPage } from './components/AdminPage';
+import { StudioDock } from './components/StudioDock';
+import { NewProjectModal } from './components/NewProjectModal';
 import { ViewState } from './types';
 import { Icons } from './components/Icons';
 import { auth, isFirebaseConfigured } from './services/firebaseConfig';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { isAdminUser } from './services/modelService';
 import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from './services/apiKeyService';
+import { jobManager } from './services/jobManager';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewState>('landing');
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [wizardSessionKey, setWizardSessionKey] = useState(0);
+  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -79,6 +83,14 @@ const App: React.FC = () => {
       if (!user && (currentView === 'projects' || currentView === 'create' || currentView === 'profile')) {
         setCurrentView('landing');
       }
+      // On sign-in, hydrate the Studio Dock with phantom cards for any
+      // project whose persisted generation_run is 'interrupted', so a
+      // refresh during a batch leaves visible "이어서 진행" entries.
+      if (user) {
+        jobManager.loadInterruptedFromProjects(user.uid).catch(err =>
+          console.warn('[App] loadInterruptedFromProjects failed:', err)
+        );
+      }
     });
     return () => unsubscribe();
   }, [currentView]);
@@ -98,15 +110,20 @@ const App: React.FC = () => {
   };
 
   const handleNavigate = (view: ViewState) => {
-    // Protected view check
     if (!currentUser && (view === 'projects' || view === 'create' || view === 'profile' || view === 'admin')) {
       setCurrentView('login');
       return;
     }
-    setCurrentView(view);
-    if (view !== 'create') {
+    if (view === 'create') {
+      // Nav "Create" always means "start a new project". If a project is
+      // currently open, drop it so the modal's blank/clone/pack flow
+      // governs the next step instead of silently keeping the old one.
       setEditingProjectId(null);
+      setShowNewProjectModal(true);
+      return;
     }
+    setCurrentView(view);
+    setEditingProjectId(null);
   };
 
   const handleEditProject = (id: string) => {
@@ -116,6 +133,12 @@ const App: React.FC = () => {
 
   const handleStartFreshProject = () => {
     setEditingProjectId(null);
+    setShowNewProjectModal(true);
+  };
+
+  const handleNewProjectCreated = (id: string) => {
+    setShowNewProjectModal(false);
+    setEditingProjectId(id);
     setCurrentView('create');
     setWizardSessionKey(k => k + 1);
   };
@@ -240,6 +263,18 @@ const App: React.FC = () => {
           />
         )}
       </main>
+
+      {currentUser && (
+        <StudioDock onOpenProject={handleEditProject} />
+      )}
+
+      {currentUser && showNewProjectModal && (
+        <NewProjectModal
+          userId={currentUser.uid}
+          onClose={() => setShowNewProjectModal(false)}
+          onCreated={handleNewProjectCreated}
+        />
+      )}
     </div>
   );
 };

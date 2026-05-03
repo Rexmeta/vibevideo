@@ -35,6 +35,7 @@ import {
   Cloud,
   RefreshCw,
   AlertCircle,
+  AlertTriangle,
   Download,
   X,
   Maximize2,
@@ -67,7 +68,7 @@ export const Icons = {
   Play, Wand2, ImageIcon, Type, Languages, Scissors, User, ArrowRight, ArrowLeft, Check, Video, VideoOff, Mic, LayoutTemplate, Loader2, ChevronRight,
   Monitor, Smartphone, Square, Layout,
   Mail, Lock, CreditCard, Bell, Settings, LogOut, FileText, Shield, Eye, EyeOff, Github, Cloud,
-  RefreshCw, AlertCircle, Download, X, Maximize2,
+  RefreshCw, AlertCircle, AlertTriangle, Download, X, Maximize2,
   Plus, Trash2, Edit3, Save, Globe, Film, RotateCcw, Search, Clock,
   ChevronDown, Key,
   Layers, Move, Palette, Sparkles, ZoomIn, ZoomOut, ArrowLeftRight, ArrowUpDown, Circle, SlidersHorizontal, Presentation, PanelLeft

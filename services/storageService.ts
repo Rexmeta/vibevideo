@@ -10,6 +10,7 @@ import {
   collection, 
   doc, 
   setDoc, 
+  updateDoc,
   getDoc, 
   getDocs, 
   getDocsFromCache,
@@ -27,7 +28,7 @@ import {
   DocumentSnapshot,
   QueryDocumentSnapshot
 } from "firebase/firestore";
-import { Project, ProjectStatus, Scene } from "../types";
+import { GenerationRun, Project, ProjectStatus, Scene } from "../types";
 
 const PROJECTS_COLLECTION = 'projects';
 const PAGE_SIZE = 20;
@@ -182,15 +183,25 @@ const isDataUrl = (s?: string): boolean => !!s && s.startsWith('data:');
 const isBase64Only = (s?: string): boolean => !!s && !s.startsWith('data:') && !s.startsWith('http') && !s.startsWith('blob:') && s.length > 200;
 const isBlobUrl = (s?: string): boolean => !!s && s.startsWith('blob:');
 
+const isFirestoreSentinel = (v: unknown): boolean => {
+  if (!v || typeof v !== 'object') return false;
+  const ctor = (v as { constructor?: { name?: string } }).constructor?.name || '';
+  return ctor.endsWith('FieldValueImpl') || ctor === 'FieldValue' || ctor.endsWith('FieldValue');
+};
+
 const removeUndefined = (obj: Record<string, any>): Record<string, any> => {
   const cleaned: Record<string, any> = {};
   for (const [key, value] of Object.entries(obj)) {
     if (value === undefined) continue;
-    if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+    if (isFirestoreSentinel(value)) {
+      cleaned[key] = value;
+    } else if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
       cleaned[key] = removeUndefined(value);
     } else if (Array.isArray(value)) {
       cleaned[key] = value.map(item =>
-        item !== null && typeof item === 'object' && !Array.isArray(item) ? removeUndefined(item) : item
+        item !== null && typeof item === 'object' && !Array.isArray(item) && !isFirestoreSentinel(item)
+          ? removeUndefined(item)
+          : item
       );
     } else {
       cleaned[key] = value;
@@ -276,6 +287,58 @@ export const uploadFileToCloud = async (path: string, data: string | Blob, forma
 };
 
 const MAX_DOC_SCENES = 50;
+
+/**
+ * Narrow Firestore update that only writes the supplied fields, no derived
+ * counters and no version bump. Used by the background JobManager to
+ * persist `generation_run` state without touching project metadata
+ * (aspect ratio, style, scene count, etc.).
+ */
+export const updateProjectFields = async (
+  projectId: string,
+  fields: Record<string, any>
+): Promise<void> => {
+  if (!projectId) return;
+  const sanitized = removeUndefined({
+    ...fields,
+    updated_at: new Date().toISOString(),
+  });
+  // Local mirror — only patch the keys we know, never overwrite the rest.
+  try {
+    const raw = localStorage.getItem(`vibe_video_backup_${projectId}`);
+    if (raw) {
+      const existing = JSON.parse(raw);
+      localStorage.setItem(
+        `vibe_video_backup_${projectId}`,
+        JSON.stringify({ ...existing, ...sanitized })
+      );
+    }
+  } catch {}
+  if (!db) return;
+  try {
+    const projectRef = doc(db, PROJECTS_COLLECTION, projectId);
+    await withTimeout(
+      updateDoc(projectRef, sanitized),
+      10000,
+      '프로젝트 부분 저장'
+    );
+  } catch (e: any) {
+    // updateDoc fails if the document does not exist yet; in that case we
+    // skip silently — persistRun is purely advisory.
+    if (e?.code !== 'not-found') {
+      console.warn('[Storage] updateProjectFields 실패:', e?.message || e);
+    }
+  }
+};
+
+export const updateProjectGenerationRun = async (
+  projectId: string,
+  run: GenerationRun | null
+): Promise<void> => {
+  return updateProjectFields(projectId, {
+    generation_run: run === null ? deleteField() : run,
+  });
+};
 
 export const saveProjectToCloud = async (project: Project, skipLocalSave: boolean = false): Promise<void> => {
   if (!project.id) return;

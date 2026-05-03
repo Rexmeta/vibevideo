@@ -854,8 +854,13 @@ async function attemptVideoGeneration(
   validRatio: '16:9' | '9:16', 
   imageData?: { imageBytes: string; mimeType: string },
   label: string = '',
-  videoModel: string = VEO_MODEL
+  videoModel: string = VEO_MODEL,
+  signal?: AbortSignal
 ): Promise<string> {
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  };
+  throwIfAborted();
   const ai = new GoogleGenAI({ apiKey });
   const payload: any = {
     model: videoModel,
@@ -893,7 +898,18 @@ async function attemptVideoGeneration(
   let consecutivePollErrors = 0;
 
   while (!operation.done && attempts < maxAttempts) {
-    await new Promise(r => setTimeout(r, pollInterval));
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(resolve, pollInterval);
+      const onAbort = () => {
+        clearTimeout(t);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
+    throwIfAborted();
     try {
       const aiPoll = new GoogleGenAI({ apiKey });
       operation = await aiPoll.operations.getVideosOperation({ operation });
@@ -964,6 +980,10 @@ export interface GenerateVideoOptions {
   // The actual seed used is reported back via GenerateVideoResult.seedSource
   // (which can downgrade to 'text-only' if image-based generation fails).
   seedPreference?: SeedSource;
+  // Optional cancellation signal. When aborted, the polling loop returns
+  // immediately with a thrown AbortError; the operation is left to the
+  // backend to garbage collect.
+  signal?: AbortSignal;
 }
 
 // NOTE: every video model currently integrated through this codebase
@@ -1097,23 +1117,26 @@ export const generateSceneVideo = async (
     ? (seedFromReference ? 'reference' : 'scene-image')
     : 'text-only';
 
+  const signal = options.signal;
   const videoUrl = await withRetry(async () => {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     if (imageData) {
       try {
-        return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, imageData, 'img', actualModel);
+        return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, imageData, 'img', actualModel, signal);
       } catch (imgErr: any) {
+        if (imgErr?.name === 'AbortError') throw imgErr;
         const msg = String(imgErr?.message || imgErr);
         console.warn(`[Video Gen] Image-based generation failed: ${msg}`);
         if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
           throw imgErr;
         }
         console.log(`[Video Gen] Falling back to text-only generation...`);
-        const url = await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt-fallback', actualModel);
+        const url = await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt-fallback', actualModel, signal);
         actualSeedSource = 'text-only';
         return url;
       }
     }
-    return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt', actualModel);
+    return await attemptVideoGeneration(fullPrompt, apiKey, validRatio, undefined, 'txt', actualModel, signal);
   }, 3, '비디오 생성');
   return {
     videoUrl,

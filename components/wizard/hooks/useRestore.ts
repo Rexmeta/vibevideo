@@ -51,6 +51,10 @@ interface RestoreDeps {
   setNegativePrompt: React.Dispatch<React.SetStateAction<string>>;
   setStats: React.Dispatch<React.SetStateAction<ProjectStats>>;
   setCaptionStyle: React.Dispatch<React.SetStateAction<CaptionStyle>>;
+  // ContextPack linkage
+  setLinkedContextPackId: React.Dispatch<React.SetStateAction<string | undefined>>;
+  setContextPackVersion: React.Dispatch<React.SetStateAction<number | undefined>>;
+  setContextPackDirty: React.Dispatch<React.SetStateAction<boolean>>;
   setScenes: React.Dispatch<React.SetStateAction<Partial<Scene>[]>>;
   characterReferencesRef: React.MutableRefObject<CharacterReference[]>;
   statsRef: React.MutableRefObject<ProjectStats>;
@@ -94,6 +98,9 @@ export const useRestore = (deps: RestoreDeps) => {
     setNegativePrompt,
     setStats,
     setCaptionStyle,
+    setLinkedContextPackId,
+    setContextPackVersion,
+    setContextPackDirty,
     setScenes,
     characterReferencesRef,
     statsRef,
@@ -227,6 +234,10 @@ export const useRestore = (deps: RestoreDeps) => {
             setVisionCriticEnabled(p.vision_critic_enabled);
           if (typeof p.quality_threshold === 'number') setQualityThreshold(p.quality_threshold);
           if (p.negative_prompt) setNegativePrompt(p.negative_prompt);
+          if (p.linked_context_pack_id) setLinkedContextPackId(p.linked_context_pack_id);
+          if (typeof p.context_pack_version === 'number')
+            setContextPackVersion(p.context_pack_version);
+          if (p.context_pack_dirty) setContextPackDirty(true);
           if (p.stats) {
             const restoredStats = {
               imagesGenerated: p.stats.imagesGenerated || 0,

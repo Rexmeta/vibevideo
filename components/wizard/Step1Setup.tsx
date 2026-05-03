@@ -1,9 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { GENRES, PLATFORMS, applyPlatformDefaults } from '../../services/presets';
 import { generateSceneImage } from '../../services/geminiService';
-import { uploadFileToCloud } from '../../services/storageService';
+import { uploadFileToCloud, updateProjectFields } from '../../services/storageService';
 import { useWizard } from './WizardContext';
+import { SaveContextPackModal } from '../SaveContextPackModal';
+import {
+  applyPackToProjectFields,
+  getPack,
+} from '../../services/contextPackService';
 
 export const Step1Setup: React.FC = () => {
   const w = useWizard();
@@ -52,7 +57,88 @@ export const Step1Setup: React.FC = () => {
     setVideoMode,
     setStep,
     setMaxStep,
+    setCaptionStyle,
   } = w;
+  // ContextPack — pulled separately so we don't widen the rest of the
+  // destructure to `any`.
+  const {
+    linkedContextPackId,
+    linkedContextPack,
+    contextPackDirty,
+    setContextPackDirty,
+    setContextPackVersion,
+    setStyleSheet,
+    setSelectedImageModel,
+    setSelectedVideoModel,
+  } = w;
+  const InheritedBadge = () =>
+    linkedContextPack ? (
+      <span
+        title={`팩 '${linkedContextPack.name}'에서 상속됨`}
+        className="inline-flex items-center gap-1 text-[9px] font-black px-1.5 py-0.5 rounded-full bg-brand-cyan/20 text-brand-dark uppercase tracking-wider align-middle"
+      >
+        <Icons.Layers size={9} /> 팩 상속
+      </span>
+    ) : null;
+
+  const [showSavePack, setShowSavePack] = useState(false);
+  const [applyingPack, setApplyingPack] = useState(false);
+
+  const handleApplyPackChanges = async () => {
+    if (!linkedContextPackId || !userId || !projectId) return;
+    setApplyingPack(true);
+    try {
+      const pack = await getPack(userId, linkedContextPackId);
+      if (!pack) {
+        alert('연결된 팩을 찾을 수 없습니다. 팩이 삭제되었을 수 있습니다.');
+        setContextPackDirty(false);
+        return;
+      }
+      const fields = applyPackToProjectFields(pack);
+      // Apply each field to wizard state if pack provides it.
+      if (fields.character_profile !== undefined)
+        setCharacterProfile(fields.character_profile || '');
+      if (fields.character_reference_image !== undefined)
+        setCharacterReferenceImage(fields.character_reference_image);
+      if (fields.character_references !== undefined)
+        setCharacterReferences(fields.character_references || []);
+      if (fields.style_sheet !== undefined) setStyleSheet(fields.style_sheet);
+      if (fields.style_template !== undefined) setVideoStyle(fields.style_template);
+      if (fields.aspect_ratio !== undefined) setAspectRatio(fields.aspect_ratio);
+      if (fields.selected_image_model !== undefined)
+        setSelectedImageModel(fields.selected_image_model);
+      if (fields.selected_video_model !== undefined)
+        setSelectedVideoModel(fields.selected_video_model);
+      if (fields.use_veo_audio !== undefined) setUseVeoAudio(fields.use_veo_audio);
+      if (fields.negative_prompt !== undefined) setNegativePrompt(fields.negative_prompt || '');
+      if (fields.vision_critic_enabled !== undefined)
+        setVisionCriticEnabled(fields.vision_critic_enabled);
+      if (typeof fields.quality_threshold === 'number')
+        setQualityThreshold(fields.quality_threshold);
+      if (fields.caption_style !== undefined) setCaptionStyle(fields.caption_style);
+      if (fields.video_mode !== undefined) setVideoMode(fields.video_mode);
+      if (fields.genre !== undefined) setGenre(fields.genre);
+      if (fields.platform !== undefined) setPlatform(fields.platform);
+
+      setContextPackVersion(pack.version);
+      setContextPackDirty(false);
+
+      try {
+        await updateProjectFields(projectId, {
+          context_pack_version: pack.version,
+          context_pack_dirty: false,
+        });
+      } catch (e) {
+        console.warn('[Step1Setup] reconcile dirty flag failed:', e);
+      }
+
+      alert('팩 변경사항이 적용되었습니다.');
+    } catch (e: any) {
+      alert(`팩 적용 실패: ${e?.message || e}`);
+    } finally {
+      setApplyingPack(false);
+    }
+  };
 
   return (
     <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full">
@@ -60,6 +146,49 @@ export const Step1Setup: React.FC = () => {
         <h2 className="text-5xl font-black text-brand-dark mb-4 tracking-tighter">Workspace Config</h2>
         <p className="text-gray-400 text-lg font-medium italic">비디오의 톤앤매너를 설정하세요.</p>
       </div>
+
+      {/* ContextPack actions header. */}
+      <div className="mb-10 flex flex-wrap items-center justify-between gap-3 p-4 rounded-3xl bg-gray-50">
+        <div className="flex items-center gap-2 text-xs font-bold text-gray-500">
+          <Icons.Layers size={14} className="text-brand-dark" />
+          {linkedContextPackId ? (
+            <span>
+              컨텍스트 팩에 연결됨
+              {contextPackDirty && (
+                <span className="ml-2 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-black uppercase tracking-wider">
+                  변경 있음
+                </span>
+              )}
+            </span>
+          ) : (
+            <span className="text-gray-400">독립 프로젝트 (팩 미연결)</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {linkedContextPackId && contextPackDirty && (
+            <button
+              onClick={handleApplyPackChanges}
+              disabled={applyingPack}
+              className="text-xs font-black bg-amber-500 text-white px-3 py-2 rounded-xl hover:brightness-110 disabled:opacity-50 flex items-center gap-1"
+            >
+              {applyingPack ? (
+                <Icons.Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Icons.RotateCcw size={12} />
+              )}
+              팩 변경 적용
+            </button>
+          )}
+          <button
+            onClick={() => setShowSavePack(true)}
+            className="text-xs font-black border-2 border-brand-dark text-brand-dark px-3 py-2 rounded-xl hover:bg-brand-dark hover:text-white transition-all flex items-center gap-1"
+          >
+            <Icons.Plus size={12} /> 컨텍스트 팩으로 저장
+          </button>
+        </div>
+      </div>
+
+      {showSavePack && <SaveContextPackModal onClose={() => setShowSavePack(false)} />}
       <div className="space-y-16">
         <section>
           <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
@@ -92,7 +221,7 @@ export const Step1Setup: React.FC = () => {
                   setPlatform(next);
                   if (next) {
                     const def = applyPlatformDefaults(next);
-                    if (def.aspectRatio) setAspectRatio(def.aspectRatio as any);
+                    if (def.aspectRatio) setAspectRatio(def.aspectRatio as '16:9' | '9:16' | '1:1' | '3:4');
                     if (def.duration) setDuration(def.duration);
                     if (def.targetSceneCount) setTargetSceneCount(def.targetSceneCount);
                   }
@@ -107,17 +236,23 @@ export const Step1Setup: React.FC = () => {
           </div>
         </section>
         <section>
-          <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-8 flex items-center gap-2">Aspect Ratio</h3>
+          <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-8 flex items-center gap-2">
+            Aspect Ratio
+            {linkedContextPack?.aspect_ratio === aspectRatio && <InheritedBadge />}
+          </h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
             {['16:9', '9:16', '1:1', '3:4'].map(r => (
-              <button key={r} onClick={() => setAspectRatio(r as any)} className={`p-8 rounded-[2.5rem] border-4 flex flex-col items-center gap-4 transition-all ${aspectRatio === r ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}>
+              <button key={r} onClick={() => setAspectRatio(r as '16:9' | '9:16' | '1:1' | '3:4')} className={`p-8 rounded-[2.5rem] border-4 flex flex-col items-center gap-4 transition-all ${aspectRatio === r ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}>
                 <span className="font-black text-xl">{r}</span>
               </button>
             ))}
           </div>
         </section>
         <section>
-          <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-8 flex items-center gap-2">Visual Style</h3>
+          <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-8 flex items-center gap-2">
+            Visual Style
+            {linkedContextPack?.video_style === videoStyle && <InheritedBadge />}
+          </h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
             {['Cute Stickman', 'Japanese Anime', 'Realistic Cinematic', '3D Pixar-like'].map(s => (
               <button key={s} onClick={() => setVideoStyle(s)} className={`p-6 rounded-[2.5rem] border-4 transition-all text-center ${videoStyle === s ? 'border-brand-cyan bg-brand-cyan/5 shadow-xl scale-[1.02]' : 'border-gray-50 hover:border-gray-100'}`}>

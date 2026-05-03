@@ -73,6 +73,78 @@ export interface Project {
   negative_prompt?: string;
   stats?: ProjectStats;
   caption_style?: CaptionStyle;
+  // Multi-project parallel + context packs.
+  // The id of the ContextPack this project inherits from (if any).
+  linked_context_pack_id?: string;
+  // Hash of the pack snapshot the project was last reconciled against.
+  // When the linked pack is edited, this becomes stale and the wizard
+  // surfaces a "팩 변경 후 미반영" badge with a one-click 적용 action.
+  context_pack_version?: number;
+  // True when the linked pack changed since this project last applied it.
+  context_pack_dirty?: boolean;
+  // Snapshot of the most recent video batch run, used to resume an
+  // interrupted job (page reload, tab close mid-batch). When status is
+  // 'interrupted' the project card / Studio dock shows "이어서 진행".
+  generation_run?: GenerationRun;
+}
+
+// Snapshot of an in-flight or interrupted video batch generation. Persisted
+// on the project document so a tab close mid-batch leaves a recoverable
+// trail. Only the video stage is tracked — image / audio batches are short
+// enough that resume is not needed.
+export interface GenerationRun {
+  id: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  stage: 'video';
+  startedAt: string;
+  updatedAt: string;
+  total: number;
+  completed: number;
+  failed: number;
+  failedIndices?: number[];
+  // Snapshot of the model the run was using, so a later resume picks up
+  // the same provider/model rather than the project's current default.
+  videoModelId?: string;
+  videoProvider?: string;
+  videoModelLabel?: string;
+}
+
+// ContextPack: a reusable bundle of "creative context" (character
+// profile, style sheet, model preferences, caption style, video config) that
+// can be linked to multiple projects. Editing the pack offers to propagate
+// changes; linked projects show a "팩에서 상속됨" badge on the affected fields.
+export interface ContextPack {
+  id: string;
+  user_id: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
+  // Monotonically incremented on each save so projects can detect a stale
+  // local snapshot (`Project.context_pack_version` !== `ContextPack.version`).
+  version: number;
+  // Inheritable fields — keep these aligned with Project's surface so the
+  // "apply pack to project" action is a straightforward field copy.
+  character_profile?: string;
+  character_reference_image?: string;
+  character_references?: CharacterReference[];
+  style_sheet?: StyleSheet;
+  video_style?: string;
+  aspect_ratio?: '16:9' | '9:16' | '1:1' | '3:4';
+  selected_image_model?: string;
+  selected_video_model?: string;
+  use_veo_audio?: boolean;
+  caption_style?: CaptionStyle;
+  video_mode?: VideoMode;
+  negative_prompt?: string;
+  vision_critic_enabled?: boolean;
+  quality_threshold?: number;
+  genre?: GenreId;
+  platform?: PlatformId;
+  // Cached count of projects currently linked to this pack — updated on
+  // save / when a project links or unlinks. Used to size the "이 팩을
+  // 사용하는 프로젝트 N개에 영향을 줍니다" warning at edit time.
+  linked_project_count?: number;
 }
 
 export interface ProjectStats {

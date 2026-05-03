@@ -43,6 +43,9 @@ interface SyncDeps {
   qualityThreshold: number;
   negativePrompt: string;
   captionStyle: CaptionStyle;
+  linkedContextPackIdRef: React.MutableRefObject<string | undefined>;
+  contextPackVersionRef: React.MutableRefObject<number | undefined>;
+  contextPackDirtyRef: React.MutableRefObject<boolean>;
   scenesRef: React.MutableRefObject<Partial<Scene>[]>;
   stepRef: React.MutableRefObject<number>;
   maxStepRef: React.MutableRefObject<number>;
@@ -83,6 +86,9 @@ export const useSync = (deps: SyncDeps): SyncFn => {
     qualityThreshold,
     negativePrompt,
     captionStyle,
+    linkedContextPackIdRef,
+    contextPackVersionRef,
+    contextPackDirtyRef,
     scenesRef,
     stepRef,
     maxStepRef,
@@ -166,6 +172,9 @@ export const useSync = (deps: SyncDeps): SyncFn => {
         negative_prompt: negativePrompt || undefined,
         stats: statsRef.current,
         caption_style: captionStyle,
+        linked_context_pack_id: linkedContextPackIdRef.current,
+        context_pack_version: contextPackVersionRef.current,
+        context_pack_dirty: contextPackDirtyRef.current,
         ...params.extraData,
       };
 
@@ -309,6 +318,9 @@ export const useSync = (deps: SyncDeps): SyncFn => {
           quality_threshold: qualityThreshold,
           negative_prompt: negativePrompt || undefined,
           stats: statsRef.current,
+          linked_context_pack_id: linkedContextPackIdRef.current,
+          context_pack_version: contextPackVersionRef.current,
+          context_pack_dirty: contextPackDirtyRef.current,
           ...params.extraData,
         };
         const localProj = {
