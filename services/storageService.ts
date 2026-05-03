@@ -340,6 +340,47 @@ export const updateProjectGenerationRun = async (
   });
 };
 
+const scenesBlobPath = (userId: string, projectId: string): string =>
+  `users/${userId}/projects/${projectId}/scenes.json`;
+
+const uploadScenesBlob = async (
+  userId: string,
+  projectId: string,
+  scenes: Record<string, any>[]
+): Promise<{ url: string; path: string } | null> => {
+  if (!storage || !userId || !projectId) return null;
+  const path = scenesBlobPath(userId, projectId);
+  try {
+    const storageRef = ref(storage, path);
+    const blob = new Blob([JSON.stringify(scenes)], { type: 'application/json' });
+    await withTimeout(
+      uploadBytes(storageRef, blob, {
+        contentType: 'application/json',
+        cacheControl: 'private, max-age=3600',
+      }),
+      30000,
+      '씬 업로드'
+    );
+    const url = await withTimeout(getDownloadURL(storageRef), 15000, '씬 URL 조회');
+    return { url, path };
+  } catch (e: any) {
+    console.warn('[Database] scenes blob upload 실패:', e?.message);
+    return null;
+  }
+};
+
+const fetchScenesBlob = async (url: string): Promise<Partial<Scene>[] | null> => {
+  try {
+    const resp = await withTimeout(fetch(url), 15000, '씬 다운로드');
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return Array.isArray(data) ? (data as Partial<Scene>[]) : null;
+  } catch (e: any) {
+    console.warn('[Database] scenes blob 다운로드 실패:', e?.message);
+    return null;
+  }
+};
+
 export const saveProjectToCloud = async (project: Project, skipLocalSave: boolean = false): Promise<void> => {
   if (!project.id) return;
   
@@ -371,26 +412,41 @@ export const saveProjectToCloud = async (project: Project, skipLocalSave: boolea
 
   try {
     const projectRef = doc(db, PROJECTS_COLLECTION, project.id);
-    const sanitizedScenes = project.saved_scenes 
-      ? sanitizeScenesForFirestore(project.saved_scenes.slice(0, MAX_DOC_SCENES))
+    const sanitizedScenes = project.saved_scenes
+      ? sanitizeScenesForFirestore(project.saved_scenes)
       : undefined;
-    
+
     const sceneCount = project.saved_scenes?.length || 0;
     const totalDuration = project.saved_scenes?.reduce((sum, s) => sum + (s.audio_duration || 0), 0) || 0;
-    
+
+    let blobInfo: { url: string; path: string } | null = null;
+    if (sanitizedScenes && sanitizedScenes.length > 0 && project.user_id) {
+      blobInfo = await uploadScenesBlob(project.user_id, project.id, sanitizedScenes);
+    }
+
     const dataToSave = removeUndefined({
       ...project,
-      saved_scenes: sanitizedScenes,
+      saved_scenes: undefined,
+      scenes_blob_url: undefined,
+      scenes_blob_path: undefined,
+      scenes_blob_updated_at: undefined,
       scene_count: sceneCount,
       total_duration: Math.round(totalDuration * 10) / 10,
       updated_at: new Date().toISOString(),
       server_updated_at: serverTimestamp(),
       version: (project as any).version ? (project as any).version + 1 : 1,
     });
-    
-    delete dataToSave.saved_scenes;
-    if (sanitizedScenes) {
-      dataToSave.saved_scenes = sanitizedScenes;
+
+    if (blobInfo) {
+      dataToSave.scenes_blob_url = blobInfo.url;
+      dataToSave.scenes_blob_path = blobInfo.path;
+      dataToSave.scenes_blob_updated_at = new Date().toISOString();
+      dataToSave.saved_scenes = deleteField();
+    } else if (sanitizedScenes) {
+      dataToSave.saved_scenes = sanitizedScenes.slice(0, MAX_DOC_SCENES);
+      dataToSave.scenes_blob_url = deleteField();
+      dataToSave.scenes_blob_path = deleteField();
+      dataToSave.scenes_blob_updated_at = deleteField();
     }
 
     const refImg = (project as any).character_reference_image;
@@ -399,7 +455,7 @@ export const saveProjectToCloud = async (project: Project, skipLocalSave: boolea
     }
 
     await withTimeout(setDoc(projectRef, dataToSave, { merge: true }), 20000, '프로젝트 저장');
-    console.log(`[Database] Project Saved Successfully: ${project.id}`);
+    console.log(`[Database] Project Saved Successfully: ${project.id}${blobInfo ? ' (scenes in blob)' : ''}`);
   } catch (error: any) {
     console.warn("[Database Save] 클라우드 저장 실패, 로컬에 백업됨:", error?.message);
     try {
@@ -421,6 +477,12 @@ export const saveProjectWithConflictCheck = async (project: Project): Promise<{ 
     return { saved: true, conflict: false };
   }
 
+  let precomputedBlob: { url: string; path: string } | null = null;
+  if (project.saved_scenes && project.saved_scenes.length > 0 && project.user_id) {
+    const sanitized = sanitizeScenesForFirestore(project.saved_scenes);
+    precomputedBlob = await uploadScenesBlob(project.user_id, project.id, sanitized);
+  }
+
   try {
     const result = await runTransaction(db, async (transaction) => {
       const projectRef = doc(db!, PROJECTS_COLLECTION, project.id);
@@ -436,23 +498,38 @@ export const saveProjectWithConflictCheck = async (project: Project): Promise<{ 
         }
       }
       
-      const sanitizedScenes = project.saved_scenes 
-        ? sanitizeScenesForFirestore(project.saved_scenes.slice(0, MAX_DOC_SCENES))
+      const sanitizedScenes = project.saved_scenes
+        ? sanitizeScenesForFirestore(project.saved_scenes)
         : undefined;
-      
+
       const sceneCount = project.saved_scenes?.length || 0;
       const totalDuration = project.saved_scenes?.reduce((sum, s) => sum + (s.audio_duration || 0), 0) || 0;
-      
+
       const dataToSave = removeUndefined({
         ...project,
-        saved_scenes: sanitizedScenes,
+        saved_scenes: undefined,
+        scenes_blob_url: undefined,
+        scenes_blob_path: undefined,
+        scenes_blob_updated_at: undefined,
         scene_count: sceneCount,
         total_duration: Math.round(totalDuration * 10) / 10,
         updated_at: new Date().toISOString(),
         server_updated_at: serverTimestamp(),
         version: (project as any).version ? (project as any).version + 1 : 1,
       });
-      
+
+      if (precomputedBlob) {
+        dataToSave.scenes_blob_url = precomputedBlob.url;
+        dataToSave.scenes_blob_path = precomputedBlob.path;
+        dataToSave.scenes_blob_updated_at = new Date().toISOString();
+        dataToSave.saved_scenes = deleteField();
+      } else if (sanitizedScenes) {
+        dataToSave.saved_scenes = sanitizedScenes.slice(0, MAX_DOC_SCENES);
+        dataToSave.scenes_blob_url = deleteField();
+        dataToSave.scenes_blob_path = deleteField();
+        dataToSave.scenes_blob_updated_at = deleteField();
+      }
+
       transaction.set(projectRef, dataToSave, { merge: true });
       return { conflict: false };
     });
@@ -474,6 +551,27 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
       const docSnap = await withTimeout(getDoc(projectRef), 15000, '프로젝트 조회');
       if (docSnap.exists()) {
         const project = docSnap.data() as Project;
+        if (project.scenes_blob_url || project.scenes_blob_path) {
+          let blobScenes: Partial<Scene>[] | null = null;
+          if (project.scenes_blob_url) {
+            blobScenes = await fetchScenesBlob(project.scenes_blob_url);
+          }
+          if (!blobScenes && project.scenes_blob_path && storage) {
+            try {
+              const freshUrl = await withTimeout(
+                getDownloadURL(ref(storage, project.scenes_blob_path)),
+                15000,
+                '씬 URL 재조회'
+              );
+              blobScenes = await fetchScenesBlob(freshUrl);
+            } catch (e: any) {
+              console.warn('[Database] scenes blob path 재조회 실패:', e?.message);
+            }
+          }
+          if (blobScenes && blobScenes.length > 0) {
+            project.saved_scenes = blobScenes as Scene[];
+          }
+        }
         try { 
           const lightProject = { ...project };
           if (lightProject.saved_scenes) {

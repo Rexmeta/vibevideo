@@ -86,6 +86,12 @@ export interface Project {
   // interrupted job (page reload, tab close mid-batch). When status is
   // 'interrupted' the project card / Studio dock shows "이어서 진행".
   generation_run?: GenerationRun;
+  // Task #76: scenes are stored in a Firebase Storage JSON blob to keep
+  // the Firestore doc small. When these are present, `saved_scenes` is
+  // hydrated from the blob on read.
+  scenes_blob_url?: string;
+  scenes_blob_path?: string;
+  scenes_blob_updated_at?: string;
 }
 
 // Snapshot of an in-flight or interrupted video batch generation. Persisted
