@@ -200,6 +200,17 @@ export interface CaptionRenderOptions {
    *   directly without an additional re-encode step.
    */
   outputFormat?: 'mp4' | 'mpegts';
+  /**
+   * Optional separate audio file (already written to the ffmpeg FS) to mux into
+   * the captioned output in the same libx264 pass. When provided, the audio
+   * track of `inputClip` is ignored and this file's audio is encoded to AAC
+   * (`-c:a aac`). When omitted, the audio of `inputClip` is reused (`-c:a copy`
+   * for mp4, re-encoded to AAC for mpegts).
+   *
+   * This lets single-scene preview/export skip a separate `mergeVideoWithAudio`
+   * pass — the audio mux + caption overlay + final encode all happen at once.
+   */
+  audioSource?: string;
 }
 
 /**
@@ -221,6 +232,7 @@ const applyCaptionsToClip = async (
 
   const { width, height, style } = opts;
   const isTs = opts.outputFormat === 'mpegts';
+  const hasExternalAudio = !!opts.audioSource;
   const blobs: Blob[] = [];
   for (let i = 0; i < words.length; i++) {
     try {
@@ -238,6 +250,10 @@ const applyCaptionsToClip = async (
   }
 
   const inputs: string[] = ['-i', inputClip];
+  if (hasExternalAudio) inputs.push('-i', opts.audioSource!);
+  // Caption PNG inputs come after the (optional) audio input so their stream
+  // indices stay sequential regardless of whether external audio is present.
+  const captionInputBase = hasExternalAudio ? 2 : 1;
   for (let k = 0; k < blobs.length; k++) inputs.push('-i', `cap_${k}.png`);
 
   let filter = '';
@@ -247,7 +263,7 @@ const applyCaptionsToClip = async (
     const startSec = Math.max(0, w.startMs / 1000);
     const endSec = Math.min(clipDurationSec, w.endMs / 1000);
     if (endSec <= startSec) continue;
-    const idx = k + 1;
+    const idx = captionInputBase + k;
     const nextLabel = k === words.length - 1 ? 'capped' : `cv${k}`;
     filter += `[${prevLabel}][${idx}:v]overlay=(W-w)/2:(H-h)/2:enable='between(t,${startSec.toFixed(3)},${endSec.toFixed(3)})'[${nextLabel}]`;
     if (k < words.length - 1) filter += ';';
@@ -257,19 +273,28 @@ const applyCaptionsToClip = async (
     filter += `;[${prevLabel}]copy[capped]`;
   }
 
-  const audioArgs = isTs ? ['-c:a', 'aac', '-b:a', '128k'] : ['-c:a', 'copy'];
+  // When an external audio file is provided we always re-encode it to AAC so
+  // the muxed output is well-formed regardless of the source codec (mp3/wav).
+  // For mp4 with built-in audio we can stream-copy; for MPEG-TS we still need
+  // AAC so the concat-demuxer stays happy.
+  const audioArgs = hasExternalAudio || isTs
+    ? ['-c:a', 'aac', '-b:a', '128k']
+    : ['-c:a', 'copy'];
+  const audioMap = hasExternalAudio ? '1:a?' : '0:a?';
   const formatArgs = isTs ? ['-f', 'mpegts'] : [];
+  const shortestArgs = hasExternalAudio ? ['-shortest'] : [];
 
   try {
     await ffmpeg.exec([
       ...inputs,
       '-filter_complex', filter,
       '-map', '[capped]',
-      '-map', '0:a?',
+      '-map', audioMap,
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-pix_fmt', 'yuv420p',
       ...audioArgs,
+      ...shortestArgs,
       ...formatArgs,
       '-y',
       outputClip,
@@ -299,10 +324,30 @@ const fetchAsUint8Array = async (url: string): Promise<Uint8Array> => {
   return await fetchFile(url);
 };
 
+export interface MergeVideoWithAudioOptions {
+  /** Optional caption words to burn into the output in the same encode pass. */
+  captionWords?: CaptionWord[];
+  /** Caption styling. Required when `captionWords` is non-empty (and not 'none'). */
+  captionStyle?: CaptionStyle;
+  /** Clip duration in seconds. Used to clamp caption end times. */
+  captionDurationSec?: number;
+  /** Aspect ratio key (e.g. '16:9') used to derive the caption render canvas. */
+  aspectRatio?: string;
+}
+
+/**
+ * Merge a single video clip with an audio track. When captions are provided
+ * and enabled, the video+audio mux, caption overlay, and final libx264 encode
+ * are all performed in a single ffmpeg invocation (via `applyCaptionsToClip`)
+ * — matching the unified encoding path used by `mergeAllScenes` /
+ * `renderPresentationVideo`. Without captions, this is a one-shot mux just
+ * like before.
+ */
 export const mergeVideoWithAudio = async (
   videoUrl: string,
   audioUrl: string,
-  outputName: string = 'output.mp4'
+  outputName: string = 'output.mp4',
+  options: MergeVideoWithAudioOptions = {}
 ): Promise<Blob> => {
   const ffmpeg = await getFFmpeg();
 
@@ -313,25 +358,58 @@ export const mergeVideoWithAudio = async (
 
   const isWav = audioUrl.includes('.wav') || audioUrl.startsWith('data:audio/wav');
   const audioExt = isWav ? 'wav' : 'mp3';
-  await ffmpeg.writeFile(`input_audio.${audioExt}`, audioData);
+  const audioFile = `input_audio.${audioExt}`;
+  await ffmpeg.writeFile(audioFile, audioData);
 
-  await ffmpeg.exec([
-    '-i', 'input_video.mp4',
-    '-i', `input_audio.${audioExt}`,
-    '-c:v', 'copy',
-    '-c:a', 'aac',
-    '-b:a', '128k',
-    '-shortest',
-    '-y',
-    outputName
-  ]);
+  const captionsEnabled = !!(
+    options.captionStyle
+    && options.captionStyle.preset !== 'none'
+    && options.captionWords
+    && options.captionWords.length > 0
+  );
+
+  let usedCaptionPass = false;
+  if (captionsEnabled) {
+    const { w, h } = getResolution(options.aspectRatio || '16:9');
+    const dur = options.captionDurationSec
+      || (options.captionWords![options.captionWords!.length - 1].endMs / 1000)
+      || 8;
+    usedCaptionPass = await applyCaptionsToClip(
+      ffmpeg,
+      'input_video.mp4',
+      outputName,
+      options.captionWords!,
+      dur,
+      {
+        style: options.captionStyle!,
+        width: w,
+        height: h,
+        audioSource: audioFile,
+      }
+    );
+  }
+
+  if (!usedCaptionPass) {
+    // No captions (or caption pass failed): fall back to the legacy single-pass
+    // mux which stream-copies the video and re-encodes the audio to AAC.
+    await ffmpeg.exec([
+      '-i', 'input_video.mp4',
+      '-i', audioFile,
+      '-c:v', 'copy',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-shortest',
+      '-y',
+      outputName
+    ]);
+  }
 
   const data = await ffmpeg.readFile(outputName);
   const blob = new Blob([data], { type: 'video/mp4' });
 
-  await ffmpeg.deleteFile('input_video.mp4');
-  await ffmpeg.deleteFile(`input_audio.${audioExt}`);
-  await ffmpeg.deleteFile(outputName);
+  try { await ffmpeg.deleteFile('input_video.mp4'); } catch {}
+  try { await ffmpeg.deleteFile(audioFile); } catch {}
+  try { await ffmpeg.deleteFile(outputName); } catch {}
 
   return blob;
 };
@@ -376,14 +454,53 @@ export const mergeAllScenes = async (
     const videoFile = `scene_${i}.mp4`;
     await ffmpeg.writeFile(videoFile, videoData);
 
-    let mergedFile: string;
+    let audioFile: string | null = null;
     if (input.audioUrl) {
       const audioData = await fetchAsUint8Array(input.audioUrl);
       const isWav = input.audioUrl.includes('.wav') || input.audioUrl.startsWith('data:audio/wav');
       const audioExt = isWav ? 'wav' : 'mp3';
-      const audioFile = `audio_${i}.${audioExt}`;
+      audioFile = `audio_${i}.${audioExt}`;
       await ffmpeg.writeFile(audioFile, audioData);
+    }
 
+    const hasCaptions = !!(captionStyle && captionStyle.preset !== 'none'
+      && input.captionWords && input.captionWords.length > 0);
+
+    // Fast path: single-scene preview/export with captions AND an external
+    // audio track. Combine the audio mux + caption overlay + final libx264
+    // encode into one ffmpeg call so the preview only triggers a single
+    // invocation instead of two.
+    //
+    // When `audioFile` is absent we deliberately stay on the legacy path: the
+    // pre-existing silent flow uses `-an` to drop any audio embedded in the
+    // source video, and we must preserve that behavior (taking the fast path
+    // here would map `0:a?` and re-introduce that embedded audio).
+    if (!isMulti && hasCaptions && audioFile) {
+      const cappedFile = `capped_${i}.mp4`;
+      const dur = input.captionDurationSec
+        || (input.captionWords![input.captionWords!.length - 1].endMs / 1000) || 8;
+      const ok = await applyCaptionsToClip(
+        ffmpeg, videoFile, cappedFile, input.captionWords!, dur,
+        {
+          style: captionStyle!,
+          width: captionRes.w,
+          height: captionRes.h,
+          audioSource: audioFile,
+        }
+      );
+      if (ok) {
+        try { await ffmpeg.deleteFile(videoFile); } catch {}
+        try { await ffmpeg.deleteFile(audioFile); } catch {}
+        partFiles.push(cappedFile);
+        reportScene(i, 1, `씬 ${i + 1} 완료`);
+        continue;
+      }
+      // Caption pass failed — fall through to the legacy 2-pass path below
+      // (videoFile and audioFile are still on the FS).
+    }
+
+    let mergedFile: string;
+    if (audioFile) {
       mergedFile = `merged_${i}.mp4`;
       await ffmpeg.exec([
         '-i', videoFile,
@@ -412,28 +529,10 @@ export const mergeAllScenes = async (
 
     reportScene(i, 0.45, `씬 ${i + 1} 인코딩 중...`);
 
-    const hasCaptions = !!(captionStyle && captionStyle.preset !== 'none'
-      && input.captionWords && input.captionWords.length > 0);
-
     if (!isMulti) {
-      // Single scene: just optionally burn captions to mp4 (no concat needed).
-      if (hasCaptions) {
-        const cappedFile = `capped_${i}.mp4`;
-        const dur = input.captionDurationSec
-          || (input.captionWords![input.captionWords!.length - 1].endMs / 1000) || 8;
-        const ok = await applyCaptionsToClip(
-          ffmpeg, mergedFile, cappedFile, input.captionWords!, dur,
-          { style: captionStyle!, width: captionRes.w, height: captionRes.h }
-        );
-        if (ok) {
-          try { await ffmpeg.deleteFile(mergedFile); } catch {}
-          partFiles.push(cappedFile);
-        } else {
-          partFiles.push(mergedFile);
-        }
-      } else {
-        partFiles.push(mergedFile);
-      }
+      // Single-scene captioned case is handled by the fast path above; only the
+      // no-captions case (or post-failure fallback) reaches here.
+      partFiles.push(mergedFile);
     } else {
       // Multi-scene: produce an MPEG-TS part directly so the final concat is `-c copy`.
       const tsFile = `part_${i}.ts`;
