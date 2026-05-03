@@ -117,6 +117,22 @@ export const useSync = (deps: SyncDeps): SyncFn => {
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSyncRef = useRef<(() => Promise<void>) | null>(null);
   const syncParamsRef = useRef<any>(null);
+
+  // Firestore rejects writes that contain `undefined` values
+  // (e.g. "Unsupported field value: undefined (found in field thumbnail)").
+  // Several optional fields on the project payload start out `undefined`
+  // for brand-new projects (thumbnail, saved_mode, saved_topic, ...), so
+  // strip any top-level `undefined` keys before handing the object off to
+  // the cloud-save layer. Local IndexedDB / localStorage paths keep the
+  // original `proj` so they continue to mirror the in-memory shape.
+  const stripUndefinedTop = <T extends Record<string, any>>(obj: T): T => {
+    const cleaned: Record<string, any> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (v === undefined) continue;
+      cleaned[k] = v;
+    }
+    return cleaned as T;
+  };
   // Cloud-form snapshot of the last successful cloud write.
   // - top-level fields are stored as-is from the most recent `proj`
   // - `saved_scenes` is stored as the sanitized cloud form
@@ -383,7 +399,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
         if (!prevSnapshot) {
           // No baseline yet: do a full save so the doc (and `saved_scenes_map`)
           // exist before we start firing dotted-path patches at it.
-          await saveProjectToCloud(proj, true);
+          await saveProjectToCloud(stripUndefinedTop(proj), true);
           lastSyncedRef.current = buildSnapshot(proj);
         } else {
           const payload = computePartialPayload(proj, prevSnapshot);
@@ -406,7 +422,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
                 '[Sync] partial save failed, falling back to full save:',
                 (partialErr as Error)?.message,
               );
-              await saveProjectToCloud(proj, true);
+              await saveProjectToCloud(stripUndefinedTop(proj), true);
               lastSyncedRef.current = buildSnapshot(proj);
             }
           }
@@ -518,7 +534,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
           };
           localStorage.setItem(`vibe_video_backup_${projectId}`, JSON.stringify(lsProj));
         } catch {}
-        saveProjectToCloud(proj, true).catch(e => console.error('Unmount sync error:', e));
+        saveProjectToCloud(stripUndefinedTop(proj), true).catch(e => console.error('Unmount sync error:', e));
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

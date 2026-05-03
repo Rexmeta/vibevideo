@@ -142,7 +142,24 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     stageStartedRef.current = new Map();
     setProgress({ stage: 'script', label: '시작합니다...', percent: 1 });
 
-    const result = await runQuickPipeline(ctx, topic, p => setProgress(p), awaitRetries);
+    // Defensive guard: runQuickPipeline catches its own per-stage errors and
+    // returns a `{ success: false, ... }` shape, but if anything unexpected
+    // escapes (e.g. a synchronous `requireApiKey()` throw from a new code
+    // path) we still want to surface a friendly message instead of leaving
+    // an uncaught promise rejection in the console.
+    let result;
+    try {
+      result = await runQuickPipeline(ctx, topic, p => setProgress(p), awaitRetries);
+    } catch (e: any) {
+      const raw = String(e?.message || '');
+      const friendly =
+        raw.includes('API 키가 설정되지 않았습니다') ||
+        raw.toLowerCase().includes('api key') ||
+        raw.toLowerCase().includes('api_key')
+          ? 'API 키가 설정되지 않았습니다. 관리 페이지에서 Gemini API 키를 설정해주세요.'
+          : raw || '알 수 없는 오류';
+      result = { success: false as const, failedStep: 2 as const, error: friendly };
+    }
 
     setRunning(false);
     setAwaitingRetries(null);
@@ -491,7 +508,7 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
             </label>
 
             <button
-              onClick={handleStart}
+              onClick={() => { void handleStart(); }}
               disabled={!topic.trim()}
               className="w-full bg-brand-dark text-white py-7 rounded-full font-black text-2xl shadow-2xl hover:scale-[1.01] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-3"
             >
@@ -785,7 +802,7 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
                 <Icons.SlidersHorizontal size={16} /> Pro Mode에서 이어서 작업
               </button>
               <button
-                onClick={() => { setFailure(null); handleStart(); }}
+                onClick={() => { setFailure(null); void handleStart(); }}
                 className="px-8 py-4 rounded-full bg-white border-2 border-gray-200 text-gray-700 font-black text-sm hover:border-brand-dark transition-all"
               >
                 다시 시도
