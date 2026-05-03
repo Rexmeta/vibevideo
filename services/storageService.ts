@@ -94,6 +94,21 @@ const markFirestoreDisabled = (status: number, reason: string): void => {
 };
 
 let firestoreHealthPinged = false;
+/**
+ * Clears the cached health-ping result so the next `pingFirestoreHealth()`
+ * call hits the REST endpoint again. Optionally also clears the
+ * "disabled" flag so a previously-failed session can recover after the
+ * GCP project's Firestore API is re-enabled, without forcing a page
+ * reload.
+ */
+export const resetFirestoreHealthCheck = (clearDisabledFlag: boolean = true): void => {
+  firestoreHealthPinged = false;
+  if (clearDisabledFlag) {
+    firestoreDisabledReason = null;
+    firestoreDisabledStatus = null;
+    firestoreDisabledProject = null;
+  }
+};
 export const pingFirestoreHealth = async (): Promise<FirestoreHealthInfo> => {
   if (firestoreHealthPinged) return getFirestoreHealthInfo();
   firestoreHealthPinged = true;
@@ -1018,11 +1033,14 @@ let backfillInFlight = false;
  * is re-enabled and the user reopens the workspace, their local progress
  * is mirrored back to the cloud so other devices see it again.
  */
-export const backfillLocalProjectsToCloud = async (userId: string): Promise<number> => {
+export const backfillLocalProjectsToCloud = async (
+  userId: string,
+  opts: { force?: boolean } = {}
+): Promise<number> => {
   if (!userId || !db) return 0;
   if (isFirestoreDisabled()) return 0;
   if (backfillInFlight) return 0;
-  if (backfillRanForUser === userId) return 0;
+  if (!opts.force && backfillRanForUser === userId) return 0;
   backfillInFlight = true;
   let pushed = 0;
   try {

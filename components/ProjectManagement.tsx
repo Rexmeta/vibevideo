@@ -11,6 +11,8 @@ import {
   subscribeToProjectsList,
   getFirestoreHealthInfo,
   backfillLocalProjectsToCloud,
+  pingFirestoreHealth,
+  resetFirestoreHealthCheck,
   PaginatedResult,
   ProjectsListSubscription
 } from '../services/storageService';
@@ -73,6 +75,25 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
   const initialLoadDone = useRef(false);
   const mountedRef = useRef(true);
   const reloadTokenRef = useRef(0);
+  const [resyncState, setResyncState] = useState<'idle' | 'running'>('idle');
+  const [resyncToast, setResyncToast] = useState<{ kind: 'info' | 'success' | 'error'; text: string } | null>(null);
+  const resyncToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showResyncToast = useCallback((kind: 'info' | 'success' | 'error', text: string, autoHideMs: number = 4000) => {
+    if (resyncToastTimer.current) clearTimeout(resyncToastTimer.current);
+    setResyncToast({ kind, text });
+    if (autoHideMs > 0) {
+      resyncToastTimer.current = setTimeout(() => {
+        if (mountedRef.current) setResyncToast(null);
+      }, autoHideMs);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (resyncToastTimer.current) clearTimeout(resyncToastTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -230,6 +251,32 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
     if (!userId) return;
     loadFromCloud(userId, true);
   }, [userId, loadFromCloud]);
+
+  const handleManualResync = useCallback(async () => {
+    if (!userId || resyncState === 'running') return;
+    setResyncState('running');
+    showResyncToast('info', '클라우드 상태를 확인하는 중...', 0);
+    try {
+      resetFirestoreHealthCheck(true);
+      const health = await pingFirestoreHealth();
+      if (health.disabled) {
+        showResyncToast('error', 'Firestore가 아직 활성화되지 않았습니다. 잠시 후 다시 시도해 주세요.', 6000);
+        return;
+      }
+      showResyncToast('info', '로컬 프로젝트를 클라우드에 동기화하는 중...', 0);
+      const pushed = await backfillLocalProjectsToCloud(userId, { force: true });
+      if (pushed > 0) {
+        showResyncToast('success', `${pushed}개 프로젝트를 클라우드에 복사했습니다.`, 5000);
+      } else {
+        showResyncToast('success', '이미 모든 프로젝트가 최신 상태입니다.', 4000);
+      }
+      loadFromCloud(userId, true);
+    } catch (err: any) {
+      showResyncToast('error', `동기화 실패: ${err?.message || err}`, 6000);
+    } finally {
+      if (mountedRef.current) setResyncState('idle');
+    }
+  }, [userId, resyncState, showResyncToast, loadFromCloud]);
 
   const loadMore = useCallback(async () => {
     if (!hasMore || loadingMore) return;
@@ -390,9 +437,59 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
               <Icons.AlertTriangle size={12} />
               이 기기에만 저장되고 있습니다 — 다른 기기에서는 보이지 않을 수 있어요.
             </div>
+            <div className="mt-2">
+              <button
+                onClick={handleManualResync}
+                disabled={resyncState === 'running'}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-amber-600 hover:bg-amber-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-bold transition-colors"
+                title="Firestore 상태를 다시 확인하고 로컬 프로젝트를 클라우드에 다시 업로드합니다"
+              >
+                {resyncState === 'running' ? (
+                  <>
+                    <Icons.Loader2 className="animate-spin w-3.5 h-3.5" />
+                    동기화 중...
+                  </>
+                ) : (
+                  <>
+                    <Icons.RefreshCw size={12} />
+                    클라우드에 다시 동기화
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         );
       })()}
+
+      {resyncToast && (
+        <div className="fixed bottom-6 right-6 z-50 max-w-sm">
+          <div
+            className={`flex items-start gap-3 px-4 py-3 rounded-2xl shadow-2xl border text-sm font-bold ${
+              resyncToast.kind === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : resyncToast.kind === 'error'
+                  ? 'bg-red-50 border-red-200 text-red-900'
+                  : 'bg-white border-gray-200 text-gray-900'
+            }`}
+          >
+            {resyncToast.kind === 'success' ? (
+              <Icons.Check size={16} className="text-emerald-600 mt-0.5 shrink-0" />
+            ) : resyncToast.kind === 'error' ? (
+              <Icons.AlertCircle size={16} className="text-red-600 mt-0.5 shrink-0" />
+            ) : (
+              <Icons.Loader2 size={16} className="animate-spin text-gray-600 mt-0.5 shrink-0" />
+            )}
+            <span className="flex-1">{resyncToast.text}</span>
+            <button
+              onClick={() => setResyncToast(null)}
+              className="text-gray-400 hover:text-gray-700 transition-colors"
+              aria-label="닫기"
+            >
+              <Icons.X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {showOfflineBanner && (
         <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
