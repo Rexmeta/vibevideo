@@ -339,8 +339,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate, initia
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <div className="relative flex-1">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                      <div className="relative flex-1 min-w-0">
                         <Icons.Key size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" />
                         <input
                           type={showProviderKeys[provider] ? 'text' : 'password'}
@@ -358,7 +358,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate, initia
                       </div>
                       <button
                         onClick={() => handleSaveProviderKey(provider)}
-                        className="flex items-center gap-1.5 px-4 py-2.5 bg-black text-white rounded-xl text-xs font-semibold hover:bg-gray-800 transition-colors flex-shrink-0"
+                        className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-black text-white rounded-xl text-xs font-semibold hover:bg-gray-800 transition-colors flex-shrink-0 w-full sm:w-auto"
                       >
                         <Icons.Save size={13} />
                         저장
