@@ -160,6 +160,13 @@ export interface WizardContextValue {
   isVideosReady: boolean;
   isPresentationMode: boolean;
 
+  // Task #95: true when this wizard session was opened from the bundled
+  // sample id and has not yet been cloned. UI uses this flag to disable
+  // edits / show the upgrade CTA.
+  isSample: boolean;
+  /** Clone the in-memory sample into a real owned project. Returns the new id. */
+  cloneSampleToProject: () => string;
+
   // Helpers / actions
   trackBlobUrl: (url: string) => void;
   revokeBlobUrl: (url?: string) => void;

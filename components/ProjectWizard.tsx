@@ -5,6 +5,7 @@ import { WizardShell } from './wizard/WizardShell';
 import { QuickMode } from './wizard/QuickMode';
 import { ModeGate, getStoredMode, setStoredMode, type WizardMode } from './wizard/ModeGate';
 import { Icons } from './Icons';
+import { isSampleProjectId } from '../services/sampleProject';
 
 interface ProjectWizardProps {
   userId: string;
@@ -12,20 +13,34 @@ interface ProjectWizardProps {
   onStartFreshProject?: () => void;
   initialProjectId?: string | null;
   onRequestSelectKey?: () => void | Promise<void>;
+  /** Task #95: Express Quick Mode preset entry. Forces quick mode + preset. */
+  expressMode?: boolean;
+  /** Task #95: Notified when a sample is cloned to a real project so the
+   *  parent can update its editingProjectId. */
+  onProjectIdChange?: (newId: string) => void;
 }
 
-const WizardModeRouter: React.FC<{ initialProjectId?: string | null; onStartFreshProject?: () => void; onNavigate: (view: ViewState) => void }> = ({ initialProjectId, onStartFreshProject, onNavigate }) => {
+const WizardModeRouter: React.FC<{
+  initialProjectId?: string | null;
+  onStartFreshProject?: () => void;
+  onNavigate: (view: ViewState) => void;
+  expressMode?: boolean;
+}> = ({ initialProjectId, onStartFreshProject, onNavigate, expressMode }) => {
   const ctx = useWizard();
   const { loading, scenes, maxStep, step, projectId, savedMode, setSavedMode, restoreError, restoreSlow, retryRestore } = ctx;
 
   // Determine if this is an existing project (skip mode gate)
-  const isExisting = !!initialProjectId;
+  const isSample = isSampleProjectId(initialProjectId);
+  const isExisting = !!initialProjectId && !isSample;
   const projectHasProgress = (scenes && scenes.length > 0) || maxStep > 1 || step > 1;
 
   // For existing projects we wait for the cloud restore to complete before picking
   // a mode so we can prefer the project record (cross-device truth) over the local
   // per-project storage key.
   const [mode, setMode] = useState<WizardMode | null>(() => {
+    // Task #95: Sample lands on Step 6 (Pro shell). Express forces Quick.
+    if (isSample) return 'pro';
+    if (expressMode) return 'quick';
     if (isExisting) return null;
     // New project: per-project key won't exist yet, so falls back to global last-used
     return getStoredMode(projectId);
@@ -136,16 +151,16 @@ const WizardModeRouter: React.FC<{ initialProjectId?: string | null; onStartFres
   }
 
   if (mode === 'quick') {
-    return <QuickMode onSwitchMode={switchMode} />;
+    return <QuickMode onSwitchMode={switchMode} expressMode={expressMode} />;
   }
 
   return <WizardShell onSwitchMode={switchMode} onStartFreshProject={onStartFreshProject} />;
 };
 
-export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate, onStartFreshProject, initialProjectId, onRequestSelectKey }) => {
+export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate, onStartFreshProject, initialProjectId, onRequestSelectKey, expressMode, onProjectIdChange }) => {
   return (
-    <WizardProvider userId={userId} onNavigate={onNavigate} initialProjectId={initialProjectId} onRequestSelectKey={onRequestSelectKey}>
-      <WizardModeRouter initialProjectId={initialProjectId} onStartFreshProject={onStartFreshProject} onNavigate={onNavigate} />
+    <WizardProvider userId={userId} onNavigate={onNavigate} initialProjectId={initialProjectId} onRequestSelectKey={onRequestSelectKey} expressMode={expressMode} onProjectIdChange={onProjectIdChange}>
+      <WizardModeRouter initialProjectId={initialProjectId} onStartFreshProject={onStartFreshProject} onNavigate={onNavigate} expressMode={expressMode} />
     </WizardProvider>
   );
 };

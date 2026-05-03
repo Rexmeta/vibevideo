@@ -34,7 +34,14 @@ const runIdle = (cb: () => void, timeout: number = 4000) => {
   setTimeout(cb, 0);
 };
 
-interface ProjectManagementProps {
+interface ProjectManagementPropsExtras {
+  /** Task #95: 1-click bundled sample. */
+  onStartSample?: () => void;
+  /** Task #95: Express Quick Mode entry. */
+  onStartExpress?: () => void;
+}
+
+interface ProjectManagementProps extends ProjectManagementPropsExtras {
   userId: string;
   onNavigate: (view: ViewState) => void;
   onEditProject?: (id: string) => void;
@@ -55,7 +62,7 @@ const mergeUniqueByDate = (a: Project[], b: Project[]): Project[] => {
   });
 };
 
-export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, onNavigate, onEditProject }) => {
+export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, onNavigate, onEditProject, onStartSample, onStartExpress }) => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [syncState, setSyncState] = useState<SyncState>('idle');
   const [hasMore, setHasMore] = useState(false);
@@ -297,6 +304,39 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
           <Icons.Wand2 size={20} /> Create New Video
         </button>
       </div>
+
+      {(onStartSample || onStartExpress) && (
+        <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {onStartSample && (
+            <button
+              onClick={onStartSample}
+              className="text-left bg-gradient-to-br from-cyan-50 to-white border-2 border-cyan-100 hover:border-brand-cyan rounded-3xl p-5 transition-all hover:shadow-lg flex items-center gap-4"
+            >
+              <div className="w-12 h-12 bg-brand-cyan rounded-2xl flex items-center justify-center shrink-0">
+                <Icons.Play size={20} className="text-black" />
+              </div>
+              <div className="flex-1">
+                <h4 className="font-black text-base">샘플로 보기</h4>
+                <p className="text-xs text-gray-500 mt-0.5">미리 만들어진 데모 프로젝트를 즉시 열어보세요. 생성 비용 없음.</p>
+              </div>
+            </button>
+          )}
+          {onStartExpress && (
+            <button
+              onClick={onStartExpress}
+              className="text-left bg-gradient-to-br from-gray-900 to-black text-white border-2 border-gray-900 rounded-3xl p-5 transition-all hover:shadow-lg flex items-center gap-4"
+            >
+              <div className="w-12 h-12 bg-brand-cyan rounded-2xl flex items-center justify-center shrink-0">
+                <Icons.Sparkles size={20} className="text-black" />
+              </div>
+              <div className="flex-1">
+                <h4 className="font-black text-base">1분 Express 모드</h4>
+                <p className="text-xs text-white/60 mt-0.5">2씬 · 10초 · 프레젠테이션 자동 설정으로 1-2분 안에 완성.</p>
+              </div>
+            </button>
+          )}
+        </div>
+      )}
 
       {showNewModal && (
         <NewProjectModal

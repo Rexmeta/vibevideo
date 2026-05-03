@@ -5,9 +5,13 @@ import { ViewState } from '../types';
 
 interface LandingPageProps {
   onNavigate: (view: ViewState) => void;
+  /** Task #95: Loads the bundled demo project straight to Step 6. */
+  onStartSample?: () => void;
+  /** Task #95: Express Quick Mode entry — 1-2 scene presentation pipeline. */
+  onStartExpress?: () => void;
 }
 
-export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
+export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate, onStartSample, onStartExpress }) => {
   return (
     <div className="bg-white min-h-screen">
       
@@ -24,15 +28,33 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
             <p className="text-xl text-gray-600 mb-8 max-w-lg">
               Fast, simple, and incredibly powerful. Start with text, image, or audio clip. Then, our AI video generator creates the entire video for you.
             </p>
-            <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex flex-col sm:flex-row gap-4 flex-wrap">
                <button 
                 onClick={() => onNavigate('projects')}
                 className="bg-brand-cyan text-black px-8 py-4 rounded-full font-bold text-lg hover:brightness-110 transition-all flex items-center justify-center gap-2"
               >
                 Get Started for free <Icons.ArrowRight size={20} />
               </button>
+              {onStartSample && (
+                <button
+                  onClick={onStartSample}
+                  className="bg-white border-2 border-gray-200 text-black px-6 py-4 rounded-full font-bold text-base hover:border-brand-cyan transition-all flex items-center justify-center gap-2"
+                >
+                  <Icons.Play size={18} /> 샘플로 보기
+                </button>
+              )}
+              {onStartExpress && (
+                <button
+                  onClick={onStartExpress}
+                  className="bg-black text-white px-6 py-4 rounded-full font-bold text-base hover:scale-[1.02] transition-all flex items-center justify-center gap-2"
+                >
+                  <Icons.Sparkles size={18} /> 1분 Express
+                </button>
+              )}
             </div>
-            <p className="mt-4 text-sm text-gray-400">No credit card required</p>
+            <p className="mt-4 text-sm text-gray-400">
+              샘플은 로그인 없이 즉시, Express는 1-2분 안에 결과물 완성
+            </p>
           </div>
           <div className="relative">
             <div className="bg-[#E0F7FA] rounded-[3rem] p-4 rotate-2 hover:rotate-0 transition-all duration-500">

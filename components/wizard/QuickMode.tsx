@@ -8,6 +8,9 @@ import type { Scene } from '../../types';
 
 interface Props {
   onSwitchMode: (mode: WizardMode) => void;
+  /** Task #95: Express preset banner — purely visual; preset values are
+   *  already applied via WizardContext lazy-init. */
+  expressMode?: boolean;
 }
 
 type SceneStageStatus = 'queued' | 'waiting' | 'in-progress' | 'done' | 'failed';
@@ -53,7 +56,7 @@ const formatRealized = (ms: number | undefined): string | null => {
   return `${m}m ${r}s`;
 };
 
-export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
+export const QuickMode: React.FC<Props> = ({ onSwitchMode, expressMode }) => {
   const ctx = useWizard();
   const {
     topic,
@@ -85,6 +88,10 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
     handleBatchAudio,
     handleBatchImages,
     handleBatchVideos,
+    handleRenderPresentation,
+    setStep,
+    setMaxStep,
+    onNavigate,
   } = ctx;
 
   const [progress, setProgress] = useState<QuickPipelineProgress | null>(null);
@@ -173,7 +180,19 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
       // manual "Pro Mode로 전환" button is hidden during this window so
       // it can't fight the auto-handoff or be clicked accidentally.
       setHandoffPending(true);
-      await new Promise(r => setTimeout(r, 5000));
+      // Task #95 Express: drive all the way to Step 7 (Export) so the
+      // user lands on the final export screen with the merged video
+      // ready (or rendering). For non-express runs we keep the original
+      // Step-6 handoff so Quick users can review before exporting.
+      if (expressMode) {
+        setStep(7);
+        setMaxStep(prev => Math.max(prev, 7));
+        // Kick presentation render in the background — it pushes the
+        // merged video URL into context so Step 7 shows the result
+        // without an extra click.
+        void handleRenderPresentation();
+      }
+      await new Promise(r => setTimeout(r, expressMode ? 1500 : 5000));
       setStoredMode('pro', projectId);
       onSwitchMode('pro');
     }
@@ -416,9 +435,20 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
       <div className="text-center mb-10">
         <div className="inline-flex items-center gap-2 mb-4 px-4 py-1.5 rounded-full bg-brand-cyan/10 text-brand-dark text-[11px] font-black uppercase tracking-widest">
           <Icons.Wand2 size={14} /> Quick Mode
+          {expressMode && (
+            <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-black text-brand-cyan">
+              <Icons.Sparkles size={10} /> Express
+            </span>
+          )}
         </div>
-        <h1 className="text-5xl font-black tracking-tighter text-brand-dark mb-3">한 번에 만들기</h1>
-        <p className="text-gray-500 italic font-medium">주제를 입력하고 시작 버튼을 누르면 AI가 모든 것을 처리합니다.</p>
+        <h1 className="text-5xl font-black tracking-tighter text-brand-dark mb-3">
+          {expressMode ? '1분 Express 영상' : '한 번에 만들기'}
+        </h1>
+        <p className="text-gray-500 italic font-medium">
+          {expressMode
+            ? '2씬 · 16초 · 프레젠테이션 모드로 1-2분 안에 완성됩니다. 주제만 입력하세요.'
+            : '주제를 입력하고 시작 버튼을 누르면 AI가 모든 것을 처리합니다.'}
+        </p>
       </div>
 
       <div className="bg-white rounded-[3.5rem] shadow-2xl p-10 md:p-14 border border-gray-50">
@@ -441,7 +471,9 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
                 <select
                   value={duration}
                   onChange={e => setDuration(Number(e.target.value))}
-                  className="w-full px-4 py-3 bg-gray-50 rounded-2xl text-sm font-bold border-2 border-transparent focus:border-brand-cyan outline-none"
+                  disabled={expressMode}
+                  title={expressMode ? 'Express 모드는 16초로 고정됩니다' : undefined}
+                  className="w-full px-4 py-3 bg-gray-50 rounded-2xl text-sm font-bold border-2 border-transparent focus:border-brand-cyan outline-none disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {[16, 24, 32, 48, 60, 90, 120].map(d => (
                     <option key={d} value={d}>{d}초</option>
@@ -476,8 +508,10 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <button
-                onClick={() => setVideoMode(videoMode === 'ai' ? 'presentation' : 'ai')}
-                className={`p-5 rounded-[1.5rem] border-2 text-left transition-all ${videoMode === 'ai' ? 'border-brand-cyan bg-brand-cyan/5' : 'border-gray-100 hover:border-gray-200'}`}
+                onClick={() => !expressMode && setVideoMode(videoMode === 'ai' ? 'presentation' : 'ai')}
+                disabled={expressMode}
+                title={expressMode ? 'Express 모드는 Presentation으로 고정됩니다' : undefined}
+                className={`p-5 rounded-[1.5rem] border-2 text-left transition-all disabled:opacity-50 disabled:cursor-not-allowed ${videoMode === 'ai' ? 'border-brand-cyan bg-brand-cyan/5' : 'border-gray-100 hover:border-gray-200'}`}
               >
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs font-black uppercase">AI Video</span>
@@ -486,25 +520,30 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
                 <p className="text-[10px] text-gray-400">Veo로 직접 동영상 생성 (씬당 ~1분 + 60초 대기)</p>
               </button>
               <button
-                onClick={() => setVideoMode(videoMode === 'presentation' ? 'ai' : 'presentation')}
-                className={`p-5 rounded-[1.5rem] border-2 text-left transition-all ${videoMode === 'presentation' ? 'border-brand-cyan bg-brand-cyan/5' : 'border-gray-100 hover:border-gray-200'}`}
+                onClick={() => !expressMode && setVideoMode(videoMode === 'presentation' ? 'ai' : 'presentation')}
+                disabled={expressMode}
+                title={expressMode ? 'Express 모드는 Presentation으로 고정됩니다' : undefined}
+                className={`p-5 rounded-[1.5rem] border-2 text-left transition-all disabled:opacity-100 disabled:cursor-not-allowed ${videoMode === 'presentation' ? 'border-brand-cyan bg-brand-cyan/5' : 'border-gray-100 hover:border-gray-200'}`}
               >
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-black uppercase">Presentation</span>
+                  <span className="text-xs font-black uppercase">Presentation{expressMode && ' · 고정'}</span>
                   {videoMode === 'presentation' && <Icons.Check size={16} className="text-brand-cyan" />}
                 </div>
                 <p className="text-[10px] text-gray-400">이미지 + 전환 효과 (가장 빠름, 비디오 단계 생략)</p>
               </button>
             </div>
 
-            <label className="flex items-center gap-3 cursor-pointer">
+            <label className={`flex items-center gap-3 ${expressMode ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}>
               <input
                 type="checkbox"
                 checked={useVeoAudio}
                 onChange={e => setUseVeoAudio(e.target.checked)}
-                className="w-4 h-4 accent-brand-cyan"
+                disabled={expressMode}
+                className="w-4 h-4 accent-brand-cyan disabled:cursor-not-allowed"
               />
-              <span className="text-sm font-bold text-gray-700">Veo 내장 오디오 사용 (별도 TTS 단계 생략)</span>
+              <span className="text-sm font-bold text-gray-700">
+                Veo 내장 오디오 사용 (별도 TTS 단계 생략){expressMode && ' · Express 고정'}
+              </span>
             </label>
 
             <button
@@ -613,6 +652,35 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode }) => {
                 );
               })}
             </div>
+
+            {/* Express upgrade CTA: surfaced once the express run finishes
+                so the user can opt into the richer Pro pipeline (AI Video
+                + Vision Critic) before the auto-handoff fires. */}
+            {expressMode && activeStage === 'done' && !failure && (
+              <div className="mt-8 max-w-xl mx-auto px-6 py-5 rounded-3xl bg-gradient-to-r from-cyan-50 via-white to-purple-50 border-2 border-cyan-100 flex flex-col sm:flex-row items-center gap-4">
+                <div className="w-12 h-12 bg-brand-cyan rounded-2xl flex items-center justify-center shrink-0">
+                  <Icons.Sparkles size={22} className="text-black" />
+                </div>
+                <div className="flex-1 text-center sm:text-left">
+                  <h4 className="font-black text-base">Express 영상이 완성됐어요</h4>
+                  <p className="text-xs text-gray-500 mt-0.5">AI Video와 Vision Critic까지 더해 더 깊이 있는 영상을 만들어보세요.</p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+                  <button
+                    onClick={() => onNavigate('create')}
+                    className="px-5 py-3 rounded-full bg-white border-2 border-black text-black font-black text-sm hover:scale-105 transition-all"
+                  >
+                    내 주제로 새로 만들기
+                  </button>
+                  <button
+                    onClick={handleHandoff}
+                    className="px-6 py-3 rounded-full bg-black text-white font-black text-sm hover:scale-105 transition-all flex items-center gap-2"
+                  >
+                    AI 영상으로 업그레이드 <Icons.ArrowRight size={16} />
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Final per-stage timing summary, shown briefly before the
                 auto-handoff to Pro mode. */}

@@ -18,6 +18,7 @@ import { isAdminUser } from './services/modelService';
 import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from './services/apiKeyService';
 import { jobManager } from './services/jobManager';
 import { uploadQueue } from './services/uploadQueue';
+import { SAMPLE_PROJECT_ID } from './services/sampleProject';
 
 const AISTUDIO_CHECK_TIMEOUT_MS = 1500;
 
@@ -30,6 +31,7 @@ const App: React.FC = () => {
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [wizardSessionKey, setWizardSessionKey] = useState(0);
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+  const [expressMode, setExpressMode] = useState(false);
   const [hasApiKey, setHasApiKey] = useState<boolean>(() => hasAnyGoogleApiKey());
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -95,7 +97,15 @@ const App: React.FC = () => {
       setCurrentUser(user);
       setAuthLoading(false);
       if (!user) {
-        if (currentView === 'projects' || currentView === 'create' || currentView === 'profile' || currentView === 'admin' || currentView === 'api-keys') {
+        // Task #95: Sample sessions are anonymous-friendly (no cloud
+        // calls), so don't bounce signed-out users out of the wizard
+        // when the active project is the bundled sample.
+        const inSampleSession =
+          currentView === 'create' && editingProjectId === SAMPLE_PROJECT_ID;
+        if (
+          !inSampleSession &&
+          (currentView === 'projects' || currentView === 'create' || currentView === 'profile' || currentView === 'admin' || currentView === 'api-keys')
+        ) {
           setCurrentView('landing');
         }
       } else {
@@ -125,7 +135,7 @@ const App: React.FC = () => {
       }
     });
     return () => unsubscribe();
-  }, [currentView]);
+  }, [currentView, editingProjectId]);
 
   const handleSelectKey = async () => {
     if (isAiStudioEnv()) {
@@ -157,26 +167,61 @@ const App: React.FC = () => {
       // currently open, drop it so the modal's blank/clone/pack flow
       // governs the next step instead of silently keeping the old one.
       setEditingProjectId(null);
+      setExpressMode(false);
       setShowNewProjectModal(true);
       return;
     }
     setCurrentView(view);
     setEditingProjectId(null);
+    setExpressMode(false);
   };
 
   const handleEditProject = (id: string) => {
     setEditingProjectId(id);
+    setExpressMode(false);
     setCurrentView('create');
   };
 
   const handleStartFreshProject = () => {
     setEditingProjectId(null);
+    setExpressMode(false);
     setShowNewProjectModal(true);
   };
 
   const handleNewProjectCreated = (id: string) => {
     setShowNewProjectModal(false);
     setEditingProjectId(id);
+    setExpressMode(false);
+    setCurrentView('create');
+    setWizardSessionKey(k => k + 1);
+  };
+
+  // Task #95: When a sample is cloned to a real project mid-session, swap
+  // editingProjectId silently so a later remount lands on the new id (no
+  // wizardSessionKey bump — we want to keep the existing wizard state).
+  const handleProjectIdChange = (newId: string) => {
+    setEditingProjectId(newId);
+  };
+
+  // Task #95: 1-click sample project. Loads a pre-bundled demo straight to
+  // Step 6 without any cloud calls. Works for signed-out users too.
+  const handleStartSample = () => {
+    setExpressMode(false);
+    setEditingProjectId(SAMPLE_PROJECT_ID);
+    setCurrentView('create');
+    setWizardSessionKey(k => k + 1);
+  };
+
+  // Task #95: Express Quick Mode preset. Forces Quick mode + Presentation
+  // pipeline for a 1-2 minute end-to-end run. Requires login because it
+  // triggers real generation.
+  const handleStartExpress = () => {
+    if (!currentUser) {
+      setCurrentView('login');
+      return;
+    }
+    setExpressMode(true);
+    setEditingProjectId(null);
     setCurrentView('create');
     setWizardSessionKey(k => k + 1);
   };
@@ -243,7 +288,11 @@ const App: React.FC = () => {
       
       <main>
         {currentView === 'landing' && (
-          <LandingPage onNavigate={handleNavigate} />
+          <LandingPage
+            onNavigate={handleNavigate}
+            onStartSample={handleStartSample}
+            onStartExpress={handleStartExpress}
+          />
         )}
 
         {currentView === 'projects' && (
@@ -251,6 +300,8 @@ const App: React.FC = () => {
             userId={currentUser?.uid || ''}
             onNavigate={handleNavigate} 
             onEditProject={handleEditProject}
+            onStartSample={handleStartSample}
+            onStartExpress={handleStartExpress}
           />
         )}
 
@@ -277,6 +328,8 @@ const App: React.FC = () => {
               onStartFreshProject={handleStartFreshProject}
               initialProjectId={editingProjectId}
               onRequestSelectKey={handleSelectKey}
+              expressMode={expressMode}
+              onProjectIdChange={handleProjectIdChange}
             />
           </div>
         )}

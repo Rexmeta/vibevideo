@@ -22,6 +22,9 @@ export const Step6Preview: React.FC = () => {
     stats,
     TRANSITION_OPTIONS,
     MOTION_OPTIONS,
+    isSample,
+    cloneSampleToProject,
+    onNavigate,
   } = w;
 
   return (
@@ -180,6 +183,32 @@ export const Step6Preview: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {isSample && (
+        <div className="mt-10 bg-gradient-to-r from-cyan-50 via-white to-purple-50 border-2 border-cyan-100 rounded-3xl p-6 flex flex-col sm:flex-row items-center gap-4">
+          <div className="w-12 h-12 bg-brand-cyan rounded-2xl flex items-center justify-center shrink-0">
+            <Icons.Sparkles size={22} className="text-black" />
+          </div>
+          <div className="flex-1 text-center sm:text-left">
+            <h4 className="font-black text-base">샘플을 마음에 들어하셨나요?</h4>
+            <p className="text-xs text-gray-500 mt-0.5">새 프로젝트로 만들어 직접 편집하고 AI 영상으로 업그레이드하세요.</p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+            <button
+              onClick={() => onNavigate('create')}
+              className="px-5 py-3 rounded-full bg-white border-2 border-black text-black font-black text-sm hover:scale-105 transition-all"
+            >
+              내 주제로 새로 만들기
+            </button>
+            <button
+              onClick={() => { cloneSampleToProject(); setStep(1); }}
+              className="px-6 py-3 rounded-full bg-black text-white font-black text-sm hover:scale-105 transition-all flex items-center gap-2"
+            >
+              AI 영상으로 업그레이드 <Icons.ArrowRight size={16} />
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-4 mt-12">
         <button onClick={() => setStep(5)} className="px-12 py-6 rounded-full font-black text-gray-400 hover:text-black transition-all">Back</button>

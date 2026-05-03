@@ -23,6 +23,7 @@ import {
 } from '../../../services/mediaCache';
 import { migrateSceneFields } from '../../../services/geminiService';
 import { DEFAULT_CAPTION_STYLE } from '../../../services/captionService';
+import { isSampleProjectId } from '../../../services/sampleProject';
 
 export type RestoreSourceStatus = 'pending' | 'ok' | 'empty' | 'timeout' | 'error';
 
@@ -156,6 +157,19 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
   }, []);
 
   useEffect(() => {
+    // Sample project: no cloud/local fetch — WizardContext seeds state
+    // directly from buildSampleProject(). Mark restore as complete so
+    // ProjectWizard's loading gate doesn't block the wizard. This branch
+    // sits ABOVE the !userId guard so anonymous (signed-out) sample
+    // sessions also short-circuit cleanly without needing a userId.
+    if (isSampleProjectId(initialProjectId)) {
+      if (restoredRef.current) return;
+      restoredRef.current = true;
+      setLoading(false);
+      setRestoreStatus({ cloud: 'empty', local: 'empty', idb: 'empty', scenes: 'present' });
+      return;
+    }
+
     if (!userId || restoredRef.current) return;
     restoredRef.current = true;
 

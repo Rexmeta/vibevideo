@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { generateProjectId } from '../../services/storageService';
+import { SAMPLE_PROJECT_ID, isSampleProjectId, buildSampleProject } from '../../services/sampleProject';
 import { getModels, getModelsByType } from '../../services/modelService';
 import { DEFAULT_CAPTION_STYLE } from '../../services/captionService';
 import { listPacks } from '../../services/contextPackService';
@@ -27,7 +28,7 @@ import {
   MOTION_OPTIONS,
   buildReferenceImagesForScene,
 } from './hooks/wizardHelpers';
-import { useSync } from './hooks/useSync';
+import { useSync, type SyncFn } from './hooks/useSync';
 import { useRestore } from './hooks/useRestore';
 import { usePresentationActions } from './hooks/usePresentationActions';
 import { useAudioActions } from './hooks/useAudioActions';
@@ -57,6 +58,15 @@ interface ProviderProps {
    * the same way as the top-level banner.
    */
   onRequestSelectKey?: () => void | Promise<void>;
+  /**
+   * Express Quick Mode preset (Task #95): seed the wizard with the
+   * "1-2 minute finish" preset (presentation video mode, vision critic
+   * off, 2 short scenes) so the user can hit Start with just a topic.
+   */
+  expressMode?: boolean;
+  /** Task #95: Notified when a sample wizard clones itself into a real
+   *  owned project so the parent can update editingProjectId. */
+  onProjectIdChange?: (newId: string) => void;
   children: React.ReactNode;
 }
 
@@ -91,21 +101,44 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   onNavigate,
   initialProjectId,
   onRequestSelectKey,
+  expressMode,
+  onProjectIdChange,
   children,
 }) => {
+  // ---- Sample / Express seed (Task #95) ----
+  const isSampleEntry = isSampleProjectId(initialProjectId);
+  const sampleSeedRef = useRef<ReturnType<typeof buildSampleProject> | null>(null);
+  if (isSampleEntry && !sampleSeedRef.current) {
+    sampleSeedRef.current = buildSampleProject(userId);
+  }
+  const sampleSeed = sampleSeedRef.current;
+  // Once the user clones the sample to their own project we flip this on so
+  // sync() activates and isSample-gated UI (read-only banners, upgrade CTA)
+  // disappears — the project becomes a normal owned project.
+  const [clonedFromSample, setClonedFromSample] = useState(false);
+  const isSample = isSampleEntry && !clonedFromSample;
+
   // ---- Identity / step ----
   const [projectId, setProjectId] = useState<string>(initialProjectId || generateProjectId());
-  const [createdAt, setCreatedAt] = useState<string>(new Date().toISOString());
-  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7>(1);
-  const [maxStep, setMaxStep] = useState<number>(1);
-  const [savedMode, setSavedModeState] = useState<WizardMode | null>(null);
+  const [createdAt, setCreatedAt] = useState<string>(
+    () => sampleSeed?.created_at || new Date().toISOString()
+  );
+  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7>(sampleSeed ? 6 : 1);
+  const [maxStep, setMaxStep] = useState<number>(sampleSeed ? 7 : 1);
+  const [savedMode, setSavedModeState] = useState<WizardMode | null>(
+    sampleSeed ? 'pro' : null
+  );
 
   // ---- Project config ----
-  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1' | '3:4'>('16:9');
-  const [videoStyle, setVideoStyle] = useState('Cute Stickman');
-  const [topic, setTopic] = useState('');
-  const [duration, setDuration] = useState(30);
-  const [script, setScript] = useState('');
+  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1' | '3:4'>(
+    sampleSeed?.aspect_ratio || '16:9'
+  );
+  const [videoStyle, setVideoStyle] = useState(sampleSeed?.style_template || 'Cute Stickman');
+  const [topic, setTopic] = useState(sampleSeed?.saved_topic || '');
+  const [duration, setDuration] = useState(
+    sampleSeed?.saved_duration ?? (expressMode ? 16 : 30)
+  );
+  const [script, setScript] = useState(sampleSeed?.saved_script || '');
   const [characterProfile, setCharacterProfile] = useState('');
   const [useReferenceImage, setUseReferenceImage] = useState(true);
   const [characterReferenceImage, setCharacterReferenceImage] = useState<string | undefined>(
@@ -115,29 +148,37 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const [characterReferences, setCharacterReferences] = useState<CharacterReference[]>([]);
   const [generatingCharRefIdx, setGeneratingCharRefIdx] = useState<number | null>(null);
   const [sceneDurationMode, setSceneDurationMode] = useState<'time' | 'scenes'>('time');
-  const [targetSceneCount, setTargetSceneCount] = useState(4);
-  const [useVeoAudio, setUseVeoAudio] = useState(true);
-  const [videoMode, setVideoMode] = useState<VideoMode>('ai');
+  const [targetSceneCount, setTargetSceneCount] = useState(
+    sampleSeed?.target_scene_count ?? (expressMode ? 2 : 4)
+  );
+  const [useVeoAudio, setUseVeoAudio] = useState(sampleSeed?.use_veo_audio ?? true);
+  const [videoMode, setVideoMode] = useState<VideoMode>(
+    sampleSeed?.video_mode || (expressMode ? 'presentation' : 'ai')
+  );
   // ContextPack linkage state.
   const [linkedContextPackId, setLinkedContextPackId] = useState<string | undefined>(undefined);
   const [linkedContextPackName, setLinkedContextPackName] = useState<string | undefined>(undefined);
   const [linkedContextPack, setLinkedContextPack] = useState<ContextPack | undefined>(undefined);
   const [contextPackVersion, setContextPackVersion] = useState<number | undefined>(undefined);
   const [contextPackDirty, setContextPackDirty] = useState<boolean>(false);
-  const [scenes, setScenes] = useState<Partial<Scene>[]>([]);
-  const [thumbnail, setThumbnail] = useState<string | undefined>(undefined);
+  const [scenes, setScenes] = useState<Partial<Scene>[]>(
+    () => (sampleSeed?.saved_scenes as Partial<Scene>[] | undefined) || []
+  );
+  const [thumbnail, setThumbnail] = useState<string | undefined>(sampleSeed?.thumbnail);
   const [genre, setGenre] = useState<GenreId | undefined>(undefined);
   const [platform, setPlatform] = useState<PlatformId | undefined>(undefined);
   const [styleSheet, setStyleSheet] = useState<StyleSheet | undefined>(undefined);
-  const [visionCriticEnabled, setVisionCriticEnabled] = useState<boolean>(true);
+  const [visionCriticEnabled, setVisionCriticEnabled] = useState<boolean>(
+    sampleSeed?.vision_critic_enabled ?? (expressMode ? false : true)
+  );
   const [qualityThreshold, setQualityThreshold] = useState<number>(6);
   const [negativePrompt, setNegativePrompt] = useState<string>('');
   const [generatingStyleSheet, setGeneratingStyleSheet] = useState<boolean>(false);
   const [stats, setStats] = useState<ProjectStats>({
-    imagesGenerated: 0,
-    criticCalls: 0,
-    refineCalls: 0,
-    videosGenerated: 0,
+    imagesGenerated: sampleSeed?.stats?.imagesGenerated || 0,
+    criticCalls: sampleSeed?.stats?.criticCalls || 0,
+    refineCalls: sampleSeed?.stats?.refineCalls || 0,
+    videosGenerated: sampleSeed?.stats?.videosGenerated || 0,
   });
 
   // ---- Loading / processing ----
@@ -162,7 +203,9 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const [selectedImageModel, setSelectedImageModel] = useState<string>('');
   const [selectedVideoModel, setSelectedVideoModel] = useState<string>('');
   const [showModelSelector, setShowModelSelector] = useState<'image' | 'video' | null>(null);
-  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(DEFAULT_CAPTION_STYLE);
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(
+    sampleSeed?.caption_style || DEFAULT_CAPTION_STYLE
+  );
 
   // ---- Export ----
   const [downloadingAll, setDownloadingAll] = useState(false);
@@ -310,7 +353,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const { syncAudioWithVideo, syncCleanupRef } = useAudioVideoSync({ syncAudioRef });
 
   // ---- Sync (with unmount flush) ----
-  const sync = useSync({
+  const rawSync = useSync({
     userId,
     projectId,
     createdAt,
@@ -351,7 +394,28 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setSyncing,
     setSyncError,
   });
+  // Sample project: never write to cloud / cache. The sample is read-only
+  // until the user clicks "AI 영상으로 업그레이드" which clones it into a
+  // real project (clonedFromSample flips on, sync re-enables).
+  const noopSync: SyncFn = () => {};
+  const sync: SyncFn = isSample ? noopSync : rawSync;
   syncRef.current = sync;
+
+  // Clone the in-memory sample into a real owned project. Generates a fresh
+  // project id, flips clonedFromSample on (re-enabling sync), notifies the
+  // parent so editingProjectId follows, and immediately persists current
+  // state under the new id. Returns the new id.
+  const cloneSampleToProject = (): string => {
+    if (!isSample) return projectId;
+    const newId = generateProjectId();
+    setProjectId(newId);
+    setCreatedAt(new Date().toISOString());
+    setClonedFromSample(true);
+    onProjectIdChange?.(newId);
+    // Defer initial sync until after the state flip so rawSync sees the new id.
+    queueMicrotask(() => syncRef.current && syncRef.current());
+    return newId;
+  };
 
   // ---- Restore on mount ----
   const { restoreStatus, restoreError, restoreSlow, retryRestore } = useRestore({
@@ -421,7 +485,21 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     sync();
   };
 
+  // Task #95 clone-on-edit: any mutating action on a sample session must
+  // first clone the read-only sample into a real owned project so changes
+  // persist + Sync resumes. ensureOwned() is a no-op once cloned (or on
+  // non-sample sessions), so wrappers below are cheap.
+  const ensureOwned = () => {
+    if (isSample) cloneSampleToProject();
+  };
+
   const updateSceneAt = (idx: number, updates: Partial<Scene>) => {
+    // updateSceneAt is also called by the action hooks themselves (post-
+    // generation, with paths owned by the new project id). We only need
+    // ensureOwned() for direct user edits — the wrappers above already
+    // guarantee actions run under the cloned id, so calling it here is
+    // a defensive belt: idempotent if already cloned.
+    if (isSample) cloneSampleToProject();
     setScenes(prev => {
       const next = [...prev];
       const old = next[idx];
@@ -586,12 +664,14 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   });
 
   const handleBatchVideos = async (): Promise<void> => {
+    ensureOwned();
     const ok = await ensureGoogleApiKey();
     if (!ok) return;
     return rawHandleBatchVideos();
   };
 
   const handleSingleVideo = async (idx: number): Promise<void> => {
+    ensureOwned();
     const ok = await ensureGoogleApiKey();
     if (!ok) return;
     return rawHandleSingleVideo(idx);
@@ -666,6 +746,64 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     limitsVersion: exportLimitsVersion,
   });
 
+  // Task #95 clone-on-edit wrappers — every user-initiated mutating action
+  // first clones the sample if needed, then dispatches to the latest raw
+  // handler via actionsRef. Routing via ref (rather than the closure-
+  // captured handler from this render) is what makes the clone
+  // deterministic: by the time we call actionsRef.current.x() we've
+  // yielded to React, the rerender has run, the action hooks have
+  // re-executed with the new projectId, and actionsRef has been updated.
+  const actionsRef = useRef({
+    handleBatchAudio,
+    handleSingleAudio,
+    handleBatchImages,
+    handleSingleImage,
+    handleRefineImage,
+    handleBatchVideos,
+    handleSingleVideo,
+    handleRenderPresentation,
+    handleMergeExport,
+    handleAutoSplitExport,
+  });
+  actionsRef.current = {
+    handleBatchAudio,
+    handleSingleAudio,
+    handleBatchImages,
+    handleSingleImage,
+    handleRefineImage,
+    handleBatchVideos,
+    handleSingleVideo,
+    handleRenderPresentation,
+    handleMergeExport,
+    handleAutoSplitExport,
+  };
+
+  // Yield until the next paint frame so React has applied the clone state
+  // update (and the action hooks have re-derived with the new projectId).
+  // Two rAFs is enough to guarantee a commit phase has flushed even in
+  // batched updates.
+  const waitForRerender = (): Promise<void> =>
+    new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+
+  const ensureOwnedAsync = async () => {
+    if (!isSample) return;
+    cloneSampleToProject();
+    await waitForRerender();
+  };
+
+  const wrappedHandleBatchAudio = async () => { await ensureOwnedAsync(); return actionsRef.current.handleBatchAudio(); };
+  const wrappedHandleSingleAudio = async (idx: number) => { await ensureOwnedAsync(); return actionsRef.current.handleSingleAudio(idx); };
+  const wrappedHandleBatchImages = async () => { await ensureOwnedAsync(); return actionsRef.current.handleBatchImages(); };
+  const wrappedHandleSingleImage = async (idx: number) => { await ensureOwnedAsync(); return actionsRef.current.handleSingleImage(idx); };
+  const wrappedHandleRefineImage = async (idx: number) => { await ensureOwnedAsync(); return actionsRef.current.handleRefineImage(idx); };
+  const wrappedHandleBatchVideos = async () => { await ensureOwnedAsync(); return actionsRef.current.handleBatchVideos(); };
+  const wrappedHandleSingleVideo = async (idx: number) => { await ensureOwnedAsync(); return actionsRef.current.handleSingleVideo(idx); };
+  const wrappedHandleRenderPresentation = async () => { await ensureOwnedAsync(); return actionsRef.current.handleRenderPresentation(); };
+  const wrappedHandleMergeExport = async () => { await ensureOwnedAsync(); return actionsRef.current.handleMergeExport(); };
+  const wrappedHandleAutoSplitExport = async () => { await ensureOwnedAsync(); return actionsRef.current.handleAutoSplitExport(); };
+
   // ---- Derived state ----
   const isProcessing = processingSet.size > 0;
   const isImagesReady = scenes.length > 0 && scenes.every(s => !!s.image_path);
@@ -676,6 +814,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     Array.from(failedScenes.keys()).filter(k => k.startsWith(type)).length;
 
   const value: WizardContextValue = {
+    isSample,
+    cloneSampleToProject,
     userId,
     projectId,
     setProjectId,
@@ -805,17 +945,17 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     failedCount,
     downloadVideo,
     handleDownloadAll,
-    handleMergeExport,
+    handleMergeExport: wrappedHandleMergeExport,
     handleDownloadMerged,
-    handleSingleAudio,
-    handleBatchAudio,
-    handleBatchImages,
-    handleRefineImage,
-    handleSingleImage,
-    handleBatchVideos,
-    handleSingleVideo,
-    handleRenderPresentation,
-    handleAutoSplitExport,
+    handleSingleAudio: wrappedHandleSingleAudio,
+    handleBatchAudio: wrappedHandleBatchAudio,
+    handleBatchImages: wrappedHandleBatchImages,
+    handleRefineImage: wrappedHandleRefineImage,
+    handleSingleImage: wrappedHandleSingleImage,
+    handleBatchVideos: wrappedHandleBatchVideos,
+    handleSingleVideo: wrappedHandleSingleVideo,
+    handleRenderPresentation: wrappedHandleRenderPresentation,
+    handleAutoSplitExport: wrappedHandleAutoSplitExport,
     exportRiskAssessment,
     refreshExportLimits,
     autoSplitPlan,
