@@ -193,11 +193,20 @@ export interface CaptionRenderOptions {
   style: CaptionStyle;
   width: number;
   height: number;
+  /**
+   * Container/codec layout for the produced clip.
+   * - `mp4` (default): outputs h264 + copy-of-input audio in MP4.
+   * - `mpegts`: outputs h264 + AAC inside MPEG-TS so the clip can be concat-copied
+   *   directly without an additional re-encode step.
+   */
+  outputFormat?: 'mp4' | 'mpegts';
 }
 
 /**
  * Burn word-level captions onto an existing clip via chained FFmpeg overlay filters.
  * Each caption keyframe is rendered as a transparent PNG and enabled only during its time window.
+ * When `outputFormat === 'mpegts'` the same single libx264 pass also remuxes to MPEG-TS,
+ * so the caller can skip a second re-encode for concat preparation.
  * No-op when style.preset === 'none' or words list is empty.
  */
 const applyCaptionsToClip = async (
@@ -211,6 +220,7 @@ const applyCaptionsToClip = async (
   if (!words || words.length === 0 || opts.style.preset === 'none') return false;
 
   const { width, height, style } = opts;
+  const isTs = opts.outputFormat === 'mpegts';
   const blobs: Blob[] = [];
   for (let i = 0; i < words.length; i++) {
     try {
@@ -247,6 +257,9 @@ const applyCaptionsToClip = async (
     filter += `;[${prevLabel}]copy[capped]`;
   }
 
+  const audioArgs = isTs ? ['-c:a', 'aac', '-b:a', '128k'] : ['-c:a', 'copy'];
+  const formatArgs = isTs ? ['-f', 'mpegts'] : [];
+
   try {
     await ffmpeg.exec([
       ...inputs,
@@ -256,7 +269,8 @@ const applyCaptionsToClip = async (
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-pix_fmt', 'yuv420p',
-      '-c:a', 'copy',
+      ...audioArgs,
+      ...formatArgs,
       '-y',
       outputClip,
     ]);
@@ -340,16 +354,19 @@ export const mergeAllScenes = async (
   const captionRes = aspectRatio ? getResolution(aspectRatio) : { w: 1280, h: 720 };
 
   try {
-  const mergedParts: string[] = [];
+  const isMulti = validInputs.length > 1;
+  const partFiles: string[] = [];
+
   for (let i = 0; i < validInputs.length; i++) {
     const input = validInputs[i];
-    const pct = Math.round((i / validInputs.length) * 60);
+    const pct = Math.round((i / validInputs.length) * 80);
     onProgress?.(`씬 ${i + 1} 처리 중...`, pct);
 
     const videoData = await fetchAsUint8Array(input.videoUrl);
     const videoFile = `scene_${i}.mp4`;
     await ffmpeg.writeFile(videoFile, videoData);
 
+    let mergedFile: string;
     if (input.audioUrl) {
       const audioData = await fetchAsUint8Array(input.audioUrl);
       const isWav = input.audioUrl.includes('.wav') || input.audioUrl.startsWith('data:audio/wav');
@@ -357,7 +374,7 @@ export const mergeAllScenes = async (
       const audioFile = `audio_${i}.${audioExt}`;
       await ffmpeg.writeFile(audioFile, audioData);
 
-      const mergedFile = `merged_${i}.mp4`;
+      mergedFile = `merged_${i}.mp4`;
       await ffmpeg.exec([
         '-i', videoFile,
         '-i', audioFile,
@@ -368,69 +385,102 @@ export const mergeAllScenes = async (
         '-y',
         mergedFile
       ]);
-      mergedParts.push(mergedFile);
 
       await ffmpeg.deleteFile(videoFile);
       await ffmpeg.deleteFile(audioFile);
     } else {
-      const tsFile = `scene_${i}_silent.mp4`;
+      mergedFile = `scene_${i}_silent.mp4`;
       await ffmpeg.exec([
         '-i', videoFile,
         '-c:v', 'copy',
         '-an',
         '-y',
-        tsFile
+        mergedFile
       ]);
-      mergedParts.push(tsFile);
       await ffmpeg.deleteFile(videoFile);
     }
 
-    if (captionStyle && captionStyle.preset !== 'none' && input.captionWords && input.captionWords.length > 0) {
-      const sourceFile = mergedParts[mergedParts.length - 1];
-      const cappedFile = `capped_${i}.mp4`;
-      const dur = input.captionDurationSec || (input.captionWords[input.captionWords.length - 1].endMs / 1000) || 8;
-      const ok = await applyCaptionsToClip(
-        ffmpeg,
-        sourceFile,
-        cappedFile,
-        input.captionWords,
-        dur,
-        { style: captionStyle, width: captionRes.w, height: captionRes.h }
-      );
-      if (ok) {
-        try { await ffmpeg.deleteFile(sourceFile); } catch {}
-        mergedParts[mergedParts.length - 1] = cappedFile;
+    const hasCaptions = !!(captionStyle && captionStyle.preset !== 'none'
+      && input.captionWords && input.captionWords.length > 0);
+
+    if (!isMulti) {
+      // Single scene: just optionally burn captions to mp4 (no concat needed).
+      if (hasCaptions) {
+        const cappedFile = `capped_${i}.mp4`;
+        const dur = input.captionDurationSec
+          || (input.captionWords![input.captionWords!.length - 1].endMs / 1000) || 8;
+        const ok = await applyCaptionsToClip(
+          ffmpeg, mergedFile, cappedFile, input.captionWords!, dur,
+          { style: captionStyle!, width: captionRes.w, height: captionRes.h }
+        );
+        if (ok) {
+          try { await ffmpeg.deleteFile(mergedFile); } catch {}
+          partFiles.push(cappedFile);
+        } else {
+          partFiles.push(mergedFile);
+        }
+      } else {
+        partFiles.push(mergedFile);
       }
+    } else {
+      // Multi-scene: produce an MPEG-TS part directly so the final concat is `-c copy`.
+      const tsFile = `part_${i}.ts`;
+      let producedTs = false;
+      if (hasCaptions) {
+        const dur = input.captionDurationSec
+          || (input.captionWords![input.captionWords!.length - 1].endMs / 1000) || 8;
+        producedTs = await applyCaptionsToClip(
+          ffmpeg, mergedFile, tsFile, input.captionWords!, dur,
+          { style: captionStyle!, width: captionRes.w, height: captionRes.h, outputFormat: 'mpegts' }
+        );
+      }
+      if (!producedTs) {
+        // No captions (or caption pass failed): try a copy-remux to TS first to
+        // skip re-encoding. Falls back to a libx264 re-encode if the input is
+        // not H.264 (the bitstream filter assumes H.264).
+        let copied = false;
+        try {
+          await ffmpeg.exec([
+            '-i', mergedFile,
+            '-c', 'copy',
+            '-bsf:v', 'h264_mp4toannexb',
+            '-f', 'mpegts',
+            '-y',
+            tsFile,
+          ]);
+          copied = true;
+        } catch (e) {
+          console.warn('[Merge] TS copy-remux failed, re-encoding:', e);
+        }
+        if (!copied) {
+          await ffmpeg.exec([
+            '-i', mergedFile,
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-f', 'mpegts',
+            '-y',
+            tsFile,
+          ]);
+        }
+      }
+      try { await ffmpeg.deleteFile(mergedFile); } catch {}
+      partFiles.push(tsFile);
     }
   }
 
-  onProgress?.('비디오 합치는 중...', 70);
-
-  if (mergedParts.length === 1) {
-    const data = await ffmpeg.readFile(mergedParts[0]);
-    await ffmpeg.deleteFile(mergedParts[0]);
+  if (partFiles.length === 1) {
+    onProgress?.('최종 파일 생성 중...', 95);
+    const data = await ffmpeg.readFile(partFiles[0]);
+    try { await ffmpeg.deleteFile(partFiles[0]); } catch {}
+    onProgress?.('완료!', 100);
     return new Blob([data], { type: 'video/mp4' });
   }
 
-  for (let i = 0; i < mergedParts.length; i++) {
-    const tsFile = `part_${i}.ts`;
-    await ffmpeg.exec([
-      '-i', mergedParts[i],
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-f', 'mpegts',
-      '-y',
-      tsFile
-    ]);
-    await ffmpeg.deleteFile(mergedParts[i]);
-    mergedParts[i] = tsFile;
-  }
+  onProgress?.('최종 파일 생성 중...', 90);
 
-  onProgress?.('최종 파일 생성 중...', 85);
-
-  const concatStr = mergedParts.map(f => `file '${f}'`).join('\n');
+  const concatStr = partFiles.map(f => `file '${f}'`).join('\n');
   await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(concatStr));
 
   await ffmpeg.exec([
@@ -444,7 +494,7 @@ export const mergeAllScenes = async (
 
   const finalData = await ffmpeg.readFile('final_output.mp4');
 
-  for (const f of mergedParts) {
+  for (const f of partFiles) {
     try { await ffmpeg.deleteFile(f); } catch {}
   }
   try { await ffmpeg.deleteFile('concat.txt'); } catch {}
@@ -612,6 +662,14 @@ export const renderPresentationVideo = async (
 
   onProgress?.('비디오 클립 생성 중...', 30);
 
+  // Decide upfront whether the concat path will be used. When there are no
+  // transitions and we have multiple scenes, we can skip a second re-encode by
+  // having the captions pass write MPEG-TS directly (and remuxing non-captioned
+  // clips with `-c copy`).
+  const hasTransitions = scenes.some((s, i) => i > 0 && s.transition && s.transition !== 'none');
+  const useTsForConcat = !hasTransitions && scenes.length > 1;
+  const clipFiles: string[] = [];
+
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i];
     const dur = scene.duration;
@@ -648,35 +706,59 @@ export const renderPresentationVideo = async (
     }
     try { await ffmpeg.deleteFile(`img_${i}.jpg`); } catch {}
 
-    if (captionStyle && captionStyle.preset !== 'none' && scene.captionWords && scene.captionWords.length > 0) {
-      const cappedFile = `clip_${i}_capped.mp4`;
+    let currentClip = `clip_${i}.mp4`;
+    const hasCaptions = !!(captionStyle && captionStyle.preset !== 'none'
+      && scene.captionWords && scene.captionWords.length > 0);
+
+    if (hasCaptions) {
+      const cappedFile = useTsForConcat ? `ts_${i}.ts` : `clip_${i}_capped.mp4`;
       const ok = await applyCaptionsToClip(
         ffmpeg,
-        `clip_${i}.mp4`,
+        currentClip,
         cappedFile,
-        scene.captionWords,
+        scene.captionWords!,
         dur,
-        { style: captionStyle, width: w, height: h }
+        {
+          style: captionStyle!,
+          width: w,
+          height: h,
+          outputFormat: useTsForConcat ? 'mpegts' : 'mp4',
+        }
       );
       if (ok) {
-        try { await ffmpeg.deleteFile(`clip_${i}.mp4`); } catch {}
-        await ffmpeg.exec(['-i', cappedFile, '-c', 'copy', '-y', `clip_${i}.mp4`]);
-        try { await ffmpeg.deleteFile(cappedFile); } catch {}
+        try { await ffmpeg.deleteFile(currentClip); } catch {}
+        currentClip = cappedFile;
       }
     }
+
+    if (useTsForConcat && !currentClip.endsWith('.ts')) {
+      // Captions pass didn't run or failed for this clip — remux to TS so the
+      // final concat can stay `-c copy`.
+      const tsFile = `ts_${i}.ts`;
+      await ffmpeg.exec([
+        '-i', currentClip,
+        '-c', 'copy',
+        '-bsf:v', 'h264_mp4toannexb',
+        '-f', 'mpegts',
+        '-y',
+        tsFile,
+      ]);
+      try { await ffmpeg.deleteFile(currentClip); } catch {}
+      currentClip = tsFile;
+    }
+
+    clipFiles.push(currentClip);
   }
 
   onProgress?.('전환 효과 적용 중...', 65);
 
   let finalVideoFile: string;
 
-  const hasTransitions = scenes.some((s, i) => i > 0 && s.transition && s.transition !== 'none');
-
   if (hasTransitions && scenes.length > 1) {
     try {
       const inputArgs: string[] = [];
       for (let i = 0; i < scenes.length; i++) {
-        inputArgs.push('-i', `clip_${i}.mp4`);
+        inputArgs.push('-i', clipFiles[i]);
       }
 
       let filterStr = '';
@@ -717,14 +799,14 @@ export const renderPresentationVideo = async (
       finalVideoFile = 'video_transitions.mp4';
     } catch (err) {
       console.warn('[Presentation] xfade failed, falling back to concat:', err);
-      finalVideoFile = await concatClips(ffmpeg, scenes.length);
+      finalVideoFile = await concatClips(ffmpeg, clipFiles);
     }
   } else {
-    finalVideoFile = await concatClips(ffmpeg, scenes.length);
+    finalVideoFile = await concatClips(ffmpeg, clipFiles);
   }
 
-  for (let i = 0; i < scenes.length; i++) {
-    try { await ffmpeg.deleteFile(`clip_${i}.mp4`); } catch {}
+  for (const f of clipFiles) {
+    try { await ffmpeg.deleteFile(f); } catch {}
   }
 
   onProgress?.('오디오 합성 중...', 80);
@@ -805,22 +887,33 @@ export const renderPresentationVideo = async (
   }
 };
 
-const concatClips = async (ffmpeg: FFmpeg, count: number): Promise<string> => {
-  if (count === 1) {
-    await ffmpeg.exec(['-i', 'clip_0.mp4', '-c', 'copy', '-y', 'video_concat.mp4']);
+const concatClips = async (ffmpeg: FFmpeg, inputFiles: string[]): Promise<string> => {
+  if (inputFiles.length === 1) {
+    await ffmpeg.exec(['-i', inputFiles[0], '-c', 'copy', '-y', 'video_concat.mp4']);
     return 'video_concat.mp4';
   }
 
-  for (let i = 0; i < count; i++) {
-    await ffmpeg.exec([
-      '-i', `clip_${i}.mp4`,
-      '-c:v', 'libx264', '-preset', 'ultrafast',
-      '-c:a', 'aac', '-b:a', '128k',
-      '-f', 'mpegts', '-y', `ts_${i}.ts`
-    ]);
+  // If callers already produced MPEG-TS parts (the fast path that avoids a
+  // second libx264 pass), concat them with `-c copy`. Otherwise re-encode to TS.
+  const allTs = inputFiles.every(f => f.endsWith('.ts'));
+  const tsFiles: string[] = [];
+
+  if (allTs) {
+    tsFiles.push(...inputFiles);
+  } else {
+    for (let i = 0; i < inputFiles.length; i++) {
+      const tsFile = `ts_${i}.ts`;
+      await ffmpeg.exec([
+        '-i', inputFiles[i],
+        '-c:v', 'libx264', '-preset', 'ultrafast',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-f', 'mpegts', '-y', tsFile,
+      ]);
+      tsFiles.push(tsFile);
+    }
   }
 
-  const concatStr = Array.from({ length: count }, (_, i) => `file 'ts_${i}.ts'`).join('\n');
+  const concatStr = tsFiles.map(f => `file '${f}'`).join('\n');
   await ffmpeg.writeFile('vid_concat.txt', new TextEncoder().encode(concatStr));
 
   await ffmpeg.exec([
@@ -828,8 +921,10 @@ const concatClips = async (ffmpeg: FFmpeg, count: number): Promise<string> => {
     '-c', 'copy', '-y', 'video_concat.mp4'
   ]);
 
-  for (let i = 0; i < count; i++) {
-    try { await ffmpeg.deleteFile(`ts_${i}.ts`); } catch {}
+  if (!allTs) {
+    for (const f of tsFiles) {
+      try { await ffmpeg.deleteFile(f); } catch {}
+    }
   }
   try { await ffmpeg.deleteFile('vid_concat.txt'); } catch {}
 
