@@ -92,6 +92,22 @@ export interface Project {
   scenes_blob_url?: string;
   scenes_blob_path?: string;
   scenes_blob_updated_at?: string;
+  // Task #99: long-form (>180s) flag and auto-derived chapters used to
+  // group ~60-90s of consecutive scenes for chapter-aware UX and
+  // memory-safe multipart export.
+  long_form_mode?: boolean;
+  chapters?: Chapter[];
+}
+
+// Auto-derived grouping of consecutive scenes into ~60-90s "parts".
+// Persisted on the project so Step 7 can show "Part 3/8 렌더 중" without
+// re-deriving on every render. Source of truth is scene durations; the
+// wizard regenerates this whenever the scene list changes.
+export interface Chapter {
+  id: string;
+  title?: string;
+  targetDurationSec: number;
+  sceneIndices: number[];
 }
 
 // Snapshot of an in-flight or interrupted video batch generation. Persisted
@@ -282,6 +298,9 @@ export interface Scene {
   qualityNotes?: string;
   captionWords?: CaptionWord[];
   characters?: string[]; // names of characters from project.character_references that appear in this scene
+  // Task #99: id of the chapter this scene belongs to, when long_form_mode
+  // is on. Optional/back-compat: short-form projects leave this undefined.
+  chapter_id?: string;
   // Records the seed source that was actually used by the last video
   // generation (could downgrade to 'text-only' if image-based generation
   // failed and we fell back). Surfaced as a badge on the Step 5 card.

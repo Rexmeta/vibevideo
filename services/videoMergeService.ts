@@ -70,6 +70,89 @@ const wrapFFmpegError = (err: unknown): Error => {
 let ffmpegInstance: FFmpeg | null = null;
 let loadingPromise: Promise<FFmpeg> | null = null;
 
+/**
+ * Task #99 — Tear down the FFmpeg.wasm singleton and release its WASM
+ * heap. Call between long-form export chunks so each chapter's render
+ * starts from a clean ~32MB allocation instead of accumulating up to the
+ * 2GB browser ceiling. Subsequent calls to any merge helper will lazily
+ * reload core.
+ */
+export const terminateFFmpegForCleanup = async (): Promise<void> => {
+  const inst = ffmpegInstance;
+  ffmpegInstance = null;
+  loadingPromise = null;
+  if (!inst) return;
+  try {
+    inst.terminate();
+  } catch (e) {
+    console.warn('[FFmpeg] terminate failed (ignoring):', e);
+  }
+};
+
+/**
+ * Task #99 — Concatenate already-rendered MP4 part blobs into a single MP4
+ * via the MPEG-TS + concat-demuxer trick (re-encodes each part to TS, then
+ * stream-copies into a final container). Caller is responsible for calling
+ * `terminateFFmpegForCleanup()` first if memory is tight.
+ *
+ * Returns the single concatenated blob. Throws on FFmpeg failure (caller
+ * should catch and fall back to per-part downloads).
+ */
+export const concatMp4Parts = async (
+  parts: Blob[],
+  onProgress?: (stage: string, pct: number) => void
+): Promise<Blob> => {
+  if (!parts || parts.length === 0) throw new Error('No parts to concat');
+  if (parts.length === 1) return parts[0];
+
+  const ffmpeg = await getFFmpeg();
+  try {
+    onProgress?.('파트 로드 중...', 5);
+    for (let i = 0; i < parts.length; i++) {
+      const u8 = new Uint8Array(await parts[i].arrayBuffer());
+      await ffmpeg.writeFile(`part_${i}.mp4`, u8);
+    }
+
+    onProgress?.('파트를 MPEG-TS로 변환 중...', 25);
+    for (let i = 0; i < parts.length; i++) {
+      await ffmpeg.exec([
+        '-i', `part_${i}.mp4`,
+        '-c:v', 'libx264', '-preset', 'ultrafast',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-bsf:v', 'h264_mp4toannexb',
+        '-f', 'mpegts', '-y', `part_${i}.ts`,
+      ]);
+      try { await ffmpeg.deleteFile(`part_${i}.mp4`); } catch {}
+      onProgress?.(
+        `파트 ${i + 1}/${parts.length} 변환 완료`,
+        25 + Math.round(((i + 1) / parts.length) * 50)
+      );
+    }
+
+    onProgress?.('최종 결합 중...', 85);
+    const list = parts.map((_, i) => `file 'part_${i}.ts'`).join('\n');
+    await ffmpeg.writeFile('parts_concat.txt', new TextEncoder().encode(list));
+    await ffmpeg.exec([
+      '-f', 'concat', '-safe', '0', '-i', 'parts_concat.txt',
+      '-c', 'copy', '-y', 'final_long.mp4',
+    ]);
+
+    onProgress?.('최종 파일 생성 중...', 95);
+    const data = await ffmpeg.readFile('final_long.mp4');
+
+    for (let i = 0; i < parts.length; i++) {
+      try { await ffmpeg.deleteFile(`part_${i}.ts`); } catch {}
+    }
+    try { await ffmpeg.deleteFile('parts_concat.txt'); } catch {}
+    try { await ffmpeg.deleteFile('final_long.mp4'); } catch {}
+
+    onProgress?.('완료!', 100);
+    return new Blob([data], { type: 'video/mp4' });
+  } catch (err) {
+    throw wrapFFmpegError(err);
+  }
+};
+
 const getFFmpeg = async (): Promise<FFmpeg> => {
   if (ffmpegInstance) return ffmpegInstance;
   if (loadingPromise) return loadingPromise;

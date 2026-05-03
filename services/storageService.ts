@@ -420,7 +420,10 @@ export const uploadFileToCloud = async (path: string, data: string | Blob, forma
   }
 };
 
-const MAX_DOC_SCENES = 50;
+// Task #99: bumped from 50 → 80 so 10-min long-form projects (~75 cuts at
+// 8s each) fit in the per-doc map mirror. Larger projects still fall back
+// to the scenes_blob_url storage path automatically.
+const MAX_DOC_SCENES = 80;
 
 /**
  * Narrow Firestore update that only writes the supplied fields, no derived

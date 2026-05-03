@@ -31,11 +31,15 @@ export const Step7Export: React.FC = () => {
     refreshExportLimits,
     autoSplitPlan,
     handleAutoSplitExport,
+    duration,
   } = w;
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const isBlocked = exportRiskAssessment.level === 'block';
   const isWarn = exportRiskAssessment.level === 'warn';
+  // Task #99: long-form mode auto-engages once total duration crosses 3 min,
+  // or whenever the safe-chunk planner needs to split into 4+ parts.
+  const isLongForm = duration >= 180 || autoSplitPlan.chunks.length >= 4;
   const canAutoSplit =
     !merging &&
     scenes.length > 0 &&
@@ -45,6 +49,10 @@ export const Step7Export: React.FC = () => {
       : scenes.some(s => !!s.video_path));
 
   const runExport = () => {
+    if (isLongForm && canAutoSplit) {
+      handleAutoSplitExport();
+      return;
+    }
     if (isPresentationMode) handleRenderPresentation();
     else handleMergeExport();
   };
@@ -90,6 +98,32 @@ export const Step7Export: React.FC = () => {
       </div>
 
       <ExportLimitsSettings onChanged={refreshExportLimits} />
+
+      {isLongForm && (
+        <div className="mb-6 rounded-3xl border-2 border-purple-200 bg-gradient-to-br from-purple-50 via-white to-pink-50 px-5 py-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-purple-500 text-white flex items-center justify-center shrink-0 shadow-md">
+              <Icons.Film size={18} />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[10px] font-black uppercase tracking-widest text-purple-700">
+                  Long-form Mode
+                </span>
+                <span className="text-xs font-black text-purple-900">
+                  {Math.floor(duration / 60)}분 {duration % 60 ? `${duration % 60}초` : ''} · {scenes.length}개 씬
+                </span>
+              </div>
+              <p className="text-sm font-semibold leading-snug text-purple-900">
+                약 {autoSplitPlan.chunks.length}개 파트로 자동 분할 렌더링 후 한 편의 영상으로 결합합니다.
+              </p>
+              <p className="mt-1 text-[11px] text-purple-800 italic leading-relaxed">
+                각 파트는 60–90초 분량으로 묶이고, 파트 사이에는 메모리를 정리합니다. 결합 단계에서 메모리가 부족하면 파트별로 자동 다운로드됩니다.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className={`mb-6 rounded-3xl border-2 px-5 py-4 ${bannerStyle}`}>
         <div className="flex items-start gap-3">
@@ -155,6 +189,8 @@ export const Step7Export: React.FC = () => {
           >
             {merging ? (
               <><Icons.Loader2 className="animate-spin" size={20} /> {mergeProgress}</>
+            ) : isLongForm ? (
+              <><Icons.Film size={20} /> 한 편으로 합치기 ({autoSplitPlan.chunks.length}개 파트)</>
             ) : (
               <><Icons.Film size={20} /> 하나의 비디오로 합치기</>
             )}

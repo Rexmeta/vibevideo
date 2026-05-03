@@ -285,13 +285,37 @@ export const Step1Setup: React.FC = () => {
             <div>
               <div className="flex items-center gap-4">
                 <input
-                  type="range" min={8} max={120} step={8} value={duration}
+                  type="range" min={8} max={600} step={8} value={duration}
                   onChange={e => { const v = Number(e.target.value); setDuration(v); setTargetSceneCount(Math.max(1, Math.round(v / 8))); }}
                   className="flex-1 h-2 accent-brand-cyan"
                 />
                 <span className="text-2xl font-black text-brand-dark w-24 text-right">{duration}초</span>
               </div>
-              <p className="text-xs text-gray-400 mt-2 italic">약 {Math.max(1, Math.round(duration / 8))}개 씬 (8초/씬 기준)</p>
+              <p className="text-xs text-gray-400 mt-2 italic">
+                약 {Math.max(1, Math.round(duration / 8))}개 씬 (8초/씬 기준)
+                {duration >= 60 && ` · 약 ${Math.floor(duration / 60)}분 ${duration % 60 ? `${duration % 60}초` : ''}`}
+              </p>
+              {duration >= 180 && (
+                <div className="mt-4 p-5 rounded-[1.75rem] border-2 border-purple-200 bg-gradient-to-br from-purple-50 via-white to-pink-50">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-purple-500 text-white flex items-center justify-center shrink-0 shadow-md">
+                      <Icons.Film size={18} />
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="text-xs font-black text-purple-900 mb-1 flex items-center gap-2">
+                        Long-form mode 활성화 ({Math.floor(duration / 60)}분 {duration % 60 ? `${duration % 60}초` : ''})
+                      </h4>
+                      <p className="text-[11px] text-purple-800 leading-relaxed">
+                        총 길이가 3분을 넘어 자동으로 장편 모드로 전환됩니다. 약 {Math.ceil(duration / 75)}개 파트(60–90초)로 자동 분할되어
+                        생성·렌더링되며, Step 7에서 한 편의 영상으로 다시 합칩니다.
+                      </p>
+                      <p className="text-[10px] text-purple-700 italic mt-1.5">
+                        팁: 최대 10분(600초) · 약 75개 씬까지 지원 · 메모리 부담을 줄이기 위해 파트별로 렌더링됩니다.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div>

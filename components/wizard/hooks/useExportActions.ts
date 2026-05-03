@@ -6,7 +6,10 @@ import {
   renderPresentationVideo,
   PresentationSceneInput,
   getResolution,
+  terminateFFmpegForCleanup,
+  concatMp4Parts,
 } from '../../../services/videoMergeService';
+import { isLongFormDuration } from '../../../services/chapterService';
 import { alignWordsToDuration } from '../../../services/captionService';
 import {
   evaluateExportLimits,
@@ -262,10 +265,22 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     const captionsEnabled = captionStyle.preset !== 'none';
     const durations = allDurations;
 
+    // Task #99: long-form mode keeps part blobs in memory and stitches
+    // them into a single MP4 at the end (with per-part download fallback
+    // on OOM). Short-form auto-split keeps the legacy per-part-download UX.
+    const longForm = isLongFormDuration(duration) || chunks.length >= 4;
+
     setMerging(true);
     setMergedVideoUrl(null);
-    setMergeProgress(`${chunks.length}개 파트로 나눠 내보내는 중...`);
+    setMergeProgress(
+      longForm
+        ? `Long-form 렌더 시작 · ${chunks.length}개 파트`
+        : `${chunks.length}개 파트로 나눠 내보내는 중...`
+    );
     setMergePercent(0);
+
+    const renderedParts: Blob[] = [];
+    const safeTopic = (topic || 'video').replace(/[\\/:*?"<>|]+/g, '_');
 
     try {
       let lastUrl: string | null = null;
@@ -337,18 +352,69 @@ export const useExportActions = (deps: ExportActionsDeps) => {
         const url = URL.createObjectURL(blob);
         trackBlobUrl(url);
         lastUrl = url;
+        renderedParts.push(blob);
 
-        const safeTopic = (topic || 'video').replace(/[\\/:*?"<>|]+/g, '_');
-        await downloadVideo(url, `${safeTopic}_part_${ci + 1}.mp4`);
+        if (!longForm) {
+          // Legacy short-form path: download each part right away so the
+          // user gets feedback without waiting for the full set.
+          await downloadVideo(url, `${safeTopic}_part_${ci + 1}.mp4`);
+        } else {
+          setMergeProgress(
+            `Part ${ci + 1}/${chunks.length} 렌더 완료 · 메모리 정리 중...`
+          );
+          // Long-form: tear down the FFmpeg.wasm singleton between chunks
+          // so each chapter starts from a clean WASM heap (avoids the 2GB
+          // ceiling on 10-min projects). Subsequent calls lazy-reload core.
+          try { await terminateFFmpegForCleanup(); } catch {}
+        }
 
         if (ci < chunks.length - 1) {
           await new Promise(r => setTimeout(r, 600));
         }
       }
 
-      if (lastUrl) setMergedVideoUrl(lastUrl);
-      setMergePercent(100);
-      setMergeProgress(`${chunks.length}개 파트 내보내기 완료`);
+      if (longForm && renderedParts.length > 1) {
+        // Final concat pass: stitch all rendered parts into a single
+        // 10-min MP4. Falls back to per-part downloads on FFmpeg failure
+        // (typically OOM on very memory-constrained devices).
+        setMergeProgress('최종 결합 중... (한 편의 영상으로 합치는 중)');
+        setMergePercent(95);
+        try {
+          try { await terminateFFmpegForCleanup(); } catch {}
+          const finalBlob = await concatMp4Parts(renderedParts, (stage, pct) => {
+            setMergeProgress(`최종 결합 · ${stage}`);
+            // Map 0-100 of the final concat into the last 5% of overall progress.
+            setMergePercent(Math.min(99, 95 + Math.round(pct / 20)));
+          });
+          const finalUrl = URL.createObjectURL(finalBlob);
+          trackBlobUrl(finalUrl);
+          setMergedVideoUrl(finalUrl);
+          setMergePercent(100);
+          setMergeProgress(`Long-form 영상 완성 · ${chunks.length}개 파트 결합`);
+        } catch (concatErr: any) {
+          console.warn(
+            '[Long-form Export] Final concat failed, falling back to per-part downloads:',
+            concatErr
+          );
+          for (let pi = 0; pi < renderedParts.length; pi++) {
+            const partUrl = URL.createObjectURL(renderedParts[pi]);
+            trackBlobUrl(partUrl);
+            await downloadVideo(partUrl, `${safeTopic}_part_${pi + 1}.mp4`);
+            if (pi < renderedParts.length - 1) {
+              await new Promise(r => setTimeout(r, 400));
+            }
+          }
+          if (lastUrl) setMergedVideoUrl(lastUrl);
+          setMergePercent(100);
+          setMergeProgress(
+            `최종 결합 실패 — ${renderedParts.length}개 파트로 개별 다운로드했습니다.`
+          );
+        }
+      } else {
+        if (lastUrl) setMergedVideoUrl(lastUrl);
+        setMergePercent(100);
+        setMergeProgress(`${chunks.length}개 파트 내보내기 완료`);
+      }
     } catch (err: any) {
       console.error('[Auto Split Export] Failed:', err);
       const friendly = isMemoryRelatedError(err)

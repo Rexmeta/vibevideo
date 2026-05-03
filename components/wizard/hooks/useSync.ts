@@ -174,7 +174,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
       if (v === undefined) continue;
       top[k] = v;
     }
-    const scenes = (saved_scenes || []).slice(0, 50).map(sanitizeSceneForFirestore);
+    const scenes = (saved_scenes || []).slice(0, 80).map(sanitizeSceneForFirestore);
     // Deep-clone so subsequent in-place mutations to `proj` cannot leak in.
     return JSON.parse(JSON.stringify({ ...top, saved_scenes: scenes }));
   };
@@ -209,7 +209,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
     const prevScenes: Array<Record<string, any>> = Array.isArray(prev.saved_scenes)
       ? prev.saved_scenes
       : [];
-    const currRawScenes = (proj.saved_scenes || []).slice(0, 50);
+    const currRawScenes = (proj.saved_scenes || []).slice(0, 80);
     const currScenes = currRawScenes.map(sanitizeSceneForFirestore);
 
     let scenesTouched = false;
