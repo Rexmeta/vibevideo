@@ -4,6 +4,8 @@ import { getModels, getModelsByType } from '../../services/modelService';
 import { DEFAULT_CAPTION_STYLE } from '../../services/captionService';
 import { listPacks } from '../../services/contextPackService';
 import { jobManager } from '../../services/jobManager';
+import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from '../../services/apiKeyService';
+import { ApiKeyRequiredModal } from '../ApiKeyRequiredModal';
 import {
   Scene,
   ViewState,
@@ -48,13 +50,47 @@ interface ProviderProps {
   userId: string;
   onNavigate: (view: ViewState) => void;
   initialProjectId?: string | null;
+  /**
+   * Invoked when the wizard needs the host environment to surface its API key
+   * picker (AI Studio host bridge or admin/settings page in the standalone
+   * deployment). Provided by App so the modal "Select API Key" button works
+   * the same way as the top-level banner.
+   */
+  onRequestSelectKey?: () => void | Promise<void>;
   children: React.ReactNode;
 }
+
+const AISTUDIO_CHECK_TIMEOUT_MS = 1500;
+
+const isAiStudioEnv = (): boolean => {
+  try { return typeof window !== 'undefined' && !!(window as any).aistudio; } catch { return false; }
+};
+
+/**
+ * Unified "is a Google key actually selectable?" probe.
+ *
+ * Local store wins instantly. In AI Studio, the host may have a
+ * host-selected key that never lands in localStorage — we must ask
+ * the bridge. The race protects against a hung host call.
+ */
+const hasSelectableGoogleKey = async (): Promise<boolean> => {
+  if (hasAnyGoogleApiKey()) return true;
+  if (!isAiStudioEnv()) return false;
+  try {
+    return await Promise.race<boolean>([
+      Promise.resolve((window as any).aistudio.hasSelectedApiKey()).then(v => !!v),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(false), AISTUDIO_CHECK_TIMEOUT_MS)),
+    ]);
+  } catch {
+    return false;
+  }
+};
 
 export const WizardProvider: React.FC<ProviderProps> = ({
   userId,
   onNavigate,
   initialProjectId,
+  onRequestSelectKey,
   children,
 }) => {
   // ---- Identity / step ----
@@ -444,7 +480,87 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     sync,
   });
 
-  const { handleBatchVideos, handleSingleVideo } = useVideoActions({
+  // ---- API key gate (Veo) ----
+  // Step 5 / Quick Pipeline both call into the video handlers below. We
+  // intercept those calls when no Google key is registered, surface a
+  // friendly modal, and resume execution automatically once a key shows up
+  // (either via the AI Studio host picker or the admin settings page).
+  const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false);
+  const apiKeyModalAistudioRef = useRef<boolean>(false);
+  const pendingKeyResolversRef = useRef<Array<(ok: boolean) => void>>([]);
+
+  const flushPendingKeyWaiters = async () => {
+    if (pendingKeyResolversRef.current.length === 0) return;
+    const ok = await hasSelectableGoogleKey();
+    if (!ok) return;
+    const queued = pendingKeyResolversRef.current;
+    pendingKeyResolversRef.current = [];
+    setApiKeyModalOpen(false);
+    queued.forEach(r => r(true));
+  };
+
+  // While the modal is open, watch for a key being registered and auto-resume
+  // every queued caller. Storage / custom events cover localStorage edits
+  // (admin page, other tabs). The window 'focus' handler is what catches the
+  // AI Studio host bridge case, where the host picker may have set a
+  // host-selected key that never touches localStorage.
+  useEffect(() => {
+    if (!apiKeyModalOpen) return;
+    const flush = () => { void flushPendingKeyWaiters(); };
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key || e.key === 'vibe_model_api_keys' || e.key === 'vibe_ai_models') flush();
+    };
+    window.addEventListener(API_KEY_CHANGE_EVENT, flush);
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', flush);
+    return () => {
+      window.removeEventListener(API_KEY_CHANGE_EVENT, flush);
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', flush);
+    };
+  }, [apiKeyModalOpen]);
+
+  // Defensive lifecycle cleanup: if the wizard unmounts (e.g. navigating
+  // away to admin) while video actions are still suspended, resolve every
+  // queued waiter as `false` so their promise chains don't leak.
+  useEffect(() => {
+    return () => {
+      const queued = pendingKeyResolversRef.current;
+      pendingKeyResolversRef.current = [];
+      queued.forEach(r => r(false));
+    };
+  }, []);
+
+  const ensureGoogleApiKey = async (): Promise<boolean> => {
+    if (await hasSelectableGoogleKey()) return true;
+    apiKeyModalAistudioRef.current = isAiStudioEnv();
+    setApiKeyModalOpen(true);
+    return new Promise<boolean>(resolve => {
+      pendingKeyResolversRef.current.push(resolve);
+    });
+  };
+
+  const cancelApiKeyModal = () => {
+    const queued = pendingKeyResolversRef.current;
+    pendingKeyResolversRef.current = [];
+    setApiKeyModalOpen(false);
+    queued.forEach(r => r(false));
+  };
+
+  const handleSelectKeyClick = async () => {
+    if (onRequestSelectKey) {
+      try { await onRequestSelectKey(); } catch (e) {
+        console.warn('[Wizard] onRequestSelectKey failed:', e);
+      }
+    }
+    // After the host bridge / admin redirect resolves, flush waiters using
+    // the unified probe so an AI-Studio-only host key counts the same as a
+    // localStorage entry. Outside AI Studio, the admin redirect unmounts
+    // the wizard, so this is a best-effort flush only.
+    await flushPendingKeyWaiters();
+  };
+
+  const { handleBatchVideos: rawHandleBatchVideos, handleSingleVideo: rawHandleSingleVideo } = useVideoActions({
     userId,
     projectId,
     topic,
@@ -468,6 +584,18 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     trackBlobUrl,
     sync,
   });
+
+  const handleBatchVideos = async (): Promise<void> => {
+    const ok = await ensureGoogleApiKey();
+    if (!ok) return;
+    return rawHandleBatchVideos();
+  };
+
+  const handleSingleVideo = async (idx: number): Promise<void> => {
+    const ok = await ensureGoogleApiKey();
+    if (!ok) return;
+    return rawHandleSingleVideo(idx);
+  };
 
   // If an in-flight job for this project already exists in the global
   // JobManager (because it started in a previous wizard mount, and the
@@ -683,5 +811,15 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     statsRef,
   };
 
-  return <WizardCtx.Provider value={value}>{children}</WizardCtx.Provider>;
+  return (
+    <WizardCtx.Provider value={value}>
+      {children}
+      <ApiKeyRequiredModal
+        open={apiKeyModalOpen}
+        aistudioMode={apiKeyModalAistudioRef.current}
+        onSelectKey={handleSelectKeyClick}
+        onClose={cancelApiKeyModal}
+      />
+    </WizardCtx.Provider>
+  );
 };

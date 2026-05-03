@@ -10,6 +10,7 @@ interface ProjectWizardProps {
   onNavigate: (view: ViewState) => void;
   onStartFreshProject?: () => void;
   initialProjectId?: string | null;
+  onRequestSelectKey?: () => void | Promise<void>;
 }
 
 const WizardModeRouter: React.FC<{ initialProjectId?: string | null; onStartFreshProject?: () => void }> = ({ initialProjectId, onStartFreshProject }) => {
@@ -89,9 +90,9 @@ const WizardModeRouter: React.FC<{ initialProjectId?: string | null; onStartFres
   return <WizardShell onSwitchMode={switchMode} onStartFreshProject={onStartFreshProject} />;
 };
 
-export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate, onStartFreshProject, initialProjectId }) => {
+export const ProjectWizard: React.FC<ProjectWizardProps> = ({ userId, onNavigate, onStartFreshProject, initialProjectId, onRequestSelectKey }) => {
   return (
-    <WizardProvider userId={userId} onNavigate={onNavigate} initialProjectId={initialProjectId}>
+    <WizardProvider userId={userId} onNavigate={onNavigate} initialProjectId={initialProjectId} onRequestSelectKey={onRequestSelectKey}>
       <WizardModeRouter initialProjectId={initialProjectId} onStartFreshProject={onStartFreshProject} />
     </WizardProvider>
   );

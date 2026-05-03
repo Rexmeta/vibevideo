@@ -262,6 +262,7 @@ const App: React.FC = () => {
               onNavigate={handleNavigate} 
               onStartFreshProject={handleStartFreshProject}
               initialProjectId={editingProjectId}
+              onRequestSelectKey={handleSelectKey}
             />
           </div>
         )}
