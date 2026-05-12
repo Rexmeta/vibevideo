@@ -1,5 +1,10 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile } from '@ffmpeg/util';
+// Task #106 — bundle the FFmpeg core via Vite so we don't depend on a CDN
+// (unpkg) for the worker handshake. `?url` returns a same-origin URL that
+// works inside the FFmpeg worker. The CDN URLs below are kept as a fallback.
+import ffmpegCoreUrl from '@ffmpeg/core?url';
+import ffmpegWasmUrl from '@ffmpeg/core/wasm?url';
 import type { TransitionType, MotionPreset, TextOverlay, CaptionWord, CaptionStyle } from '../types';
 import { renderCaptionFrame } from './captionService';
 import { FRIENDLY_OOM_MESSAGE, isMemoryRelatedError } from './ffmpegLimits';
@@ -153,22 +158,88 @@ export const concatMp4Parts = async (
   }
 };
 
+const FFMPEG_LOAD_TIMEOUT_MS = 30000;
+const FFMPEG_CDN_CORE = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js';
+const FFMPEG_CDN_WASM = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm';
+
+export class FFmpegLoadTimeoutError extends Error {
+  override readonly name = 'FFmpegLoadTimeoutError';
+  constructor(message = 'FFmpeg 로딩이 시간 내에 완료되지 않았습니다.') {
+    super(message);
+  }
+}
+
+const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new FFmpegLoadTimeoutError(
+      `${label} (${Math.round(ms / 1000)}s 초과)`
+    )), ms);
+    p.then(v => { clearTimeout(t); resolve(v); },
+           e => { clearTimeout(t); reject(e); });
+  });
+
+const tryLoad = async (
+  ffmpeg: FFmpeg,
+  coreURL: string,
+  wasmURL: string,
+  source: string
+): Promise<void> => {
+  console.log(`[FFmpeg] Loading core from ${source}...`);
+  await withTimeout(
+    ffmpeg.load({ coreURL, wasmURL }),
+    FFMPEG_LOAD_TIMEOUT_MS,
+    `FFmpeg ${source} 로드 실패`
+  );
+  console.log(`[FFmpeg] Core loaded from ${source}.`);
+};
+
 const getFFmpeg = async (): Promise<FFmpeg> => {
   if (ffmpegInstance) return ffmpegInstance;
   if (loadingPromise) return loadingPromise;
 
-  loadingPromise = (async () => {
+  const attempt = (async () => {
     const ffmpeg = new FFmpeg();
     ffmpeg.on('log', ({ message }) => {
       console.log(`[FFmpeg] ${message}`);
     });
-    await ffmpeg.load({
-      coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-      wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
-    });
+
+    try {
+      await tryLoad(ffmpeg, ffmpegCoreUrl, ffmpegWasmUrl, 'local bundle');
+    } catch (localErr) {
+      console.warn('[FFmpeg] Local core load failed, falling back to CDN:', localErr);
+      // Fresh instance for the retry — the previous one may be in a bad state.
+      try { ffmpeg.terminate(); } catch {}
+      const ffmpeg2 = new FFmpeg();
+      ffmpeg2.on('log', ({ message }) => {
+        console.log(`[FFmpeg] ${message}`);
+      });
+      try {
+        await tryLoad(ffmpeg2, FFMPEG_CDN_CORE, FFMPEG_CDN_WASM, 'CDN fallback');
+      } catch (cdnErr) {
+        console.error('[FFmpeg] CDN fallback also failed:', cdnErr);
+        try { ffmpeg2.terminate(); } catch {}
+        throw cdnErr instanceof FFmpegLoadTimeoutError
+          ? cdnErr
+          : new FFmpegLoadTimeoutError('FFmpeg 코어를 불러오지 못했습니다.');
+      }
+      ffmpegInstance = ffmpeg2;
+      return ffmpeg2;
+    }
+
     ffmpegInstance = ffmpeg;
     return ffmpeg;
   })();
+
+  loadingPromise = attempt.catch((err) => {
+    // Reset cache so the next call gets a clean retry instead of returning
+    // the same rejected/pending promise forever.
+    ffmpegInstance = null;
+    loadingPromise = null;
+    throw err;
+  }).finally(() => {
+    // On success, clear the in-flight marker but keep the cached instance.
+    if (ffmpegInstance) loadingPromise = null;
+  }) as Promise<FFmpeg>;
 
   return loadingPromise;
 };

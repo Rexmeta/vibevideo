@@ -18,6 +18,9 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: 'dist',
     },
+    optimizeDeps: {
+      exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
+    },
     server: {
       port: 5000,
       host: '0.0.0.0',
