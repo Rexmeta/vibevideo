@@ -39,6 +39,9 @@ interface ExportActionsDeps {
   limitsVersion?: number;
 }
 
+export const FFMPEG_LOAD_FAILURE_MESSAGE =
+  'FFmpeg 로딩에 실패했습니다. 새로고침 후 다시 시도해 주세요.';
+
 export const useExportActions = (deps: ExportActionsDeps) => {
   const {
     scenes,
@@ -57,6 +60,25 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     trackBlobUrl,
     getDefaultPresentation,
   } = deps;
+
+  const lastFailedFFmpegLoadActionRef = React.useRef<(() => Promise<void>) | null>(null);
+  const [canRetryFFmpegLoad, setCanRetryFFmpegLoad] = React.useState(false);
+
+  const clearFFmpegLoadRetry = () => {
+    lastFailedFFmpegLoadActionRef.current = null;
+    setCanRetryFFmpegLoad(false);
+  };
+
+  const markFFmpegLoadFailure = (action: () => Promise<void>) => {
+    lastFailedFFmpegLoadActionRef.current = action;
+    setCanRetryFFmpegLoad(true);
+  };
+
+  const retryFFmpegLoad = async () => {
+    const action = lastFailedFFmpegLoadActionRef.current;
+    if (!action) return;
+    await action();
+  };
 
   const computeTotalDuration = (): number => {
     const fallbackPerScene = scenes.length > 0 ? (duration / scenes.length) || 6 : 6;
@@ -133,6 +155,7 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     setMergeProgress('FFmpeg 로딩 중...');
     setMergePercent(0);
     setMergedVideoUrl(null);
+    clearFFmpegLoadRetry();
     try {
       const captionsEnabled = captionStyle.preset !== 'none';
       const inputs: MergeInput[] = scenes.map(s => {
@@ -164,10 +187,13 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     } catch (err: any) {
       console.error('[Merge] Failed:', err);
       const friendly = err instanceof FFmpegLoadTimeoutError
-        ? 'FFmpeg 로딩에 실패했습니다. 새로고침 후 다시 시도해 주세요.'
+        ? FFMPEG_LOAD_FAILURE_MESSAGE
         : isMemoryRelatedError(err) ? FRIENDLY_OOM_MESSAGE : (err?.message || '합치기 실패');
       setMergeProgress(`오류: ${friendly}`);
       setMergePercent(0);
+      if (err instanceof FFmpegLoadTimeoutError) {
+        markFFmpegLoadFailure(handleMergeExport);
+      }
     } finally {
       setMerging(false);
     }
@@ -282,6 +308,7 @@ export const useExportActions = (deps: ExportActionsDeps) => {
         : `${chunks.length}개 파트로 나눠 내보내는 중...`
     );
     setMergePercent(0);
+    clearFFmpegLoadRetry();
 
     const renderedParts: Blob[] = [];
     const safeTopic = (topic || 'video').replace(/[\\/:*?"<>|]+/g, '_');
@@ -422,12 +449,15 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     } catch (err: any) {
       console.error('[Auto Split Export] Failed:', err);
       const friendly = err instanceof FFmpegLoadTimeoutError
-        ? 'FFmpeg 로딩에 실패했습니다. 새로고침 후 다시 시도해 주세요.'
+        ? FFMPEG_LOAD_FAILURE_MESSAGE
         : isMemoryRelatedError(err)
           ? FRIENDLY_OOM_MESSAGE
           : (err?.message || '자동 분할 내보내기 실패');
       setMergeProgress(`오류: ${friendly}`);
       setMergePercent(0);
+      if (err instanceof FFmpegLoadTimeoutError) {
+        markFFmpegLoadFailure(handleAutoSplitExport);
+      }
     } finally {
       setMerging(false);
     }
@@ -442,5 +472,7 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     handleAutoSplitExport,
     exportRiskAssessment: buildAssessment(),
     autoSplitPlan: buildAutoSplitPlan(),
+    canRetryFFmpegLoad,
+    retryFFmpegLoad,
   };
 };

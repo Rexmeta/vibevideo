@@ -32,6 +32,8 @@ export const Step7Export: React.FC = () => {
     autoSplitPlan,
     handleAutoSplitExport,
     duration,
+    canRetryFFmpegLoad,
+    retryFFmpegLoad,
   } = w;
 
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -202,7 +204,17 @@ export const Step7Export: React.FC = () => {
           </div>
         )}
         {!merging && mergeProgress.startsWith('오류') && (
-          <p className="text-sm text-red-500 font-semibold max-w-md text-center">{mergeProgress}</p>
+          <div className="flex flex-col items-center gap-2 max-w-md">
+            <p className="text-sm text-red-500 font-semibold text-center">{mergeProgress}</p>
+            {canRetryFFmpegLoad && (
+              <button
+                onClick={retryFFmpegLoad}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white border-2 border-red-300 text-red-600 text-xs font-black uppercase tracking-wider hover:scale-[1.02] active:scale-95 transition-all"
+              >
+                <Icons.RefreshCw size={14} /> 다시 시도
+              </button>
+            )}
+          </div>
         )}
         {mergedVideoUrl && (
           <div className="w-full max-w-2xl mt-4">

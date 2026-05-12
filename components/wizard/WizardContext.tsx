@@ -727,6 +727,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     handleAutoSplitExport,
     exportRiskAssessment,
     autoSplitPlan,
+    canRetryFFmpegLoad,
+    retryFFmpegLoad,
   } = useExportActions({
     scenes,
     captionStyle,
@@ -956,6 +958,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     handleSingleVideo: wrappedHandleSingleVideo,
     handleRenderPresentation: wrappedHandleRenderPresentation,
     handleAutoSplitExport: wrappedHandleAutoSplitExport,
+    canRetryFFmpegLoad,
+    retryFFmpegLoad,
     exportRiskAssessment,
     refreshExportLimits,
     autoSplitPlan,

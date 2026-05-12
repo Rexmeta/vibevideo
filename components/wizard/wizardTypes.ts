@@ -193,6 +193,8 @@ export interface WizardContextValue {
   handleSingleVideo: (idx: number) => Promise<void>;
   handleRenderPresentation: () => Promise<void>;
   handleAutoSplitExport: () => Promise<void>;
+  canRetryFFmpegLoad: boolean;
+  retryFFmpegLoad: () => Promise<void>;
   exportRiskAssessment: ExportRiskAssessment;
   refreshExportLimits: () => void;
   autoSplitPlan: SafeChunkPlan;
