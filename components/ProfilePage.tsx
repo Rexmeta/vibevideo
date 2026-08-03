@@ -88,6 +88,8 @@ const GoogleApiKeyCard: React.FC<GoogleApiKeyCardProps> = ({ source, maskedKey, 
   );
 };
 
+const RULES_VERIFIED_KEY = 'vibe_firebase_rules_verified';
+
 export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigate }) => {
   const [activeTab, setActiveTab] = useState<'general' | 'billing' | 'preferences'>('general');
   const [googleKeySource, setGoogleKeySource] = useState<GoogleApiKeySource>(() => getGoogleApiKeySource());
@@ -118,6 +120,17 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
     return undefined;
   }, []);
 
+  // On mount: if cloud sync is already ON and no verified flag, show the setup card
+  useEffect(() => {
+    if (isCloudSyncEnabled() && currentUser) {
+      const verified = localStorage.getItem(RULES_VERIFIED_KEY);
+      if (!verified) {
+        setShowSetupCard(true);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleCloudSyncToggle = async (enable: boolean) => {
     if (cloudTogglePending) return;
     setCloudTogglePending(true);
@@ -133,6 +146,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
       } else {
         setShowSetupCard(false);
         setSetupVerified(false);
+        localStorage.removeItem(RULES_VERIFIED_KEY);
         setCloudToggleMsg({ kind: 'success', text: '로컬 전용 모드로 전환됐습니다. 모든 데이터는 이 기기에만 저장됩니다.' });
       }
     } catch {
@@ -162,6 +176,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
       } else {
         setPingStatus('success');
         setSetupVerified(true);
+        localStorage.setItem(RULES_VERIFIED_KEY, '1');
       }
     } catch (e: any) {
       setPingStatus('error');
