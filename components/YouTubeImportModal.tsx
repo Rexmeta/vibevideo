@@ -148,6 +148,7 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     chars: new Set(),
     bgs: new Set(),
   });
+  const [scriptCopied, setScriptCopied] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Focus input on open
@@ -218,15 +219,42 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     onClose();
   };
 
+  const handleCopyScript = (a: YoutubeAnalysis) => {
+    const text = a.scenes
+      .map((s: YoutubeScene) => s.scriptText)
+      .filter(Boolean)
+      .join('\n\n');
+    navigator.clipboard.writeText(text).then(() => {
+      setScriptCopied(true);
+      setTimeout(() => setScriptCopied(false), 2000);
+    });
+  };
+
   // ── Render helpers ──────────────────────────────────────────────────────
 
   const renderBreakdownTab = (a: YoutubeAnalysis) => (
     <div className="space-y-8">
       {/* Scene breakdown */}
       <section>
-        <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">
-          <Icons.Film size={12} /> 씬 분석 ({a.scenes.length}개 씬)
-        </h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 flex items-center gap-2">
+            <Icons.Film size={12} /> 씬 분석 ({a.scenes.length}개 씬)
+          </h3>
+          <button
+            onClick={() => handleCopyScript(a)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-black transition-all border ${
+              scriptCopied
+                ? 'bg-green-50 text-green-600 border-green-200'
+                : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'
+            }`}
+          >
+            {scriptCopied ? (
+              <><Icons.Check size={11} /> 복사됨 ✓</>
+            ) : (
+              <><Icons.Copy size={11} /> 스크립트 복사</>
+            )}
+          </button>
+        </div>
         <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
           {a.scenes.map((scene: YoutubeScene, i: number) => (
             <div key={i} className="bg-gray-50 rounded-2xl p-4 flex gap-4">

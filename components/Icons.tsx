@@ -68,6 +68,7 @@ import {
   LayoutGrid,
   List,
   Youtube,
+  Copy,
 } from 'lucide-react';
 
 export const Icons = {
@@ -80,5 +81,5 @@ export const Icons = {
   Layers, Move, Palette, Sparkles, ZoomIn, ZoomOut, ArrowLeftRight, ArrowUpDown, Circle, SlidersHorizontal, Presentation, PanelLeft,
   Upload, ChevronLeft,
   GripVertical, LayoutGrid, List,
-  Youtube,
+  Youtube, Copy,
 };
