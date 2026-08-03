@@ -14,6 +14,7 @@ import { NewProjectModal } from './components/NewProjectModal';
 import { ViewState } from './types';
 import type { YoutubeAnalysis, OptimizationTip } from './types';
 import { buildRemixProject } from './services/youtubeAnalysisService';
+import { saveProjectToCloud } from './services/storageService';
 import { Icons } from './components/Icons';
 import { auth, isFirebaseConfigured } from './services/firebaseConfig';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -245,21 +246,12 @@ const App: React.FC = () => {
     }
     try {
       const { project } = buildRemixProject(currentUser.uid, analysis, selectedTips);
-      // Persist to localStorage so useRestore can pick it up immediately.
-      try {
-        localStorage.setItem(
-          `vibe_video_backup_${project.id}`,
-          JSON.stringify({ ...project, saved_scenes: [] }),
-        );
-        // Keep the project index up to date.
-        const indexKey = `vibe_project_index_${currentUser.uid}`;
-        const index: string[] = JSON.parse(localStorage.getItem(indexKey) || '[]');
-        if (!index.includes(project.id)) index.unshift(project.id);
-        if (index.length > 50) index.length = 50;
-        localStorage.setItem(indexKey, JSON.stringify(index));
-      } catch (storageErr) {
-        console.warn('[Remix] localStorage write failed:', storageErr);
-      }
+      // Persist to localStorage + Firestore so the project survives sign-out
+      // and multi-device use. Errors are swallowed — the localStorage fallback
+      // inside saveProjectToCloud ensures the wizard can still restore.
+      saveProjectToCloud(project).catch(err =>
+        console.warn('[Remix] saveProjectToCloud failed:', err),
+      );
       setExpressMode(false);
       setEditingProjectId(project.id);
       setCurrentView('create');
