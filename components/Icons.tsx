@@ -64,6 +64,9 @@ import {
   PanelLeft,
   Upload,
   ChevronLeft,
+  GripVertical,
+  LayoutGrid,
+  List
 } from 'lucide-react';
 
 export const Icons = {
@@ -75,4 +78,5 @@ export const Icons = {
   ChevronDown, Key,
   Layers, Move, Palette, Sparkles, ZoomIn, ZoomOut, ArrowLeftRight, ArrowUpDown, Circle, SlidersHorizontal, Presentation, PanelLeft,
   Upload, ChevronLeft,
+  GripVertical, LayoutGrid, List
 };

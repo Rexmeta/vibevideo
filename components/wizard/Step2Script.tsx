@@ -3,6 +3,7 @@ import { Icons } from '../Icons';
 import { generateScript, segmentScriptIntoScenes, generateStyleSheet } from '../../services/geminiService';
 import { useWizard } from './WizardContext';
 import type { CreativeBrief } from '../../types';
+import { StoryboardCard } from './StoryboardCard';
 
 function alertGeminiError(prefix: string, e: any) {
   const msg = String(e?.message || '');
@@ -14,6 +15,8 @@ function alertGeminiError(prefix: string, e: any) {
     alert(`${prefix}: ${msg || '알 수 없는 오류'}`);
   }
 }
+
+type Tab = 'script' | 'storyboard';
 
 const PURPOSE_LABELS: Record<string, string> = {
   awareness: '인지도 제고',
@@ -102,6 +105,7 @@ export const Step2Script: React.FC = () => {
     setStep,
     setMaxStep,
     setScenes,
+    scenes,
     aspectRatio,
     characterProfile,
     characterReferences,
@@ -109,13 +113,72 @@ export const Step2Script: React.FC = () => {
     setStyleSheet,
     sync,
     maxStep,
+    updateSceneAt,
   } = w;
+
+  const [activeTab, setActiveTab] = useState<Tab>('script');
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  const hasScenes = scenes.length > 0;
+
+  // ── Drag and drop handlers ─────────────────────────────────────────────────
+
+  const handleDragStart = (e: React.DragEvent, i: number) => {
+    setDragIdx(i);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragEnd = () => {
+    setDragIdx(null);
+    setDragOverIdx(null);
+  };
+
+  const handleDragOver = (e: React.DragEvent, i: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverIdx !== i) setDragOverIdx(i);
+  };
+
+  const handleDrop = (e: React.DragEvent, targetIdx: number) => {
+    e.preventDefault();
+    if (dragIdx === null || dragIdx === targetIdx) {
+      setDragIdx(null);
+      setDragOverIdx(null);
+      return;
+    }
+
+    const next = [...scenes];
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(targetIdx, 0, moved);
+
+    // Renumber scene_number to match new order (1-based)
+    const renumbered = next.map((sc, idx) => ({ ...sc, scene_number: idx + 1 }));
+    setScenes(renumbered);
+    sync(undefined, renumbered);
+
+    setDragIdx(null);
+    setDragOverIdx(null);
+  };
+
+  // ── Inline edit handler ────────────────────────────────────────────────────
+
+  const handleCardSave = (
+    idx: number,
+    updates: { script_segment?: string; visual_prompt?: string }
+  ) => {
+    updateSceneAt(idx, updates);
+    sync();
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full gap-8">
       {hasBriefContent(creativeBrief) && (
         <BriefBanner brief={creativeBrief} onGoToStep1={() => setStep(1)} />
       )}
+      {/* Topic input + generate button */}
       <div className="flex gap-4">
         <input
           value={topic}
@@ -142,12 +205,75 @@ export const Step2Script: React.FC = () => {
           <Icons.Wand2 size={28} />
         </button>
       </div>
-      <textarea
-        value={script}
-        onChange={e => setScript(e.target.value)}
-        className="flex-1 p-10 bg-gray-50 rounded-[3rem] outline-none font-serif text-xl leading-relaxed shadow-inner"
-        placeholder="AI가 작성한 스크립트..."
-      />
+
+      {/* Tabs — only shown when scenes exist */}
+      {hasScenes && (
+        <div className="flex gap-2 p-1.5 bg-gray-100 rounded-2xl w-fit">
+          <button
+            onClick={() => setActiveTab('script')}
+            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-black transition-all ${
+              activeTab === 'script'
+                ? 'bg-white shadow-sm text-brand-dark'
+                : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            <Icons.List size={15} />
+            상세 보기
+          </button>
+          <button
+            onClick={() => setActiveTab('storyboard')}
+            className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-black transition-all ${
+              activeTab === 'storyboard'
+                ? 'bg-white shadow-sm text-brand-dark'
+                : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            <Icons.LayoutGrid size={15} />
+            스토리보드
+            <span className="bg-brand-cyan/20 text-teal-700 text-[10px] font-black px-1.5 py-0.5 rounded-full">
+              {scenes.length}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {/* Script textarea — shown in script tab or when no scenes yet */}
+      {(activeTab === 'script' || !hasScenes) && (
+        <textarea
+          value={script}
+          onChange={e => setScript(e.target.value)}
+          className="flex-1 p-10 bg-gray-50 rounded-[3rem] outline-none font-serif text-xl leading-relaxed shadow-inner min-h-[320px]"
+          placeholder="AI가 작성한 스크립트..."
+        />
+      )}
+
+      {/* Storyboard grid */}
+      {activeTab === 'storyboard' && hasScenes && (
+        <div className="flex-1 flex flex-col gap-4">
+          <p className="text-xs text-gray-400 font-medium flex items-center gap-1.5">
+            <Icons.GripVertical size={12} />
+            카드를 드래그해 씬 순서를 바꿀 수 있습니다. 카드를 클릭하면 인라인 편집이 가능합니다.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 pb-4">
+            {scenes.map((s, i) => (
+              <StoryboardCard
+                key={s.id ?? i}
+                scene={s}
+                index={i}
+                dragging={dragIdx === i}
+                dragOver={dragOverIdx === i}
+                onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
+                onSave={handleCardSave}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Navigation buttons */}
       <div className="flex gap-4">
         <button onClick={() => setStep(1)} className="px-10 py-6 rounded-full font-black text-gray-400 hover:text-black transition-colors">
           Back
