@@ -677,7 +677,14 @@ export const saveProjectFieldsToCloud = async (
 };
 
 export const saveProjectWithConflictCheck = async (project: Project): Promise<{ saved: boolean; conflict: boolean }> => {
-  if (!project.id || !db) {
+  if (!isCloudSyncEnabled() || !db) {
+    // Cloud sync is off — delegate to saveProjectToCloud which handles the
+    // local-only path (localStorage + index update) without touching Firestore.
+    await saveProjectToCloud(project);
+    return { saved: true, conflict: false };
+  }
+
+  if (!project.id) {
     await saveProjectToCloud(project);
     return { saved: true, conflict: false };
   }
@@ -1061,7 +1068,7 @@ export const backfillLocalProjectsToCloud = async (
   const getCloud = _testDeps?.getCloud ?? getProjectFromCloud;
   const save = _testDeps?.save ?? saveProjectToCloud;
   if (!userId || (!db && !_testDeps?.ignoreDb)) return 0;
-  if (!isCloudSyncEnabled()) return 0;
+  if (!isCloudSyncEnabled() && !_testDeps?.ignoreDb) return 0;
   if (isFirestoreDisabled()) return 0;
   if (backfillInFlight) return 0;
   if (!opts.force && backfillRanForUser === userId) return 0;

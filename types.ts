@@ -473,3 +473,79 @@ export interface IntroOutroConfig {
   /** Duration in seconds (1–5) */
   durationSec: number;
 }
+
+// ─── YouTube Analysis (Gemini-based) ───────────────────────────────────────
+
+/** A single scene/segment identified inside the YouTube video. */
+export interface YoutubeScene {
+  /** Approximate start time in seconds (best-effort from Gemini). */
+  startSec: number;
+  /** Approximate end time in seconds. */
+  endSec: number;
+  /** Spoken script text for this segment. */
+  scriptText: string;
+  /** Visual description of what appears on screen. */
+  visualDescription: string;
+}
+
+/** A character detected in the video (host, guest, actor, etc.). */
+export interface DetectedCharacter {
+  /** Descriptive name or role label (e.g. "Host", "Female presenter"). */
+  name: string;
+  /** Physical/appearance notes (gender, hair, clothing, etc.). */
+  description: string;
+  /** Approximate fraction of video time this character appears (0–1). */
+  screenTimeFraction: number;
+}
+
+/** A single strength or weakness finding with a short rationale. */
+export interface AnalysisFinding {
+  /** Short label (e.g. "Strong hook", "Slow pacing mid-video"). */
+  label: string;
+  /** One-sentence explanation. */
+  rationale: string;
+}
+
+/** An actionable view-maximisation tip. */
+export interface OptimizationTip {
+  /** Short, imperative recommendation (e.g. "Move the hook to the first 2 seconds"). */
+  tip: string;
+  /** Why this would increase views / retention. */
+  reasoning: string;
+  /** Estimated impact (1 = low … 3 = high). */
+  impactLevel: 1 | 2 | 3;
+}
+
+/** Full structured result returned by `analyzeYoutubeVideo`. */
+export interface YoutubeAnalysis {
+  /** The original YouTube URL that was analysed. */
+  videoUrl: string;
+  /** Title detected from the video content (not YouTube metadata). */
+  detectedTitle: string;
+  /** Estimated duration in seconds. */
+  detectedDurationSec: number;
+  /** Detected platform format (e.g. "YouTube Shorts", "YouTube long-form", "Landscape vlog"). */
+  format: string;
+  /** Scene-by-scene breakdown. */
+  scenes: YoutubeScene[];
+  /** Characters detected in the video. */
+  characters: DetectedCharacter[];
+  /** Dominant background settings / environments (e.g. "home office", "outdoor park"). */
+  backgrounds: string[];
+  /** Engagement score axes (0–10 each). */
+  scores: {
+    hookStrength: number;
+    pacing: number;
+    ctaEffectiveness: number;
+    thumbnailAppeal: number;
+    retentionCurve: number;
+  };
+  /** 3–5 notable strengths. */
+  strengths: AnalysisFinding[];
+  /** 3–5 notable weaknesses. */
+  weaknesses: AnalysisFinding[];
+  /** 5–8 ordered view-maximisation tips (highest impact first). */
+  viewOptimizationTips: OptimizationTip[];
+  /** Holistic score 0–10. */
+  overallScore: number;
+}

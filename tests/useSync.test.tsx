@@ -60,6 +60,7 @@ const buildDeps = (overrides: Partial<any> = {}) => ({
   statsRef: makeRef({ imagesGenerated: 1 } as any),
   characterReferenceImageRef: makeRef<string | undefined>(undefined),
   characterReferencesRef: makeRef([]),
+  creativeBriefRef: makeRef<Record<string, any>>({}),
   savedModeRef: makeRef<'quick' | 'pro' | null>('pro'),
   syncPendingRef: makeRef(false),
   blobUrlsRef: makeRef(new Set<string>()),
