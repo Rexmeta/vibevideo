@@ -61,7 +61,9 @@ import {
   Circle,
   SlidersHorizontal,
   Presentation,
-  PanelLeft
+  PanelLeft,
+  Upload,
+  ChevronLeft,
 } from 'lucide-react';
 
 export const Icons = {
@@ -71,5 +73,6 @@ export const Icons = {
   RefreshCw, AlertCircle, AlertTriangle, Download, X, Maximize2,
   Plus, Trash2, Edit3, Save, Globe, Film, RotateCcw, Search, Clock,
   ChevronDown, Key,
-  Layers, Move, Palette, Sparkles, ZoomIn, ZoomOut, ArrowLeftRight, ArrowUpDown, Circle, SlidersHorizontal, Presentation, PanelLeft
+  Layers, Move, Palette, Sparkles, ZoomIn, ZoomOut, ArrowLeftRight, ArrowUpDown, Circle, SlidersHorizontal, Presentation, PanelLeft,
+  Upload, ChevronLeft,
 };

@@ -699,6 +699,207 @@ export const isFFmpegSupported = (): boolean => {
   return typeof SharedArrayBuffer !== 'undefined' || typeof WebAssembly !== 'undefined';
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Brand Kit helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type BrandLogoPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
+
+/**
+ * Build the FFmpeg overlay position expression for a given corner/center.
+ * Returns (x, y) expressions for the overlay filter.
+ */
+const logoPositionExpr = (pos: BrandLogoPosition, padPx = 16): [string, string] => {
+  switch (pos) {
+    case 'top-left':     return [`${padPx}`, `${padPx}`];
+    case 'top-right':    return [`main_w-overlay_w-${padPx}`, `${padPx}`];
+    case 'bottom-left':  return [`${padPx}`, `main_h-overlay_h-${padPx}`];
+    case 'center':       return [`(main_w-overlay_w)/2`, `(main_h-overlay_h)/2`];
+    default:             return [`main_w-overlay_w-${padPx}`, `main_h-overlay_h-${padPx}`]; // bottom-right
+  }
+};
+
+/**
+ * Apply a logo watermark to a video blob via FFmpeg overlay.
+ * Returns a new blob with the logo burned in.
+ */
+export const applyLogoWatermark = async (
+  videoBlob: Blob,
+  logoUrl: string,
+  position: BrandLogoPosition = 'bottom-right',
+  opacity: number = 0.8,
+  onProgress?: (stage: string) => void,
+): Promise<Blob> => {
+  const ffmpeg = await getFFmpeg();
+
+  onProgress?.('로고 워터마크 적용 중...');
+
+  // Write input video
+  const videoData = new Uint8Array(await videoBlob.arrayBuffer());
+  await ffmpeg.writeFile('wm_input.mp4', videoData);
+
+  // Fetch and write logo
+  const logoData = await fetchAsUint8Array(logoUrl);
+  const ext = logoUrl.match(/\.(png|svg|jpe?g|webp)/i)?.[1]?.replace('jpeg', 'jpg') || 'png';
+  const logoFile = `wm_logo.${ext}`;
+  await ffmpeg.writeFile(logoFile, logoData);
+
+  const [x, y] = logoPositionExpr(position);
+  const alphaFilter = `[1:v]format=rgba,colorchannelmixer=aa=${opacity.toFixed(2)}[logo_t]`;
+  const overlayFilter = `[0:v][logo_t]overlay=${x}:${y}[out]`;
+
+  try {
+    await ffmpeg.exec([
+      '-i', 'wm_input.mp4',
+      '-i', logoFile,
+      '-filter_complex', `${alphaFilter};${overlayFilter}`,
+      '-map', '[out]',
+      '-map', '0:a?',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      '-c:a', 'copy',
+      '-y', 'wm_output.mp4',
+    ]);
+  } catch (e) {
+    // If the alpha filter fails (e.g. SVG), try simpler overlay without alpha
+    try {
+      await ffmpeg.exec([
+        '-i', 'wm_input.mp4',
+        '-i', logoFile,
+        '-filter_complex', `[0:v][1:v]overlay=${x}:${y}[out]`,
+        '-map', '[out]',
+        '-map', '0:a?',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+        '-c:a', 'copy',
+        '-y', 'wm_output.mp4',
+      ]);
+    } catch {
+      // Watermark failed — return original blob unmodified
+      console.warn('[BrandKit] logo watermark failed, returning original');
+      try { await ffmpeg.deleteFile('wm_input.mp4'); } catch {}
+      try { await ffmpeg.deleteFile(logoFile); } catch {}
+      return videoBlob;
+    }
+  }
+
+  const data = await ffmpeg.readFile('wm_output.mp4');
+
+  try { await ffmpeg.deleteFile('wm_input.mp4'); } catch {}
+  try { await ffmpeg.deleteFile(logoFile); } catch {}
+  try { await ffmpeg.deleteFile('wm_output.mp4'); } catch {}
+
+  return new Blob([data], { type: 'video/mp4' });
+};
+
+export interface SlideClipConfig {
+  /** Main title text */
+  text: string;
+  /** Optional subtitle */
+  subtext?: string;
+  /** CSS hex colour e.g. "#1a1a2e" */
+  bgColor: string;
+  /** Optional background image URL */
+  bgImageUrl?: string;
+  /** Duration in seconds (1–5) */
+  durationSec: number;
+}
+
+/**
+ * Generate a short slide clip (solid colour background + text overlay) via canvas + FFmpeg.
+ * Returns a blob URL of the resulting MP4 clip.
+ *
+ * Uses canvas to render the frame, then encodes to H.264 via FFmpeg's `-loop 1 -t N` trick.
+ * This avoids dependency on FFmpeg's drawtext / fontconfig subsystems.
+ */
+export const generateSlideClip = async (
+  config: SlideClipConfig,
+  resolution: { w: number; h: number },
+): Promise<Blob> => {
+  const { w, h } = resolution;
+  const { bgColor, text, subtext, durationSec } = config;
+
+  // ── 1. Render the frame on a canvas ──────────────────────────────────────
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+
+  // Background colour (or background image if provided)
+  if (config.bgImageUrl) {
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.crossOrigin = 'anonymous';
+        el.onload = () => resolve(el);
+        el.onerror = reject;
+        el.src = config.bgImageUrl!;
+      });
+      // Cover-fit
+      const imgRatio = img.width / img.height;
+      const canvasRatio = w / h;
+      let sx = 0, sy = 0, sw = img.width, sh = img.height;
+      if (imgRatio > canvasRatio) { sw = img.height * canvasRatio; sx = (img.width - sw) / 2; }
+      else { sh = img.width / canvasRatio; sy = (img.height - sh) / 2; }
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+    } catch {
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, w, h);
+    }
+  } else {
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  // Title text
+  if (text) {
+    const fontSize = Math.round(h * 0.07);
+    ctx.font = `900 ${fontSize}px "Noto Sans KR", "Malgun Gothic", Arial, sans-serif`;
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = 8;
+    const y = subtext ? h * 0.45 : h * 0.5;
+    ctx.fillText(text, w / 2, y);
+  }
+
+  // Subtitle
+  if (subtext) {
+    const subSize = Math.round(h * 0.045);
+    ctx.font = `600 ${subSize}px "Noto Sans KR", "Malgun Gothic", Arial, sans-serif`;
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.shadowColor = 'rgba(0,0,0,0.4)';
+    ctx.shadowBlur = 6;
+    ctx.fillText(subtext, w / 2, h * 0.57);
+  }
+
+  const frameBlob = await new Promise<Blob>((resolve) => {
+    canvas.toBlob((b) => resolve(b!), 'image/png');
+  });
+
+  // ── 2. Encode to MP4 via FFmpeg ───────────────────────────────────────────
+  const ffmpeg = await getFFmpeg();
+  const frameData = new Uint8Array(await frameBlob.arrayBuffer());
+  await ffmpeg.writeFile('slide_frame.png', frameData);
+
+  await ffmpeg.exec([
+    '-loop', '1',
+    '-i', 'slide_frame.png',
+    '-vf', `scale=${w}:${h}`,
+    '-c:v', 'libx264',
+    '-preset', 'ultrafast',
+    '-pix_fmt', 'yuv420p',
+    '-t', String(durationSec),
+    '-an',
+    '-y', 'slide_out.mp4',
+  ]);
+
+  const data = await ffmpeg.readFile('slide_out.mp4');
+  try { await ffmpeg.deleteFile('slide_frame.png'); } catch {}
+  try { await ffmpeg.deleteFile('slide_out.mp4'); } catch {}
+
+  return new Blob([data], { type: 'video/mp4' });
+};
+
 export interface PresentationSceneInput {
   imageUrl: string;
   audioUrl?: string;

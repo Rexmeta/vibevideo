@@ -86,12 +86,15 @@ export const NavBar: React.FC<NavBarProps> = ({ onNavigate, currentView, isLogge
                   >
                     <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${auth?.currentUser?.uid || 'default'}`} alt="User Profile" />
                   </button>
-                  <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-2xl shadow-2xl border border-gray-100 opacity-0 group-hover/user:opacity-100 pointer-events-none group-hover/user:pointer-events-auto transition-all p-2 z-50">
+                  <div className="absolute right-0 top-full mt-2 w-52 bg-white rounded-2xl shadow-2xl border border-gray-100 opacity-0 group-hover/user:opacity-100 pointer-events-none group-hover/user:pointer-events-auto transition-all p-2 z-50">
                     <button onClick={() => onNavigate('profile')} className="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2">
                        <Icons.User size={14} /> Profile
                     </button>
                     <button onClick={() => onNavigate('api-keys')} className={`w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2 ${currentView === 'api-keys' ? 'text-brand-cyan' : ''}`}>
                        <Icons.Key size={14} /> API 키 설정
+                    </button>
+                    <button onClick={() => onNavigate('brand-kit')} className={`w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2 ${currentView === 'brand-kit' ? 'text-brand-cyan' : ''}`}>
+                       <Icons.Palette size={14} /> 브랜드 키트
                     </button>
                     {isAdmin && (
                       <button onClick={() => onNavigate('admin')} className="w-full text-left px-4 py-3 text-sm font-bold hover:bg-gray-50 rounded-xl flex items-center gap-2">

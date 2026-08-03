@@ -1,5 +1,5 @@
 import React from 'react';
-import { Scene, PresentationConfig, CaptionStyle } from '../../../types';
+import { Scene, PresentationConfig, CaptionStyle, BrandKit } from '../../../types';
 import {
   mergeAllScenes,
   MergeInput,
@@ -9,6 +9,8 @@ import {
   terminateFFmpegForCleanup,
   concatMp4Parts,
   FFmpegLoadTimeoutError,
+  applyLogoWatermark,
+  generateSlideClip,
 } from '../../../services/videoMergeService';
 import { isLongFormDuration } from '../../../services/chapterService';
 import { alignWordsToDuration } from '../../../services/captionService';
@@ -37,6 +39,8 @@ interface ExportActionsDeps {
   trackBlobUrl: (url: string) => void;
   getDefaultPresentation: (idx: number) => PresentationConfig;
   limitsVersion?: number;
+  /** Optional brand kit — when present, intro/outro clips are prepended/appended and logo is watermarked onto the final output. */
+  brandKit?: BrandKit;
 }
 
 export const FFMPEG_LOAD_FAILURE_MESSAGE =
@@ -59,6 +63,7 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     setDownloadingAll,
     trackBlobUrl,
     getDefaultPresentation,
+    brandKit,
   } = deps;
 
   const lastFailedFFmpegLoadActionRef = React.useRef<(() => Promise<void>) | null>(null);
@@ -170,9 +175,43 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     clearFFmpegLoadRetry();
     try {
       const captionsEnabled = captionStyle.preset !== 'none';
+      const resolution = getResolution(aspectRatio);
       const visibleScenes = scenes.filter(s => !s.hidden);
       const fallbackDur = visibleScenes.length > 0 ? (duration / visibleScenes.length) || 6 : 6;
-      const inputs: MergeInput[] = visibleScenes.map(s => {
+
+      // ── Brand Kit: generate intro/outro clips ────────────────────────────
+      const introClipUrl = brandKit?.introConfig
+        ? await (async () => {
+            try {
+              setMergeProgress('인트로 클립 생성 중...');
+              const blob = await generateSlideClip(brandKit.introConfig!, resolution);
+              const url = URL.createObjectURL(blob);
+              trackBlobUrl(url);
+              return url;
+            } catch (e) {
+              console.warn('[BrandKit] intro clip generation failed:', e);
+              return null;
+            }
+          })()
+        : null;
+
+      const outroClipUrl = brandKit?.outroConfig
+        ? await (async () => {
+            try {
+              setMergeProgress('아웃트로 클립 생성 중...');
+              const blob = await generateSlideClip(brandKit.outroConfig!, resolution);
+              const url = URL.createObjectURL(blob);
+              trackBlobUrl(url);
+              return url;
+            } catch (e) {
+              console.warn('[BrandKit] outro clip generation failed:', e);
+              return null;
+            }
+          })()
+        : null;
+
+      // ── Build scene inputs (visible only, with durationSec support) ──────
+      const sceneInputs: MergeInput[] = visibleScenes.map(s => {
         const dur = s.durationSec || s.audio_duration || fallbackDur;
         const text = (s.audio_script || s.script_segment || '').trim();
         const captionWords =
@@ -186,7 +225,14 @@ export const useExportActions = (deps: ExportActionsDeps) => {
           captionDurationSec: dur,
         };
       });
-      const blob = await mergeAllScenes(
+
+      const inputs: MergeInput[] = [
+        ...(introClipUrl ? [{ videoUrl: introClipUrl }] : []),
+        ...sceneInputs,
+        ...(outroClipUrl ? [{ videoUrl: outroClipUrl }] : []),
+      ];
+
+      let blob = await mergeAllScenes(
         inputs,
         (stage, pct) => {
           setMergeProgress(stage);
@@ -195,6 +241,22 @@ export const useExportActions = (deps: ExportActionsDeps) => {
         captionsEnabled ? captionStyle : undefined,
         aspectRatio
       );
+
+      // ── Brand Kit: apply logo watermark ─────────────────────────────────
+      if (brandKit?.logoUrl) {
+        try {
+          blob = await applyLogoWatermark(
+            blob,
+            brandKit.logoUrl,
+            brandKit.logoPosition,
+            brandKit.logoOpacity,
+            (stage) => setMergeProgress(stage),
+          );
+        } catch (e) {
+          console.warn('[BrandKit] logo watermark failed (skipped):', e);
+        }
+      }
+
       const url = URL.createObjectURL(blob);
       trackBlobUrl(url);
       setMergedVideoUrl(url);

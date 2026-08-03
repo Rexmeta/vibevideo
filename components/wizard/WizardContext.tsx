@@ -39,6 +39,8 @@ import { useExportActions } from './hooks/useExportActions';
 import { useAudioVideoSync } from './hooks/useAudioVideoSync';
 
 export type { WizardContextValue } from './wizardTypes';
+import { loadBrandKit } from '../../services/brandKitService';
+import type { BrandKit } from '../../types';
 
 const WizardCtx = createContext<WizardContextValue | null>(null);
 
@@ -208,6 +210,39 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(
     sampleSeed?.caption_style || DEFAULT_CAPTION_STYLE
   );
+
+  // ---- Brand Kit ----
+  const [brandKit, setBrandKit] = useState<BrandKit | undefined>(undefined);
+
+  // Load brand kit on mount (non-blocking — runs after the wizard is displayed)
+  useEffect(() => {
+    if (!userId || isSampleEntry) return;
+    let cancelled = false;
+    loadBrandKit(userId)
+      .then(kit => {
+        if (cancelled) return;
+        setBrandKit(kit);
+        // Auto-apply brand palette to StyleSheet when this is a fresh project
+        // (no styleSheet set yet and the project is new).
+        if (!initialProjectId) {
+          setStyleSheet(prev => {
+            if (prev) return prev; // already set — don't overwrite
+            const { primary, secondary, accent } = kit.palette;
+            // Seed a minimal StyleSheet using the brand colours as the first
+            // three palette entries; the remaining two slots get neutral fills
+            // so the palette is always length-5.
+            return {
+              palette: [primary, secondary, accent, '#f8f9fa', '#212529'],
+              lighting: 'natural cinematic lighting',
+              mood: 'brand-consistent',
+            };
+          });
+        }
+      })
+      .catch(e => console.warn('[BrandKit] load failed:', e));
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   // ---- Export ----
   const [downloadingAll, setDownloadingAll] = useState(false);
@@ -754,6 +789,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     trackBlobUrl,
     getDefaultPresentation,
     limitsVersion: exportLimitsVersion,
+    brandKit,
   });
 
   // Task #95 clone-on-edit wrappers — every user-initiated mutating action
@@ -982,6 +1018,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     MOTION_OPTIONS,
     scenesRef,
     statsRef,
+    brandKit,
   };
 
   return (

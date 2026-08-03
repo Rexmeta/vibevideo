@@ -417,8 +417,9 @@ export interface AIModel {
   updated_at?: string;
 }
 
-export type ViewState = 'landing' | 'projects' | 'create' | 'profile' | 'pricing' | 'login' | 'signup' | 'admin' | 'api-keys';
+export type ViewState = 'landing' | 'projects' | 'create' | 'profile' | 'pricing' | 'login' | 'signup' | 'admin' | 'api-keys' | 'brand-kit';
 
+export type LogoPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
 export interface WizardState {
   step: 1 | 2 | 3 | 4 | 5 | 6 | 7; // 1:Setup, 2:Script, 3:Audio, 4:Images, 5:Motion, 6:Assembly, 7:Export
   topic: string;
@@ -426,4 +427,39 @@ export interface WizardState {
   currentScript: string;
   scenes: Scene[];
   isGenerating: boolean;
+}
+
+export interface BrandKit {
+  /** Firebase Storage URL of the uploaded logo (PNG/SVG) */
+  logoUrl?: string;
+  /** Storage path for deletion / replacement */
+  logoStoragePath?: string;
+  /** Which corner (or center) to place the logo */
+  logoPosition: LogoPosition;
+  /** 0.0–1.0 */
+  logoOpacity: number;
+  /** First-scene intro clip settings */
+  introConfig?: IntroOutroConfig;
+  /** Last-scene outro clip settings */
+  outroConfig?: IntroOutroConfig;
+  /** Three brand colours: primary, secondary, accent */
+  palette: {
+    primary: string;
+    secondary: string;
+    accent: string;
+  };
+  updatedAt?: string;
+}
+
+export interface IntroOutroConfig {
+  /** Main title text */
+  text: string;
+  /** Optional subtitle / tagline */
+  subtext?: string;
+  /** CSS hex background colour e.g. "#1a1a2e" */
+  bgColor: string;
+  /** Optional background image URL (Firebase Storage) */
+  bgImageUrl?: string;
+  /** Duration in seconds (1–5) */
+  durationSec: number;
 }

@@ -8,6 +8,7 @@ import { ProfilePage } from './components/ProfilePage';
 import { PricingPage } from './components/PricingPage';
 import { AuthPage } from './components/AuthPage';
 import { AdminPage } from './components/AdminPage';
+import { BrandKitSettings } from './components/BrandKitSettings';
 import { StudioDock } from './components/StudioDock';
 import { NewProjectModal } from './components/NewProjectModal';
 import { ViewState } from './types';
@@ -158,7 +159,7 @@ const App: React.FC = () => {
   };
 
   const handleNavigate = (view: ViewState) => {
-    if (!currentUser && (view === 'projects' || view === 'create' || view === 'profile' || view === 'admin' || view === 'api-keys')) {
+    if (!currentUser && (view === 'projects' || view === 'create' || view === 'profile' || view === 'admin' || view === 'api-keys' || view === 'brand-kit')) {
       setCurrentView('login');
       return;
     }
@@ -353,6 +354,15 @@ const App: React.FC = () => {
             initialTab="api"
             apiKeysOnly
           />
+        )}
+
+        {currentView === 'brand-kit' && (
+          <div className="container mx-auto px-4 py-8 max-w-3xl">
+            <BrandKitSettings
+              userId={currentUser?.uid || ''}
+              onNavigateBack={() => handleNavigate('profile')}
+            />
+          </div>
         )}
 
         {(currentView === 'login' || currentView === 'signup') && (

@@ -16,6 +16,7 @@ import {
   CharacterReference,
   ContextPack,
   CreativeBrief,
+  BrandKit,
 } from '../../types';
 import { SyncFn } from './hooks/useSync';
 import type { RestoreErrorKind, RestoreStatus } from './hooks/useRestore';
@@ -215,4 +216,7 @@ export interface WizardContextValue {
   // Refs (exposed for advanced use such as quick-pipeline orchestration)
   scenesRef: React.MutableRefObject<Partial<Scene>[]>;
   statsRef: React.MutableRefObject<ProjectStats>;
+
+  // Brand Kit (loaded from Firestore on mount; undefined until loaded)
+  brandKit: BrandKit | undefined;
 }
