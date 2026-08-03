@@ -2,7 +2,7 @@ import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { initializeFirestore, getFirestore, Firestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
 import { getAuth, Auth, onAuthStateChanged } from 'firebase/auth';
-import { isCloudSyncEnabled } from './cloudSyncSettings';
+import { isCloudSyncEnabled, CLOUD_SYNC_CHANGE_EVENT } from './cloudSyncSettings';
 
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY || '',
@@ -55,6 +55,21 @@ if (isFirebaseConfigured()) {
         }
         try { off(); } catch {}
       });
+    } catch {}
+    // If the user is already signed in and enables cloud sync mid-session,
+    // the onAuthStateChanged listener above won't fire again. Listen for the
+    // sync-toggle event and run the health ping then.
+    try {
+      if (typeof window !== 'undefined') {
+        window.addEventListener(CLOUD_SYNC_CHANGE_EVENT, () => {
+          if (!isCloudSyncEnabled()) return;
+          const user = auth?.currentUser;
+          if (!user) return;
+          import('./storageService')
+            .then(m => m.pingFirestoreHealth?.())
+            .catch(() => {});
+        });
+      }
     } catch {}
   } catch (e) {
     console.error("[Firebase] 초기화 실패:", e);
