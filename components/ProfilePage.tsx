@@ -91,6 +91,7 @@ const GoogleApiKeyCard: React.FC<GoogleApiKeyCardProps> = ({ source, maskedKey, 
 
 const RULES_VERIFIED_KEY = 'vibe_firebase_rules_verified';
 
+const BACKFILL_DONE_KEY = (uid: string) => `vibe_backfill_done_${uid}`;
 export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigate }) => {
   const [activeTab, setActiveTab] = useState<'general' | 'billing' | 'preferences'>('general');
   const [googleKeySource, setGoogleKeySource] = useState<GoogleApiKeySource>(() => getGoogleApiKeySource());
@@ -125,10 +126,15 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
     return undefined;
   }, []);
 
-  // On mount: if cloud sync is already ON, show the setup card (verified or not)
+  // On mount: if cloud sync is already ON, show the setup card (verified or not).
+  // Also restore syncStatus to 'done' if the user already ran a backfill in a previous session.
   useEffect(() => {
     if (isCloudSyncEnabled() && currentUser) {
       setShowSetupCard(true);
+      const backfillDone = localStorage.getItem(BACKFILL_DONE_KEY(currentUser.uid));
+      if (backfillDone) {
+        setSyncStatus('done');
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -155,7 +161,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
       } else {
         setShowSetupCard(false);
         setSetupVerified(false);
+        setSyncStatus('idle');
         localStorage.removeItem(RULES_VERIFIED_KEY);
+        if (currentUser) localStorage.removeItem(BACKFILL_DONE_KEY(currentUser.uid));
         setCloudToggleMsg({ kind: 'success', text: '로컬 전용 모드로 전환됐습니다. 모든 데이터는 이 기기에만 저장됩니다.' });
       }
     } catch {
@@ -201,6 +209,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
       const count = await backfillLocalProjectsToCloud(currentUser.uid, { force: true });
       setSyncCount(count);
       setSyncStatus('done');
+      localStorage.setItem(BACKFILL_DONE_KEY(currentUser.uid), '1');
     } catch (e: any) {
       setSyncError(e?.message ?? '알 수 없는 오류가 발생했습니다.');
       setSyncStatus('error');
