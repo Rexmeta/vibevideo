@@ -577,9 +577,26 @@ export const useExportActions = (deps: ExportActionsDeps) => {
         renderedParts.push(blob);
 
         if (!longForm) {
-          // Legacy short-form path: download each part right away so the
-          // user gets feedback without waiting for the full set.
-          await downloadVideo(url, `${safeTopic}_part_${ci + 1}.mp4`);
+          // Legacy short-form path: apply logo watermark per chunk, then
+          // download each part right away so the user gets feedback without
+          // waiting for the full set.
+          let chunkBlob = blob;
+          if (brandKit?.logoUrl) {
+            try {
+              chunkBlob = await applyLogoWatermark(
+                chunkBlob,
+                brandKit.logoUrl,
+                brandKit.logoPosition,
+                brandKit.logoOpacity,
+                (stage) => setMergeProgress(`${partLabel} · ${stage}`),
+              );
+            } catch (e) {
+              console.warn('[BrandKit] logo watermark failed (skipped):', e);
+            }
+          }
+          const chunkUrl = chunkBlob !== blob ? URL.createObjectURL(chunkBlob) : url;
+          if (chunkBlob !== blob) trackBlobUrl(chunkUrl);
+          await downloadVideo(chunkUrl, `${safeTopic}_part_${ci + 1}.mp4`);
         } else {
           setMergeProgress(
             `Part ${ci + 1}/${chunks.length} 렌더 완료 · 메모리 정리 중...`
