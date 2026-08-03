@@ -10,6 +10,12 @@ import {
   GoogleApiKeySource,
   API_KEY_CHANGE_EVENT,
 } from '../services/apiKeyService';
+import {
+  isCloudSyncEnabled,
+  setCloudSyncEnabled,
+  CLOUD_SYNC_CHANGE_EVENT,
+} from '../services/cloudSyncSettings';
+import { backfillLocalProjectsToCloud } from '../services/storageService';
 
 interface ProfilePageProps {
     currentUser: User | null;
@@ -81,6 +87,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
   const [activeTab, setActiveTab] = useState<'general' | 'billing' | 'preferences'>('general');
   const [googleKeySource, setGoogleKeySource] = useState<GoogleApiKeySource>(() => getGoogleApiKeySource());
   const [googleKeyMasked, setGoogleKeyMasked] = useState<string>(() => maskApiKey(getGoogleApiKey()));
+  const [cloudSync, setCloudSync] = useState(() => isCloudSyncEnabled());
+  const [cloudTogglePending, setCloudTogglePending] = useState(false);
+  const [cloudToggleMsg, setCloudToggleMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
     const update = () => {
@@ -98,6 +107,25 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
     }
     return undefined;
   }, []);
+
+  const handleCloudSyncToggle = async (enable: boolean) => {
+    if (cloudTogglePending) return;
+    setCloudTogglePending(true);
+    setCloudToggleMsg(null);
+    try {
+      setCloudSyncEnabled(enable);
+      setCloudSync(enable);
+      if (enable && currentUser) {
+        setCloudToggleMsg({ kind: 'success', text: '클라우드 동기화가 켜졌습니다. 로컬 프로젝트를 동기화하려면 "내 프로젝트"에서 "클라우드에 다시 동기화" 버튼을 사용하세요.' });
+      } else {
+        setCloudToggleMsg({ kind: 'success', text: '로컬 전용 모드로 전환됐습니다. 모든 데이터는 이 기기에만 저장됩니다.' });
+      }
+    } catch {
+      setCloudToggleMsg({ kind: 'error', text: '설정을 저장하지 못했습니다.' });
+    } finally {
+      setCloudTogglePending(false);
+    }
+  };
 
   if (!currentUser) return null;
 
@@ -225,9 +253,77 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
           )}
 
           {activeTab === 'preferences' && (
-              <div className="bg-white rounded-[2.5rem] p-8 md:p-10 border border-gray-100 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
-                 <h2 className="text-2xl font-black mb-8">App Preferences</h2>
-                 <p className="text-gray-500 italic font-medium">Coming soon: Customize your AI workspace environment.</p>
+              <div className="bg-white rounded-[2.5rem] p-8 md:p-10 border border-gray-100 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
+                <h2 className="text-2xl font-black">App Preferences</h2>
+
+                {/* Cloud Sync Toggle */}
+                <div className="flex flex-col gap-4">
+                  <h3 className="text-base font-black text-gray-800 flex items-center gap-2">
+                    <Icons.Cloud size={18} className="text-brand-cyan" />
+                    데이터 저장 방식
+                  </h3>
+
+                  <div className={`flex items-start justify-between gap-4 p-5 rounded-2xl border-2 transition-colors ${cloudSync ? 'border-brand-cyan bg-cyan-50' : 'border-gray-100 bg-gray-50'}`}>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-black text-sm">클라우드 동기화</span>
+                        <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${cloudSync ? 'bg-brand-cyan text-black' : 'bg-gray-200 text-gray-600'}`}>
+                          {cloudSync ? 'ON' : 'OFF'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500 leading-relaxed">
+                        {cloudSync
+                          ? '프로젝트가 Firebase에 실시간 저장됩니다. 여러 기기에서 접근 가능합니다. Firebase 보안 규칙 배포가 필요합니다.'
+                          : '모든 데이터가 이 기기의 로컬 저장소에만 저장됩니다. Firebase 설정 없이 즉시 사용 가능합니다.'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleCloudSyncToggle(!cloudSync)}
+                      disabled={cloudTogglePending}
+                      className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors flex-shrink-0 mt-0.5 disabled:opacity-60 ${cloudSync ? 'bg-brand-cyan' : 'bg-gray-300'}`}
+                      aria-label="클라우드 동기화 토글"
+                    >
+                      <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${cloudSync ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
+                  {/* Descriptions */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className={`p-4 rounded-xl border ${!cloudSync ? 'border-black bg-gray-50' : 'border-gray-100'}`}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <Icons.Monitor size={15} className={!cloudSync ? 'text-black' : 'text-gray-400'} />
+                        <span className={`text-xs font-black ${!cloudSync ? 'text-black' : 'text-gray-400'}`}>로컬 전용 (기본값)</span>
+                        {!cloudSync && <span className="text-[9px] font-black bg-black text-white px-1.5 py-0.5 rounded-full ml-auto">현재</span>}
+                      </div>
+                      <ul className="text-[11px] text-gray-500 space-y-1">
+                        <li>✓ Firebase 규칙 배포 불필요</li>
+                        <li>✓ 즉시 사용 가능</li>
+                        <li>✓ 네트워크 오류 없음</li>
+                        <li>✗ 이 기기에서만 접근 가능</li>
+                      </ul>
+                    </div>
+                    <div className={`p-4 rounded-xl border ${cloudSync ? 'border-brand-cyan bg-cyan-50' : 'border-gray-100'}`}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <Icons.Cloud size={15} className={cloudSync ? 'text-brand-cyan' : 'text-gray-400'} />
+                        <span className={`text-xs font-black ${cloudSync ? 'text-brand-dark' : 'text-gray-400'}`}>클라우드 동기화</span>
+                        {cloudSync && <span className="text-[9px] font-black bg-brand-cyan text-black px-1.5 py-0.5 rounded-full ml-auto">현재</span>}
+                      </div>
+                      <ul className="text-[11px] text-gray-500 space-y-1">
+                        <li>✓ 여러 기기에서 접근</li>
+                        <li>✓ 자동 백업</li>
+                        <li>✗ Firebase 보안 규칙 배포 필요</li>
+                        <li>✗ 인터넷 연결 필요</li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  {cloudToggleMsg && (
+                    <div className={`flex items-start gap-3 p-4 rounded-xl text-sm ${cloudToggleMsg.kind === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+                      {cloudToggleMsg.kind === 'success' ? <Icons.Check size={16} className="shrink-0 mt-0.5" /> : <Icons.AlertCircle size={16} className="shrink-0 mt-0.5" />}
+                      <span>{cloudToggleMsg.text}</span>
+                    </div>
+                  )}
+                </div>
               </div>
           )}
         </div>

@@ -19,6 +19,7 @@ import {
   sanitizeSceneFieldForFirestore,
   sceneMapKey,
 } from '../../../services/storageService';
+import { isCloudSyncEnabled } from '../../../services/cloudSyncSettings';
 import { deleteField } from 'firebase/firestore';
 import { saveProjectMeta } from '../../../services/mediaCache';
 import type { WizardMode } from '../ModeGate';
@@ -526,6 +527,12 @@ export const useSync = (deps: SyncDeps): SyncFn => {
         } catch (e2) {
           console.warn('[Sync] localStorage metaOnly도 실패, IndexedDB만 사용');
         }
+      }
+
+      // Skip cloud write when user has disabled cloud sync.
+      if (!isCloudSyncEnabled()) {
+        syncPendingRef.current = false;
+        return;
       }
 
       try {

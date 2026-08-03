@@ -20,6 +20,7 @@ import { Icons } from './Icons';
 import { clearStoredMode, cleanupOrphanedModePrefs } from './wizard/ModeGate';
 import { NewProjectModal } from './NewProjectModal';
 import { jobManager } from '../services/jobManager';
+import { isCloudSyncEnabled, CLOUD_SYNC_CHANGE_EVENT } from '../services/cloudSyncSettings';
 
 const modePrefCleanupRanByUser = new Set<string>();
 
@@ -78,6 +79,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
   const [resyncState, setResyncState] = useState<'idle' | 'running'>('idle');
   const [resyncToast, setResyncToast] = useState<{ kind: 'info' | 'success' | 'error'; text: string } | null>(null);
   const resyncToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [cloudEnabled, setCloudEnabled] = useState(() => isCloudSyncEnabled());
 
   const showResyncToast = useCallback((kind: 'info' | 'success' | 'error', text: string, autoHideMs: number = 4000) => {
     if (resyncToastTimer.current) clearTimeout(resyncToastTimer.current);
@@ -207,11 +209,34 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
       console.log(`[Sync Timing] local 첫 페인트 ${(performance.now() - tMount).toFixed(0)}ms (${localData.length}개)`);
     }
 
-    loadFromCloud(userId, false);
+    // Only attempt cloud load when sync is enabled.
+    if (isCloudSyncEnabled()) {
+      loadFromCloud(userId, false);
+    }
+  }, [userId, loadFromCloud]);
+
+  // React to cloud sync toggle changes made elsewhere (e.g. ProfilePage).
+  useEffect(() => {
+    const handler = () => {
+      const enabled = isCloudSyncEnabled();
+      setCloudEnabled(enabled);
+      if (enabled && userId) {
+        // Re-run cloud load now that sync is enabled.
+        initialLoadDone.current = false;
+        const localData = getLocalProjectsList(userId);
+        setProjects(localData);
+        loadFromCloud(userId, false);
+      }
+    };
+    window.addEventListener(CLOUD_SYNC_CHANGE_EVENT, handler);
+    return () => window.removeEventListener(CLOUD_SYNC_CHANGE_EVENT, handler);
   }, [userId, loadFromCloud]);
 
   useEffect(() => {
-    if (!userId) return;
+    // Include cloudEnabled in deps so the effect re-runs when the flag changes.
+    // When cloud is off, we return immediately — the effect's cleanup will
+    // call sub.unsubscribe() on any previously active subscription.
+    if (!userId || !cloudEnabled) return;
 
     let active = true;
     let firstSnapshot = true;
@@ -245,7 +270,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
       active = false;
       sub.unsubscribe();
     };
-  }, [userId]);
+  }, [userId, cloudEnabled]);
 
   const handleManualRetry = useCallback(() => {
     if (!userId) return;
@@ -322,12 +347,22 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
     if (onEditProject) onEditProject(project.id);
   };
 
-  const showOfflineBanner = syncState === 'failed' && projects.length > 0;
-  const isFirstSync = syncState === 'syncing' && projects.length === 0;
-  const isBackgroundSyncing = (syncState === 'syncing' || syncState === 'retrying') && projects.length > 0;
+  const showOfflineBanner = cloudEnabled && syncState === 'failed' && projects.length > 0;
+  const isFirstSync = cloudEnabled && syncState === 'syncing' && projects.length === 0;
+  const isBackgroundSyncing = cloudEnabled && (syncState === 'syncing' || syncState === 'retrying') && projects.length > 0;
 
   let statusLine: React.ReactNode;
-  if (isFirstSync) {
+  if (!cloudEnabled) {
+    statusLine = (
+      <span className="flex items-center gap-2 text-gray-400">
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-gray-100 text-gray-600 text-xs font-bold rounded-full">
+          <Icons.Monitor size={11} />
+          로컬 전용
+        </span>
+        이 기기에만 저장됩니다.
+      </span>
+    );
+  } else if (isFirstSync) {
     statusLine = (
       <span className="flex items-center gap-2">
         <Icons.Loader2 className="animate-spin w-4 h-4" />
@@ -351,7 +386,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
     <div className="max-w-7xl mx-auto px-4 py-12">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-4">
         <div>
-          <h1 className="text-4xl font-black tracking-tight">Cloud Workspace</h1>
+          <h1 className="text-4xl font-black tracking-tight">내 프로젝트</h1>
           <p className="text-gray-500 mt-1">{statusLine}</p>
         </div>
         <button 
@@ -408,6 +443,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
       )}
 
       {(() => {
+        if (!cloudEnabled) return null;
         const health = getFirestoreHealthInfo();
         if (!health.disabled) return null;
         const reasonText =
@@ -491,7 +527,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
         </div>
       )}
 
-      {showOfflineBanner && (
+      {showOfflineBanner && cloudEnabled && (
         <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <span>클라우드 연결에 실패했습니다. 로컬에 저장된 프로젝트만 표시됩니다.</span>
           <button

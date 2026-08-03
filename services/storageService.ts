@@ -1,4 +1,5 @@
 import { db, storage, auth } from "./firebaseConfig";
+import { isCloudSyncEnabled } from "./cloudSyncSettings";
 import { 
   ref, 
   uploadBytes, 
@@ -110,6 +111,7 @@ export const resetFirestoreHealthCheck = (clearDisabledFlag: boolean = true): vo
   }
 };
 export const pingFirestoreHealth = async (): Promise<FirestoreHealthInfo> => {
+  if (!isCloudSyncEnabled()) return getFirestoreHealthInfo();
   if (firestoreHealthPinged) return getFirestoreHealthInfo();
   firestoreHealthPinged = true;
   const projectId = getFirebaseProjectId();
@@ -371,7 +373,7 @@ export const uploadFileToCloud = async (path: string, data: string | Blob, forma
   else if (path.endsWith('.png')) contentType = 'image/png';
   else if (path.endsWith('.mp4')) contentType = 'video/mp4';
 
-  if (!storage) {
+  if (!isCloudSyncEnabled() || !storage) {
     console.warn("[Storage] Cloud service unavailable, using local simulation.");
     if (typeof data === 'string') {
       return data.startsWith('data:') ? data : `data:${contentType};base64,${data}`;
@@ -451,7 +453,7 @@ export const updateProjectFields = async (
       );
     }
   } catch {}
-  if (!db) return;
+  if (!isCloudSyncEnabled() || !db) return;
   try {
     const projectRef = doc(db, PROJECTS_COLLECTION, projectId);
     await withTimeout(
@@ -542,8 +544,12 @@ export const saveProjectToCloud = async (project: Project, skipLocalSave: boolea
     try { updateProjectIndex(project.user_id, project.id, 'add'); } catch (e) {}
   }
 
-  if (!db) {
-    console.warn("[Database] Cloud service unavailable, saved to Local Storage only.");
+  if (!isCloudSyncEnabled() || !db) {
+    if (!isCloudSyncEnabled()) {
+      // Cloud sync is disabled by user preference — local-only save is complete.
+    } else {
+      console.warn("[Database] Cloud service unavailable, saved to Local Storage only.");
+    }
     return;
   }
 
@@ -638,7 +644,7 @@ export const saveProjectFieldsToCloud = async (
   projectId: string,
   fields: Record<string, any>,
 ): Promise<void> => {
-  if (!projectId || !db) return;
+  if (!projectId || !isCloudSyncEnabled() || !db) return;
   if (!fields || Object.keys(fields).length === 0) return;
 
   const data: Record<string, any> = {};
@@ -746,7 +752,7 @@ export const saveProjectWithConflictCheck = async (project: Project): Promise<{ 
 export const getProjectFromCloud = async (id: string): Promise<Project | undefined> => {
   if (!id) return undefined;
 
-  if (db) {
+  if (isCloudSyncEnabled() && db) {
     // If we already know Firestore is permanently disabled in this session,
     // skip the SDK entirely so the restore flow can fall through to
     // IndexedDB / localStorage immediately instead of waiting on WebChannel.
@@ -1055,6 +1061,7 @@ export const backfillLocalProjectsToCloud = async (
   const getCloud = _testDeps?.getCloud ?? getProjectFromCloud;
   const save = _testDeps?.save ?? saveProjectToCloud;
   if (!userId || (!db && !_testDeps?.ignoreDb)) return 0;
+  if (!isCloudSyncEnabled()) return 0;
   if (isFirestoreDisabled()) return 0;
   if (backfillInFlight) return 0;
   if (!opts.force && backfillRanForUser === userId) return 0;
@@ -1135,7 +1142,7 @@ export const getProjectsPage = async (
   cursor?: string | null,
   pageSize: number = PAGE_SIZE,
 ): Promise<PaginatedResult> => {
-  if (!userId || !db) {
+  if (!userId || !isCloudSyncEnabled() || !db) {
     const local = getLocalProjectsList(userId);
     return { projects: local, cursor: null, hasMore: false, fromCloud: false };
   }
@@ -1290,7 +1297,7 @@ export const subscribeToProjectsList = (
   onError?: (err: Error) => void,
   pageSize: number = PAGE_SIZE,
 ): ProjectsListSubscription => {
-  if (!userId || !db) {
+  if (!userId || !isCloudSyncEnabled() || !db) {
     return { unsubscribe: () => {} };
   }
 
@@ -1348,7 +1355,7 @@ export const subscribeToProjectsList = (
 };
 
 export const syncProjectsFromCloud = async (userId: string, localProjects: Project[]): Promise<{ projects: Project[], fromCloud: boolean }> => {
-  if (!userId || !db) return { projects: localProjects, fromCloud: false };
+  if (!userId || !isCloudSyncEnabled() || !db) return { projects: localProjects, fromCloud: false };
 
   const projectMap = new Map<string, Project>();
   localProjects.forEach(p => projectMap.set(p.id, stripScenes(p)));
@@ -1418,7 +1425,7 @@ export const syncProjectsFromCloud = async (userId: string, localProjects: Proje
 export const listProjectsWithActiveGenerationRun = async (
   userId: string
 ): Promise<Project[]> => {
-  if (!userId || !db) return [];
+  if (!userId || !isCloudSyncEnabled() || !db) return [];
   try {
     const q = query(
       collection(db, PROJECTS_COLLECTION),
@@ -1537,6 +1544,9 @@ export const deleteProjectFromCloud = async (id: string, userId?: string): Promi
     updateProjectIndex(resolvedUserId, id, 'remove');
   }
 
+  // When cloud sync is OFF, skip Firestore / Storage deletion — local cleanup above is enough.
+  if (!isCloudSyncEnabled()) return;
+
   if (db) {
     try {
       const projectRef = doc(db, PROJECTS_COLLECTION, id);
@@ -1555,7 +1565,14 @@ export const deleteProjectFromCloud = async (id: string, userId?: string): Promi
 
 export const duplicateProjectInCloud = async (id: string): Promise<Project | null> => {
   try {
-    const original = await getProjectFromCloud(id);
+    // When cloud is off, load from local backup directly.
+    const original = isCloudSyncEnabled()
+      ? await getProjectFromCloud(id)
+      : (() => {
+          const raw = localStorage.getItem(`vibe_video_backup_${id}`);
+          if (!raw) return undefined;
+          try { return JSON.parse(raw) as Project; } catch { return undefined; }
+        })();
     if (!original) return null;
     const newId = generateProjectId();
     const newProject: Project = {
