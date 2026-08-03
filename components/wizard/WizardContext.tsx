@@ -19,6 +19,7 @@ import {
   CaptionStyle,
   CharacterReference,
   ContextPack,
+  CreativeBrief,
 } from '../../types';
 import type { WizardMode } from './ModeGate';
 
@@ -174,6 +175,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const [qualityThreshold, setQualityThreshold] = useState<number>(6);
   const [negativePrompt, setNegativePrompt] = useState<string>('');
   const [generatingStyleSheet, setGeneratingStyleSheet] = useState<boolean>(false);
+  const [creativeBrief, setCreativeBrief] = useState<CreativeBrief>({});
   const [stats, setStats] = useState<ProjectStats>({
     imagesGenerated: sampleSeed?.stats?.imagesGenerated || 0,
     criticCalls: sampleSeed?.stats?.criticCalls || 0,
@@ -228,6 +230,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const linkedContextPackIdRef = useRef(linkedContextPackId);
   const contextPackVersionRef = useRef(contextPackVersion);
   const contextPackDirtyRef = useRef(contextPackDirty);
+  const creativeBriefRef = useRef(creativeBrief);
   const savedModeRef = useRef<WizardMode | null>(savedMode);
   const syncRef = useRef<WizardContextValue['sync'] | null>(null);
   const syncPendingRef = useRef<boolean>(false);
@@ -286,6 +289,9 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   useEffect(() => {
     contextPackDirtyRef.current = contextPackDirty;
   }, [contextPackDirty]);
+  useEffect(() => {
+    creativeBriefRef.current = creativeBrief;
+  }, [creativeBrief]);
 
   // ---- Blob URL tracking ----
   const trackBlobUrl = (url: string) => {
@@ -377,6 +383,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     linkedContextPackIdRef,
     contextPackVersionRef,
     contextPackDirtyRef,
+    creativeBriefRef,
     scenesRef,
     stepRef,
     maxStepRef,
@@ -456,6 +463,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setLinkedContextPackId,
     setContextPackVersion,
     setContextPackDirty,
+    setCreativeBrief,
     setScenes,
     characterReferencesRef,
     statsRef,
@@ -879,6 +887,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setPlatform,
     styleSheet,
     setStyleSheet,
+    creativeBrief,
+    setCreativeBrief,
     visionCriticEnabled,
     setVisionCriticEnabled,
     qualityThreshold,

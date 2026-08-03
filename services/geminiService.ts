@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Modality, Type, type Part } from "@google/genai";
-import { Scene, StyleSheet, GenreId, CharacterReference, SeedSource } from "../types";
+import { Scene, StyleSheet, GenreId, CharacterReference, SeedSource, CreativeBrief } from "../types";
 import { getEffectiveApiKey, getGoogleApiKey } from "./apiKeyService";
 import { getGenre, getPlatform, type PlatformPreset } from "./presets";
 import { buildPrompt as buildModelPrompt } from "./promptAdapter";
@@ -198,6 +198,34 @@ export interface ScriptOutline {
 export interface GenerateScriptOptions {
   genre?: GenreId;
   platform?: PlatformId;
+  creativeBrief?: CreativeBrief;
+}
+
+/** Build a concise brief block to inject into AI prompts when a creative brief is provided. */
+function buildCreativeBriefBlock(brief?: CreativeBrief): string {
+  if (!brief) return '';
+  const purposeLabel: Record<string, string> = {
+    awareness: '브랜드 인지도 향상',
+    conversion: '전환/구매 유도',
+    education: '교육/정보 전달',
+    entertainment: '엔터테인먼트',
+  };
+  const toneLabel: Record<string, string> = {
+    formal: 'Formal (격식체)',
+    casual: 'Casual (편안한)',
+    friendly: 'Friendly (친근한)',
+    expert: 'Expert (전문가적)',
+  };
+  const lines: string[] = [];
+  if (brief.audience) lines.push(`- Target Audience: ${brief.audience}`);
+  if (brief.keyMessage) lines.push(`- Key Message: ${brief.keyMessage}`);
+  if (brief.purpose) lines.push(`- Video Purpose: ${purposeLabel[brief.purpose] || brief.purpose}`);
+  if (brief.toneVoice) lines.push(`- Tone & Voice: ${toneLabel[brief.toneVoice] || brief.toneVoice}`);
+  if (brief.referenceUrls?.length) {
+    lines.push(`- Reference URLs (style hints only): ${brief.referenceUrls.filter(Boolean).join(', ')}`);
+  }
+  if (lines.length === 0) return '';
+  return `\n\nCreative Brief (MUST be reflected in the script):\n${lines.join('\n')}`;
 }
 
 const OUTLINE_SCHEMA = {
@@ -236,7 +264,8 @@ export const generateScriptOutline = async (
     genre?.hasCTA ? 'Include a single concrete CTA at the end.' : 'CTA is optional; only include if it strengthens the close.',
   ].filter(Boolean).join(' ');
 
-  const prompt = `Topic: "${topic}"\nVisual style hint: ${style}\nGoal duration: ${lengthSeconds}s.\n\nReturn JSON: { hook: string, beats: string[${sceneCount}], cta?: string }. The first beat must implement the hook.`;
+  const briefBlock = buildCreativeBriefBlock(options.creativeBrief);
+  const prompt = `Topic: "${topic}"\nVisual style hint: ${style}\nGoal duration: ${lengthSeconds}s.${briefBlock}\n\nReturn JSON: { hook: string, beats: string[${sceneCount}], cta?: string }. The first beat must implement the hook.`;
 
   let response;
   try {
@@ -293,6 +322,7 @@ export const generateScript = async (
   }
 
   // Pass 2: full script grounded in the outline
+  const briefBlock = buildCreativeBriefBlock(options.creativeBrief);
   const sys = [
     'You are an expert video script writer. Produce ONLY the spoken script — no scene numbers, no stage directions, no markdown.',
     genre ? genre.systemHint : '',
@@ -306,7 +336,7 @@ export const generateScript = async (
     outlineBlock = `\n\nOutline to follow strictly:\n- HOOK: ${outline.hook}\n${outline.beats.map((b, i) => `- Beat ${i + 1}: ${b}`).join('\n')}${outline.cta ? `\n- CTA: ${outline.cta}` : ''}`;
   }
 
-  const userPrompt = `Topic: "${topic}". Visual style cue: ${style}. Goal duration: ${lengthSeconds}s.${outlineBlock}\n\nWrite the spoken script now. The first sentence is the hook.`;
+  const userPrompt = `Topic: "${topic}". Visual style cue: ${style}. Goal duration: ${lengthSeconds}s.${briefBlock}${outlineBlock}\n\nWrite the spoken script now. The first sentence is the hook.`;
 
   let response;
   try {
@@ -364,7 +394,7 @@ export const segmentScriptIntoScenes = async (
   ratio: string,
   characterProfile?: string,
   sceneCount?: number,
-  options: { genre?: GenreId; platform?: PlatformId; characterReferences?: CharacterReference[] } = {},
+  options: { genre?: GenreId; platform?: PlatformId; characterReferences?: CharacterReference[]; creativeBrief?: CreativeBrief } = {},
 ): Promise<Partial<Scene>[]> => {
   const ai = new GoogleGenAI({ apiKey: requireApiKey() });
   const charInstruction = characterProfile
@@ -380,7 +410,8 @@ export const segmentScriptIntoScenes = async (
     ? `\n\nNAMED CAST (use these EXACT names — pick which appear in each shot):\n${namedCast.map(c => `- "${c.name}"${c.description ? `: ${c.description}` : ''}`).join('\n')}\n\nFor EACH shot also output:\n- characters: array of names (subset of [${castNames.map(n => `"${n}"`).join(', ')}]) that visibly appear in this shot. Empty array if none of the named characters appear. Never invent names that are not in the cast list.`
     : '';
 
-  const prompt = `Segment this script into ${sceneCountInstruction} cinematic shots for a ${ratio} video. Each shot is approximately 8 seconds. Style: ${style}.${charInstruction}${castInstruction}
+  const briefBlock = buildCreativeBriefBlock(options.creativeBrief);
+  const prompt = `Segment this script into ${sceneCountInstruction} cinematic shots for a ${ratio} video. Each shot is approximately 8 seconds. Style: ${style}.${charInstruction}${castInstruction}${briefBlock}
 
 For EACH shot output a full shot card with:
 - script_segment: the spoken text in this shot

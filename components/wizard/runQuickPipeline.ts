@@ -62,6 +62,7 @@ export const runQuickPipeline = async (
     aspectRatio,
     characterProfile,
     characterReferences,
+    creativeBrief,
     setScript,
     setScenes,
     setStyleSheet,
@@ -107,7 +108,7 @@ export const runQuickPipeline = async (
   let totalScenes = 0;
   try {
     emit({ stage: 'script', label: '스크립트 생성 중...', percent: 5 });
-    scriptText = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform });
+    scriptText = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform, creativeBrief });
     setScript(scriptText);
 
     emit({ stage: 'segment', label: '씬 분석 중...', percent: 18 });
@@ -117,7 +118,7 @@ export const runQuickPipeline = async (
       aspectRatio,
       characterProfile || undefined,
       targetSceneCount,
-      { genre, platform, characterReferences }
+      { genre, platform, characterReferences, creativeBrief }
     );
     setScenes(segScenes);
     scenesRef.current = segScenes;

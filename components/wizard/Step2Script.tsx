@@ -26,6 +26,7 @@ export const Step2Script: React.FC = () => {
     targetSceneCount,
     genre,
     platform,
+    creativeBrief,
     setScript,
     script,
     setStep,
@@ -54,7 +55,7 @@ export const Step2Script: React.FC = () => {
             setLoading(true);
             setLoadingMessage('AI가 창의적인 스크립트를 빌드 중입니다...');
             try {
-              const result = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform });
+              const result = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform, creativeBrief });
               setScript(result);
             } catch (e: any) {
               console.error('Script generation failed:', e);
@@ -89,7 +90,7 @@ export const Step2Script: React.FC = () => {
                 aspectRatio,
                 characterProfile || undefined,
                 targetSceneCount,
-                { genre, platform, characterReferences }
+                { genre, platform, characterReferences, creativeBrief }
               );
               setScenes(s);
               if (!styleSheet) {

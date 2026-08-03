@@ -28,6 +28,22 @@ export interface StyleSheet {
   refImageUrl?: string;
 }
 
+export type CreativeBriefPurpose = 'awareness' | 'conversion' | 'education' | 'entertainment';
+export type CreativeBriefTone = 'formal' | 'casual' | 'friendly' | 'expert';
+
+export interface CreativeBrief {
+  /** 타겟 오디언스 (예: "20대 여성 직장인") */
+  audience?: string;
+  /** 핵심 메시지 (1문장) */
+  keyMessage?: string;
+  /** 영상 목적 */
+  purpose?: CreativeBriefPurpose;
+  /** 브랜드 톤 & 보이스 */
+  toneVoice?: CreativeBriefTone;
+  /** 참고 영상 URL (최대 3개, 텍스트 힌트로만 사용) */
+  referenceUrls?: string[];
+}
+
 export interface CharacterReference {
   name: string;
   description?: string;
@@ -92,6 +108,8 @@ export interface Project {
   scenes_blob_url?: string;
   scenes_blob_path?: string;
   scenes_blob_updated_at?: string;
+  /** Task #112: optional creative brief injected into script generation prompts. */
+  creative_brief?: CreativeBrief;
   // Task #99: long-form (>180s) flag and auto-derived chapters used to
   // group ~60-90s of consecutive scenes for chapter-aware UX and
   // memory-safe multipart export.

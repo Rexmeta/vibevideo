@@ -15,6 +15,7 @@ import {
   CaptionStyle,
   CharacterReference,
   ContextPack,
+  CreativeBrief,
 } from '../../types';
 import { SyncFn } from './hooks/useSync';
 import type { RestoreErrorKind, RestoreStatus } from './hooks/useRestore';
@@ -91,6 +92,8 @@ export interface WizardContextValue {
   setPlatform: React.Dispatch<React.SetStateAction<PlatformId | undefined>>;
   styleSheet: StyleSheet | undefined;
   setStyleSheet: React.Dispatch<React.SetStateAction<StyleSheet | undefined>>;
+  creativeBrief: CreativeBrief;
+  setCreativeBrief: React.Dispatch<React.SetStateAction<CreativeBrief>>;
   visionCriticEnabled: boolean;
   setVisionCriticEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   qualityThreshold: number;

@@ -10,6 +10,7 @@ import {
   PlatformId,
   StyleSheet,
   VideoMode,
+  CreativeBrief,
 } from '../../../types';
 import {
   saveProjectToCloud,
@@ -53,6 +54,7 @@ interface SyncDeps {
   linkedContextPackIdRef: React.MutableRefObject<string | undefined>;
   contextPackVersionRef: React.MutableRefObject<number | undefined>;
   contextPackDirtyRef: React.MutableRefObject<boolean>;
+  creativeBriefRef: React.MutableRefObject<CreativeBrief>;
   scenesRef: React.MutableRefObject<Partial<Scene>[]>;
   stepRef: React.MutableRefObject<number>;
   maxStepRef: React.MutableRefObject<number>;
@@ -96,6 +98,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
     linkedContextPackIdRef,
     contextPackVersionRef,
     contextPackDirtyRef,
+    creativeBriefRef,
     scenesRef,
     stepRef,
     maxStepRef,
@@ -321,6 +324,9 @@ export const useSync = (deps: SyncDeps): SyncFn => {
       linked_context_pack_id: linkedContextPackIdRef.current,
       context_pack_version: contextPackVersionRef.current,
       context_pack_dirty: contextPackDirtyRef.current,
+      creative_brief: Object.keys(creativeBriefRef.current).length > 0
+        ? creativeBriefRef.current
+        : undefined,
       ...extraData,
     } as Project;
   };
@@ -457,6 +463,9 @@ export const useSync = (deps: SyncDeps): SyncFn => {
         linked_context_pack_id: linkedContextPackIdRef.current,
         context_pack_version: contextPackVersionRef.current,
         context_pack_dirty: contextPackDirtyRef.current,
+        creative_brief: Object.keys(creativeBriefRef.current).length > 0
+          ? creativeBriefRef.current
+          : undefined,
         ...params.extraData,
       };
 

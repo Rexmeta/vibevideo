@@ -9,6 +9,7 @@ import {
   PlatformId,
   StyleSheet,
   VideoMode,
+  CreativeBrief,
 } from '../../../types';
 import type { WizardMode } from '../ModeGate';
 import {
@@ -84,6 +85,7 @@ interface RestoreDeps {
   setLinkedContextPackId: React.Dispatch<React.SetStateAction<string | undefined>>;
   setContextPackVersion: React.Dispatch<React.SetStateAction<number | undefined>>;
   setContextPackDirty: React.Dispatch<React.SetStateAction<boolean>>;
+  setCreativeBrief: React.Dispatch<React.SetStateAction<CreativeBrief>>;
   setScenes: React.Dispatch<React.SetStateAction<Partial<Scene>[]>>;
   characterReferencesRef: React.MutableRefObject<CharacterReference[]>;
   statsRef: React.MutableRefObject<ProjectStats>;
@@ -143,6 +145,7 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
     setLinkedContextPackId,
     setContextPackVersion,
     setContextPackDirty,
+    setCreativeBrief,
     setScenes,
     characterReferencesRef,
     statsRef,
@@ -347,6 +350,9 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
             statsRef.current = restoredStats;
           }
           if (p.caption_style) setCaptionStyle({ ...DEFAULT_CAPTION_STYLE, ...p.caption_style });
+          if (p.creative_brief && typeof p.creative_brief === 'object') {
+            setCreativeBrief(p.creative_brief);
+          }
 
           let restoredScenes = migrateSceneFields(p.saved_scenes || []);
           let synthesizedFromIdb = false;
