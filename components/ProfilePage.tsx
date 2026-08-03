@@ -98,7 +98,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
   const [cloudTogglePending, setCloudTogglePending] = useState(false);
   const [cloudToggleMsg, setCloudToggleMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [showSetupCard, setShowSetupCard] = useState(false);
-  const [setupVerified, setSetupVerified] = useState(false);
+  const [setupVerified, setSetupVerified] = useState(() => !!localStorage.getItem(RULES_VERIFIED_KEY));
   const [pingStatus, setPingStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [pingError, setPingError] = useState<string | null>(null);
   const [copiedCmd, setCopiedCmd] = useState(false);
@@ -123,13 +123,10 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
     return undefined;
   }, []);
 
-  // On mount: if cloud sync is already ON and no verified flag, show the setup card
+  // On mount: if cloud sync is already ON, show the setup card (verified or not)
   useEffect(() => {
     if (isCloudSyncEnabled() && currentUser) {
-      const verified = localStorage.getItem(RULES_VERIFIED_KEY);
-      if (!verified) {
-        setShowSetupCard(true);
-      }
+      setShowSetupCard(true);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
