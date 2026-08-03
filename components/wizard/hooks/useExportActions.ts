@@ -331,7 +331,7 @@ export const useExportActions = (deps: ExportActionsDeps) => {
           captionWords,
         };
       });
-      const blob = await renderPresentationVideo(
+      let presBlob = await renderPresentationVideo(
         inputs,
         aspectRatio,
         (stage, pct) => {
@@ -340,7 +340,60 @@ export const useExportActions = (deps: ExportActionsDeps) => {
         },
         captionsEnabled ? captionStyle : undefined
       );
-      const url = URL.createObjectURL(blob);
+
+      // ── Brand Kit: stitch intro/outro clips around the presentation ──────
+      if (brandKit?.introConfig || brandKit?.outroConfig) {
+        const resolution = getResolution(aspectRatio);
+        const parts: Blob[] = [];
+
+        if (brandKit?.introConfig) {
+          try {
+            setMergeProgress('인트로 클립 생성 중...');
+            const introBlob = await generateSlideClip(brandKit.introConfig!, resolution);
+            parts.push(introBlob);
+          } catch (e) {
+            console.warn('[BrandKit] intro clip generation failed:', e);
+          }
+        }
+
+        parts.push(presBlob);
+
+        if (brandKit?.outroConfig) {
+          try {
+            setMergeProgress('아웃트로 클립 생성 중...');
+            const outroBlob = await generateSlideClip(brandKit.outroConfig!, resolution);
+            parts.push(outroBlob);
+          } catch (e) {
+            console.warn('[BrandKit] outro clip generation failed:', e);
+          }
+        }
+
+        if (parts.length > 1) {
+          setMergeProgress('인트로/아웃트로 합치는 중...');
+          try {
+            presBlob = await concatMp4Parts(parts);
+          } catch (e) {
+            console.warn('[BrandKit] intro/outro concat failed (skipped):', e);
+          }
+        }
+      }
+
+      // ── Brand Kit: apply logo watermark ─────────────────────────────────
+      if (brandKit?.logoUrl) {
+        try {
+          presBlob = await applyLogoWatermark(
+            presBlob,
+            brandKit.logoUrl,
+            brandKit.logoPosition,
+            brandKit.logoOpacity,
+            (stage) => setMergeProgress(stage),
+          );
+        } catch (e) {
+          console.warn('[BrandKit] logo watermark failed (skipped):', e);
+        }
+      }
+
+      const url = URL.createObjectURL(presBlob);
       trackBlobUrl(url);
       setMergedVideoUrl(url);
     } catch (err: any) {
@@ -396,6 +449,37 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     );
     setMergePercent(0);
     clearFFmpegLoadRetry();
+
+    // ── Brand Kit: generate intro/outro blobs once before chunk loop ─────
+    const resolution = getResolution(aspectRatio);
+    let introPartBlob: Blob | null = null;
+    let outroPartBlob: Blob | null = null;
+
+    if (brandKit?.introConfig) {
+      try {
+        setMergeProgress('인트로 클립 생성 중...');
+        introPartBlob = await generateSlideClip(brandKit.introConfig!, resolution);
+      } catch (e) {
+        console.warn('[BrandKit] intro clip generation failed:', e);
+      }
+    }
+
+    if (brandKit?.outroConfig) {
+      try {
+        setMergeProgress('아웃트로 클립 생성 중...');
+        outroPartBlob = await generateSlideClip(brandKit.outroConfig!, resolution);
+      } catch (e) {
+        console.warn('[BrandKit] outro clip generation failed:', e);
+      }
+    }
+
+    // For short-form: download intro immediately before chunk loop
+    if (!longForm && introPartBlob) {
+      const introUrl = URL.createObjectURL(introPartBlob);
+      trackBlobUrl(introUrl);
+      await downloadVideo(introUrl, `${(topic || 'video').replace(/[\\/:*?"<>|]+/g, '_')}_intro.mp4`);
+      await new Promise(r => setTimeout(r, 400));
+    }
 
     const renderedParts: Blob[] = [];
     const safeTopic = (topic || 'video').replace(/[\\/:*?"<>|]+/g, '_');
@@ -496,7 +580,14 @@ export const useExportActions = (deps: ExportActionsDeps) => {
         }
       }
 
-      if (longForm && renderedParts.length > 1) {
+      if (longForm) {
+        // ── Brand Kit: prepend intro / append outro to the parts list ──────
+        const allParts: Blob[] = [
+          ...(introPartBlob ? [introPartBlob] : []),
+          ...renderedParts,
+          ...(outroPartBlob ? [outroPartBlob] : []),
+        ];
+
         // Final concat pass: stitch all rendered parts into a single
         // 10-min MP4. Falls back to per-part downloads on FFmpeg failure
         // (typically OOM on very memory-constrained devices).
@@ -504,11 +595,29 @@ export const useExportActions = (deps: ExportActionsDeps) => {
         setMergePercent(95);
         try {
           try { await terminateFFmpegForCleanup(); } catch {}
-          const finalBlob = await concatMp4Parts(renderedParts, (stage, pct) => {
-            setMergeProgress(`최종 결합 · ${stage}`);
-            // Map 0-100 of the final concat into the last 5% of overall progress.
-            setMergePercent(Math.min(99, 95 + Math.round(pct / 20)));
-          });
+          let finalBlob = allParts.length > 1
+            ? await concatMp4Parts(allParts, (stage, pct) => {
+                setMergeProgress(`최종 결합 · ${stage}`);
+                // Map 0-100 of the final concat into the last 5% of overall progress.
+                setMergePercent(Math.min(99, 95 + Math.round(pct / 20)));
+              })
+            : allParts[0];
+
+          // ── Brand Kit: apply logo watermark to the stitched output ───────
+          if (brandKit?.logoUrl) {
+            try {
+              finalBlob = await applyLogoWatermark(
+                finalBlob,
+                brandKit.logoUrl,
+                brandKit.logoPosition,
+                brandKit.logoOpacity,
+                (stage) => setMergeProgress(stage),
+              );
+            } catch (e) {
+              console.warn('[BrandKit] logo watermark failed (skipped):', e);
+            }
+          }
+
           const finalUrl = URL.createObjectURL(finalBlob);
           trackBlobUrl(finalUrl);
           setMergedVideoUrl(finalUrl);
@@ -534,6 +643,14 @@ export const useExportActions = (deps: ExportActionsDeps) => {
           );
         }
       } else {
+        // Short-form: download outro as the final part (intro was already
+        // downloaded before the chunk loop).
+        if (outroPartBlob) {
+          const outroUrl = URL.createObjectURL(outroPartBlob);
+          trackBlobUrl(outroUrl);
+          await new Promise(r => setTimeout(r, 400));
+          await downloadVideo(outroUrl, `${safeTopic}_outro.mp4`);
+        }
         if (lastUrl) setMergedVideoUrl(lastUrl);
         setMergePercent(100);
         setMergeProgress(`${chunks.length}개 파트 내보내기 완료`);
