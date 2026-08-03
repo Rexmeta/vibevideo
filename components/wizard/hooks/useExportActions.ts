@@ -312,6 +312,7 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     setMergeProgress('프레젠테이션 비디오 렌더링 준비 중...');
     setMergePercent(0);
     setMergedVideoUrl(null);
+    clearFFmpegLoadRetry();
     try {
       const captionsEnabled = captionStyle.preset !== 'none';
       const visiblePresentationScenes = visibleForRender;
@@ -406,8 +407,14 @@ export const useExportActions = (deps: ExportActionsDeps) => {
       setMergedVideoUrl(url);
     } catch (err: any) {
       console.error('[Presentation Render] Failed:', err);
-      const friendly = isMemoryRelatedError(err) ? FRIENDLY_OOM_MESSAGE : (err?.message || '렌더링 실패');
+      const friendly = err instanceof FFmpegLoadTimeoutError
+        ? FFMPEG_LOAD_FAILURE_MESSAGE
+        : isMemoryRelatedError(err) ? FRIENDLY_OOM_MESSAGE : (err?.message || '렌더링 실패');
       setMergeProgress(`오류: ${friendly}`);
+      setMergePercent(0);
+      if (err instanceof FFmpegLoadTimeoutError) {
+        markFFmpegLoadFailure(handleRenderPresentation);
+      }
     } finally {
       setMerging(false);
     }
