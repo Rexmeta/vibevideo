@@ -151,6 +151,7 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
   const [scriptCopied, setScriptCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [copiedSceneIdx, setCopiedSceneIdx] = useState<number | null>(null);
+  const [copiedVisualIdx, setCopiedVisualIdx] = useState<number | null>(null);
   const [cacheEntry, setCacheEntry] = useState<CacheEntry | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -249,6 +250,14 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     });
   };
 
+  const handleCopyVisualDescription = (scene: YoutubeScene, idx: number) => {
+    if (!scene.visualDescription) return;
+    navigator.clipboard.writeText(scene.visualDescription).then(() => {
+      setCopiedVisualIdx(idx);
+      setTimeout(() => setCopiedVisualIdx(prev => (prev === idx ? null : prev)), 2000);
+    });
+  };
+
   const handleCopyScript = (a: YoutubeAnalysis) => {
     const text = a.scenes
       .map((s: YoutubeScene) => s.scriptText)
@@ -343,22 +352,43 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
                   {scene.visualDescription}
                 </p>
               </div>
-              {scene.scriptText && (
-                <button
-                  onClick={() => handleCopySceneLine(scene, i)}
-                  title="스크립트 복사"
-                  className={`shrink-0 self-start mt-0.5 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black transition-all border ${
-                    copiedSceneIdx === i
-                      ? 'bg-green-50 text-green-600 border-green-200'
-                      : 'bg-white text-gray-400 border-gray-200 hover:text-gray-600 hover:border-gray-400'
-                  }`}
-                >
-                  {copiedSceneIdx === i ? (
-                    <><Icons.Check size={10} /> 복사됨 ✓</>
-                  ) : (
-                    <Icons.Copy size={10} />
+              {(scene.scriptText || scene.visualDescription) && (
+                <div className="shrink-0 flex flex-col gap-1 self-start mt-0.5">
+                  {scene.scriptText && (
+                    <button
+                      onClick={() => handleCopySceneLine(scene, i)}
+                      title="스크립트 복사"
+                      className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black transition-all border ${
+                        copiedSceneIdx === i
+                          ? 'bg-green-50 text-green-600 border-green-200'
+                          : 'bg-white text-gray-400 border-gray-200 hover:text-gray-600 hover:border-gray-400'
+                      }`}
+                    >
+                      {copiedSceneIdx === i ? (
+                        <><Icons.Check size={10} /> 복사됨 ✓</>
+                      ) : (
+                        <Icons.Copy size={10} />
+                      )}
+                    </button>
                   )}
-                </button>
+                  {scene.visualDescription && (
+                    <button
+                      onClick={() => handleCopyVisualDescription(scene, i)}
+                      title="시각 묘사 복사"
+                      className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black transition-all border ${
+                        copiedVisualIdx === i
+                          ? 'bg-green-50 text-green-600 border-green-200'
+                          : 'bg-white text-gray-400 border-gray-200 hover:text-gray-600 hover:border-gray-400'
+                      }`}
+                    >
+                      {copiedVisualIdx === i ? (
+                        <><Icons.Check size={10} /> 복사됨 ✓</>
+                      ) : (
+                        <Icons.ImageIcon size={10} />
+                      )}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           ))}
@@ -752,7 +782,6 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     </div>
   );
 };
-
 const CACHE_KEY = 'yt_analysis_cache_v1';
 
 function readCache(): CacheEntry[] {
