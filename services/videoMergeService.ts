@@ -152,7 +152,7 @@ export const concatMp4Parts = async (
     try { await ffmpeg.deleteFile('final_long.mp4'); } catch {}
 
     onProgress?.('완료!', 100);
-    return new Blob([data], { type: 'video/mp4' });
+    return new Blob([data as BlobPart], { type: 'video/mp4' });
   } catch (err) {
     throw wrapFFmpegError(err);
   }
@@ -476,7 +476,7 @@ export const mergeVideoWithAudio = async (
   }
 
   const data = await ffmpeg.readFile(outputName);
-  const blob = new Blob([data], { type: 'video/mp4' });
+  const blob = new Blob([data as BlobPart], { type: 'video/mp4' });
 
   try { await ffmpeg.deleteFile('input_video.mp4'); } catch {}
   try { await ffmpeg.deleteFile(audioFile); } catch {}
@@ -659,7 +659,7 @@ export const mergeAllScenes = async (
     const data = await ffmpeg.readFile(partFiles[0]);
     try { await ffmpeg.deleteFile(partFiles[0]); } catch {}
     onProgress?.('완료!', 100);
-    return new Blob([data], { type: 'video/mp4' });
+    return new Blob([data as BlobPart], { type: 'video/mp4' });
   }
 
   onProgress?.('파트 합치는 중...', 80);
@@ -687,7 +687,7 @@ export const mergeAllScenes = async (
 
   onProgress?.('완료!', 100);
 
-  return new Blob([finalData], { type: 'video/mp4' });
+  return new Blob([finalData as BlobPart], { type: 'video/mp4' });
   } catch (err) {
     throw wrapFFmpegError(err);
   } finally {
@@ -787,7 +787,7 @@ export const applyLogoWatermark = async (
   try { await ffmpeg.deleteFile(logoFile); } catch {}
   try { await ffmpeg.deleteFile('wm_output.mp4'); } catch {}
 
-  return new Blob([data], { type: 'video/mp4' });
+  return new Blob([data as BlobPart], { type: 'video/mp4' });
 };
 
 export interface SlideClipConfig {
@@ -897,7 +897,7 @@ export const generateSlideClip = async (
   try { await ffmpeg.deleteFile('slide_frame.png'); } catch {}
   try { await ffmpeg.deleteFile('slide_out.mp4'); } catch {}
 
-  return new Blob([data], { type: 'video/mp4' });
+  return new Blob([data as BlobPart], { type: 'video/mp4' });
 };
 
 export interface PresentationSceneInput {
@@ -1278,7 +1278,7 @@ export const renderPresentationVideo = async (
 
   onProgress?.('완료!', 100);
 
-  return new Blob([finalData], { type: 'video/mp4' });
+  return new Blob([finalData as BlobPart], { type: 'video/mp4' });
   } catch (err) {
     throw wrapFFmpegError(err);
   } finally {
