@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { refineSceneWithInstruction, type SceneRefineResult, type SceneRefineContext } from '../../services/geminiService';
 import type { Scene } from '../../types';
+import { useInstructionPresets } from '../../hooks/useInstructionPresets';
 
 // ── Diff row ────────────────────────────────────────────────────────────────
 
@@ -59,6 +60,7 @@ export const SceneAIEditModal: React.FC<SceneAIEditModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<SceneRefineResult | null>(null);
+  const { presets: instructionPresets, addPreset: addInstructionPreset, removePreset: removeInstructionPreset } = useInstructionPresets();
 
   const handleRefine = async () => {
     if (!instruction.trim()) return;
@@ -68,6 +70,7 @@ export const SceneAIEditModal: React.FC<SceneAIEditModalProps> = ({
     try {
       const r = await refineSceneWithInstruction(scene, instruction.trim(), context);
       setResult(r);
+      addInstructionPreset(instruction.trim());
     } catch (e: any) {
       setError(e?.message || '알 수 없는 오류');
     } finally {
@@ -106,6 +109,30 @@ export const SceneAIEditModal: React.FC<SceneAIEditModalProps> = ({
           {/* Instruction input */}
           <div className="mb-6">
             <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2 block">편집 지시</label>
+            {instructionPresets.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {instructionPresets.map(preset => (
+                  <div key={preset} className="group flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-full text-xs font-medium text-gray-600 pl-3 pr-1.5 py-1 hover:border-brand-cyan hover:bg-cyan-50 hover:text-teal-700 transition-colors">
+                    <button
+                      onClick={() => setInstruction(preset)}
+                      disabled={loading}
+                      className="truncate max-w-[180px] text-left disabled:opacity-50"
+                      title={preset}
+                    >
+                      {preset}
+                    </button>
+                    <button
+                      onClick={() => removeInstructionPreset(preset)}
+                      className="shrink-0 text-gray-300 hover:text-red-400 transition-colors ml-0.5"
+                      title="프리셋 삭제"
+                      aria-label="프리셋 삭제"
+                    >
+                      <Icons.X size={10} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="flex gap-3">
               <textarea
                 value={instruction}

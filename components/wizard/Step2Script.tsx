@@ -4,6 +4,7 @@ import { generateScript, segmentScriptIntoScenes, generateStyleSheet, refineAllS
 import { useWizard } from './WizardContext';
 import type { CreativeBrief, Scene } from '../../types';
 import { StoryboardCard } from './StoryboardCard';
+import { useInstructionPresets } from '../../hooks/useInstructionPresets';
 
 function alertGeminiError(prefix: string, e: any) {
   const msg = String(e?.message || '');
@@ -125,6 +126,7 @@ export const Step2Script: React.FC = () => {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
+  const { presets: instructionPresets, addPreset: addInstructionPreset, removePreset: removeInstructionPreset } = useInstructionPresets();
 
   const hasScenes = scenes.length > 0;
 
@@ -201,6 +203,7 @@ export const Step2Script: React.FC = () => {
       }));
       setScenes(next);
       sync(undefined, next);
+      addInstructionPreset(bulkInstruction.trim());
       setBulkInstruction('');
     } catch (e: any) {
       setBulkError(e?.message || '알 수 없는 오류');
@@ -305,6 +308,30 @@ export const Step2Script: React.FC = () => {
                 </span>
               )}
             </div>
+            {instructionPresets.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {instructionPresets.map(preset => (
+                  <div key={preset} className="group flex items-center gap-1 bg-white border border-teal-200 rounded-full text-xs font-medium text-teal-700 pl-3 pr-1.5 py-1 hover:border-brand-cyan hover:bg-teal-50 transition-colors">
+                    <button
+                      onClick={() => setBulkInstruction(preset)}
+                      disabled={bulkLoading}
+                      className="truncate max-w-[180px] text-left disabled:opacity-50"
+                      title={preset}
+                    >
+                      {preset}
+                    </button>
+                    <button
+                      onClick={() => removeInstructionPreset(preset)}
+                      className="shrink-0 text-teal-300 hover:text-red-400 transition-colors ml-0.5"
+                      title="프리셋 삭제"
+                      aria-label="프리셋 삭제"
+                    >
+                      <Icons.X size={10} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="flex gap-3">
               <input
                 value={bulkInstruction}
