@@ -300,13 +300,21 @@ export const useExportActions = (deps: ExportActionsDeps) => {
       setMerging(false);
       return;
     }
+    // Strict preflight: every visible scene must have an image. Passing empty
+    // imageUrl strings into renderPresentationVideo causes silent load failures.
+    const visibleForRender = scenes.filter(s => !s.hidden);
+    const missingImageScenes = visibleForRender.filter(s => !s.image_path);
+    if (missingImageScenes.length > 0) {
+      setMergeProgress(`오류: ${missingImageScenes.length}개 씬의 이미지가 없습니다. 이미지를 먼저 생성해 주세요.`);
+      return;
+    }
     setMerging(true);
     setMergeProgress('프레젠테이션 비디오 렌더링 준비 중...');
     setMergePercent(0);
     setMergedVideoUrl(null);
     try {
       const captionsEnabled = captionStyle.preset !== 'none';
-      const visiblePresentationScenes = scenes.filter(s => !s.hidden);
+      const visiblePresentationScenes = visibleForRender;
       const fallbackPresoDur = visiblePresentationScenes.length > 0 ? (duration / visiblePresentationScenes.length) || 6 : 6;
       const inputs: PresentationSceneInput[] = visiblePresentationScenes.map((s, i) => {
         const pres = s.presentation || getDefaultPresentation(i);

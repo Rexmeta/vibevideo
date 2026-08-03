@@ -66,10 +66,12 @@ export const Step7Export: React.FC = () => {
     else runExport();
   };
 
-  // Disable export buttons when all scenes are hidden or no required assets exist
-  const noVisibleImages = visibleScenes.every(s => !s.image_path);
+  // Disable export buttons when all scenes are hidden or no required assets exist.
+  // Presentation render requires every visible scene to have an image to avoid
+  // passing empty imageUrl strings into the renderer (which causes load failures).
+  const allVisibleImagesReady = visibleScenes.length > 0 && visibleScenes.every(s => !!s.image_path);
   const noVisibleVideos = visibleScenes.every(s => !s.video_path);
-  const presentationDisabled = merging || visibleScenes.length === 0 || noVisibleImages || isBlocked;
+  const presentationDisabled = merging || visibleScenes.length === 0 || !allVisibleImagesReady || isBlocked;
   const mergeDisabled = merging || visibleScenes.length === 0 || noVisibleVideos || isBlocked;
 
   const bannerStyle =

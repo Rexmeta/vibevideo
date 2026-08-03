@@ -4,7 +4,7 @@ import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
 import { runQuickPipeline, QuickPipelineProgress, QuickPipelineStage, AwaitRetries } from './runQuickPipeline';
 import { setStoredMode, type WizardMode } from './ModeGate';
-import type { Scene } from '../../types';
+import type { Scene, CreativeBriefPurpose, CreativeBriefTone } from '../../types';
 
 interface Props {
   onSwitchMode: (mode: WizardMode) => void;
@@ -92,8 +92,11 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode, expressMode }) => {
     setStep,
     setMaxStep,
     onNavigate,
+    creativeBrief,
+    setCreativeBrief,
   } = ctx;
 
+  const [briefExpanded, setBriefExpanded] = useState(false);
   const [progress, setProgress] = useState<QuickPipelineProgress | null>(null);
   const [running, setRunning] = useState(false);
   // True during the brief delay between the pipeline finishing successfully
@@ -545,6 +548,153 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode, expressMode }) => {
                 Veo 내장 오디오 사용 (별도 TTS 단계 생략){expressMode && ' · Express 고정'}
               </span>
             </label>
+
+            {/* ── Creative Brief accordion ── */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setBriefExpanded(v => !v)}
+                className="w-full flex items-center justify-between gap-3 group"
+              >
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 flex items-center gap-2 group-hover:text-brand-dark transition-colors">
+                  <Icons.FileText size={14} /> 기획 브리핑 (선택)
+                  <span className="text-gray-300 normal-case font-medium">— 설정하면 더 정밀한 스크립트 생성</span>
+                </h3>
+                <span className={`text-gray-400 transition-transform duration-200 ${briefExpanded ? 'rotate-180' : ''}`}>
+                  <Icons.ChevronDown size={16} />
+                </span>
+              </button>
+              {!briefExpanded && (
+                <p className="text-[10px] text-gray-400 italic mt-1.5">
+                  타겟·메시지·톤을 설정하면 AI가 목적에 맞는 스크립트를 생성합니다.
+                </p>
+              )}
+              {briefExpanded && (
+                <div className="mt-4 space-y-5 p-6 bg-gradient-to-br from-indigo-50/60 to-purple-50/40 rounded-[2rem] border-2 border-indigo-100">
+                  {/* Audience */}
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700 block mb-2">
+                      타겟 오디언스
+                    </label>
+                    <input
+                      value={creativeBrief.audience || ''}
+                      onChange={e => setCreativeBrief(prev => ({ ...prev, audience: e.target.value || undefined }))}
+                      placeholder="예: 20대 여성 직장인, IT 스타트업 창업자, 초등학생 학부모"
+                      className="w-full p-4 bg-white rounded-2xl outline-none text-sm font-medium shadow-inner border border-indigo-100 focus:border-indigo-300 transition-colors"
+                    />
+                  </div>
+                  {/* Key Message */}
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700 block mb-2">
+                      핵심 메시지 <span className="text-gray-400 normal-case font-medium">(1문장)</span>
+                    </label>
+                    <input
+                      value={creativeBrief.keyMessage || ''}
+                      onChange={e => setCreativeBrief(prev => ({ ...prev, keyMessage: e.target.value || undefined }))}
+                      placeholder="예: 우리 앱을 쓰면 하루 2시간을 절약할 수 있습니다"
+                      className="w-full p-4 bg-white rounded-2xl outline-none text-sm font-medium shadow-inner border border-indigo-100 focus:border-indigo-300 transition-colors"
+                    />
+                  </div>
+                  {/* Purpose */}
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700 block mb-3">
+                      영상 목적
+                    </label>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      {([
+                        { value: 'awareness', label: '브랜드 인지', emoji: '📢' },
+                        { value: 'conversion', label: '전환/구매', emoji: '🎯' },
+                        { value: 'education', label: '교육/정보', emoji: '📚' },
+                        { value: 'entertainment', label: '엔터테인먼트', emoji: '🎬' },
+                      ] as { value: CreativeBriefPurpose; label: string; emoji: string }[]).map(opt => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => setCreativeBrief(prev => ({
+                            ...prev,
+                            purpose: prev.purpose === opt.value ? undefined : opt.value,
+                          }))}
+                          className={`p-3 rounded-2xl border-2 text-center transition-all ${
+                            creativeBrief.purpose === opt.value
+                              ? 'border-indigo-400 bg-indigo-50 shadow-md scale-[1.02]'
+                              : 'border-white bg-white hover:border-indigo-200'
+                          }`}
+                        >
+                          <span className="block text-lg mb-1">{opt.emoji}</span>
+                          <span className="text-[10px] font-black text-gray-700">{opt.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Tone & Voice */}
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700 block mb-3">
+                      브랜드 톤 &amp; 보이스
+                    </label>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      {([
+                        { value: 'formal', label: 'Formal', desc: '격식체·전문적' },
+                        { value: 'casual', label: 'Casual', desc: '편안하고 친근함' },
+                        { value: 'friendly', label: 'Friendly', desc: '따뜻하고 친절함' },
+                        { value: 'expert', label: 'Expert', desc: '권위있는 전문가' },
+                      ] as { value: CreativeBriefTone; label: string; desc: string }[]).map(opt => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => setCreativeBrief(prev => ({
+                            ...prev,
+                            toneVoice: prev.toneVoice === opt.value ? undefined : opt.value,
+                          }))}
+                          className={`p-3 rounded-2xl border-2 text-left transition-all ${
+                            creativeBrief.toneVoice === opt.value
+                              ? 'border-indigo-400 bg-indigo-50 shadow-md scale-[1.02]'
+                              : 'border-white bg-white hover:border-indigo-200'
+                          }`}
+                        >
+                          <span className="text-[11px] font-black text-gray-800 block">{opt.label}</span>
+                          <span className="text-[9px] text-gray-400 block mt-0.5">{opt.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Reference URLs */}
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-700 block mb-2">
+                      참고 영상 URL <span className="text-gray-400 normal-case font-medium">(최대 3개 · 스타일 힌트로만 사용)</span>
+                    </label>
+                    <div className="space-y-2">
+                      {[0, 1, 2].map(idx => (
+                        <input
+                          key={idx}
+                          value={(creativeBrief.referenceUrls || [])[idx] || ''}
+                          onChange={e => {
+                            const urls = [...(creativeBrief.referenceUrls || ['', '', ''])];
+                            urls[idx] = e.target.value;
+                            const trimmed = urls.map(u => u.trim());
+                            const lastNonEmpty = trimmed.reduce((last, v, i) => v ? i : last, -1);
+                            const cleaned = lastNonEmpty >= 0 ? trimmed.slice(0, lastNonEmpty + 1) : [];
+                            setCreativeBrief(prev => ({ ...prev, referenceUrls: cleaned.length ? cleaned : undefined }));
+                          }}
+                          placeholder={`참고 URL ${idx + 1} (예: https://youtube.com/watch?v=...)`}
+                          className="w-full p-3 bg-white rounded-xl outline-none text-xs font-medium shadow-inner border border-indigo-100 focus:border-indigo-300 transition-colors"
+                          type="url"
+                        />
+                      ))}
+                    </div>
+                    <p className="text-[9px] text-gray-400 italic mt-2">URL을 실제로 방문하지 않고 스타일 힌트로만 AI 프롬프트에 포함합니다.</p>
+                  </div>
+                  {/* Active brief summary badge */}
+                  {(creativeBrief.audience || creativeBrief.keyMessage || creativeBrief.purpose || creativeBrief.toneVoice) && (
+                    <div className="flex items-center gap-2 pt-1">
+                      <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />
+                      <span className="text-[10px] text-green-700 font-bold">
+                        브리핑 활성화됨 — 스크립트 생성 시 자동 반영됩니다
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             <button
               onClick={() => { void handleStart(); }}
