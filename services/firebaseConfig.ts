@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { initializeFirestore, getFirestore, Firestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
 import { getAuth, Auth, onAuthStateChanged } from 'firebase/auth';
+import { isCloudSyncEnabled } from './cloudSyncSettings';
 
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY || '',
@@ -47,9 +48,11 @@ if (isFirebaseConfigured()) {
       const off = onAuthStateChanged(auth, (u) => {
         if (!u || pinged) return;
         pinged = true;
-        import('./storageService')
-          .then(m => m.pingFirestoreHealth?.())
-          .catch(() => {});
+        if (isCloudSyncEnabled()) {
+          import('./storageService')
+            .then(m => m.pingFirestoreHealth?.())
+            .catch(() => {});
+        }
         try { off(); } catch {}
       });
     } catch {}

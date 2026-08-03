@@ -17,6 +17,7 @@ import { auth, isFirebaseConfigured } from './services/firebaseConfig';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { isAdminUser } from './services/modelService';
 import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from './services/apiKeyService';
+import { isCloudSyncEnabled } from './services/cloudSyncSettings';
 import { jobManager } from './services/jobManager';
 import { uploadQueue } from './services/uploadQueue';
 import { SAMPLE_PROJECT_ID } from './services/sampleProject';
@@ -123,16 +124,22 @@ const App: React.FC = () => {
         uploadQueue.resumeAll().catch(err =>
           console.warn('[App] uploadQueue.resumeAll failed:', err)
         );
-        jobManager
-          .autoResumePendingOperations(user.uid)
-          .catch(err => console.warn('[App] autoResumePendingOperations failed:', err))
-          .finally(() => {
-            // Then hydrate phantom cards for any *other* interrupted
-            // projects (those without persisted operations).
-            jobManager.loadInterruptedFromProjects(user.uid).catch(err =>
-              console.warn('[App] loadInterruptedFromProjects failed:', err)
-            );
-          });
+        if (isCloudSyncEnabled()) {
+          jobManager
+            .autoResumePendingOperations(user.uid)
+            .catch(err => console.warn('[App] autoResumePendingOperations failed:', err))
+            .finally(() => {
+              // Then hydrate phantom cards for any *other* interrupted
+              // projects (those without persisted operations).
+              jobManager.loadInterruptedFromProjects(user.uid).catch(err =>
+                console.warn('[App] loadInterruptedFromProjects failed:', err)
+              );
+            });
+        } else {
+          jobManager.loadInterruptedFromProjects(user.uid).catch(err =>
+            console.warn('[App] loadInterruptedFromProjects failed:', err)
+          );
+        }
       }
     });
     return () => unsubscribe();
