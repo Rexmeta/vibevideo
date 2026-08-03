@@ -2,7 +2,8 @@ import React from 'react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
 import { estimateCost, formatUsd, resolveApiModelId } from '../../services/pricing';
-import { ProjectStatus } from '../../types';
+import { ProjectStatus, TransitionType } from '../../types';
+import { TimelineEditor } from './TimelineEditor';
 
 export const Step6Preview: React.FC = () => {
   const w = useWizard();
@@ -13,6 +14,8 @@ export const Step6Preview: React.FC = () => {
     activePreviewIdx,
     setActivePreviewIdx,
     scenes,
+    setScenes,
+    updateSceneAt,
     isPresentationMode,
     useVeoAudio,
     syncAudioWithVideo,
@@ -26,6 +29,35 @@ export const Step6Preview: React.FC = () => {
     cloneSampleToProject,
     onNavigate,
   } = w;
+
+  const handleReorder = (fromIdx: number, toIdx: number) => {
+    setScenes(prev => {
+      const next = [...prev];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next.map((s, i) => ({ ...s, scene_number: i + 1 }));
+    });
+    // Keep active preview pointing at same visual scene after reorder
+    if (activePreviewIdx === fromIdx) {
+      setActivePreviewIdx(toIdx);
+    } else if (activePreviewIdx > fromIdx && activePreviewIdx <= toIdx) {
+      setActivePreviewIdx(activePreviewIdx - 1);
+    } else if (activePreviewIdx < fromIdx && activePreviewIdx >= toIdx) {
+      setActivePreviewIdx(activePreviewIdx + 1);
+    }
+  };
+
+  const handleResizeDuration = (idx: number, newDuration: number) => {
+    updateSceneAt(idx, { durationSec: newDuration });
+  };
+
+  const handleSetTransition = (idx: number, t: TransitionType) => {
+    updateSceneAt(idx, { transitionTo: t });
+  };
+
+  const handleToggleHidden = (idx: number) => {
+    updateSceneAt(idx, { hidden: !scenes[idx]?.hidden });
+  };
 
   return (
     <div className="flex-1 flex flex-col h-full animate-in fade-in duration-700">
@@ -183,6 +215,18 @@ export const Step6Preview: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {/* Timeline Editor */}
+      <TimelineEditor
+        scenes={scenes}
+        activeIdx={activePreviewIdx}
+        TRANSITION_OPTIONS={TRANSITION_OPTIONS}
+        onSelectScene={setActivePreviewIdx}
+        onReorder={handleReorder}
+        onResizeDuration={handleResizeDuration}
+        onSetTransition={handleSetTransition}
+        onToggleHidden={handleToggleHidden}
+      />
 
       {isSample && (
         <div className="mt-10 bg-gradient-to-r from-cyan-50 via-white to-purple-50 border-2 border-cyan-100 rounded-3xl p-6 flex flex-col sm:flex-row items-center gap-4">

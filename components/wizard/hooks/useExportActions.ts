@@ -80,24 +80,29 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     await action();
   };
 
-  const computeTotalDuration = (): number => {
-    const fallbackPerScene = scenes.length > 0 ? (duration / scenes.length) || 6 : 6;
-    const sum = scenes.reduce(
-      (acc, s) => acc + (s.audio_duration || fallbackPerScene),
-      0
-    );
-    return Math.max(sum, duration || 0);
-  };
-
+  // Returns one effective duration per scene for ALL scenes (by original index).
+  // Used in handleAutoSplitExport for index-based lookup. Prefers durationSec.
   const sceneDurations = (): number[] => {
     const fallbackPerScene = scenes.length > 0 ? (duration / scenes.length) || 6 : 6;
-    return scenes.map(s => s.audio_duration || fallbackPerScene);
+    return scenes.map(s => s.durationSec || s.audio_duration || fallbackPerScene);
+  };
+
+  // Returns durations only for visible (non-hidden) scenes. Used for preflight.
+  const visibleSceneDurations = (): number[] => {
+    const visible = scenes.filter(s => !s.hidden);
+    const fallbackPerScene = visible.length > 0 ? (duration / visible.length) || 6 : 6;
+    return visible.map(s => s.durationSec || s.audio_duration || fallbackPerScene);
+  };
+
+  const computeTotalDuration = (): number => {
+    const durs = visibleSceneDurations();
+    return durs.reduce((a, b) => a + b, 0);
   };
 
   const buildAssessment = () =>
     evaluateExportLimits({
       totalDurationSec: computeTotalDuration(),
-      sceneCount: scenes.length,
+      sceneCount: scenes.filter(s => !s.hidden).length,
       resolution: getResolution(aspectRatio),
       hasCaptions: captionStyle.preset !== 'none',
       isPresentationMode,
@@ -105,7 +110,7 @@ export const useExportActions = (deps: ExportActionsDeps) => {
 
   const buildAutoSplitPlan = (): SafeChunkPlan =>
     planSafeExportChunks({
-      durations: sceneDurations(),
+      durations: visibleSceneDurations(),
       resolution: getResolution(aspectRatio),
       hasCaptions: captionStyle.preset !== 'none',
       isPresentationMode,
@@ -131,10 +136,12 @@ export const useExportActions = (deps: ExportActionsDeps) => {
 
   const handleDownloadAll = async () => {
     setDownloadingAll(true);
+    let dlNum = 1;
     for (let i = 0; i < scenes.length; i++) {
       const s = scenes[i];
-      if (s.video_path) {
-        await downloadVideo(s.video_path, `scene_${i + 1}.mp4`);
+      if (s.video_path && !s.hidden) {
+        await downloadVideo(s.video_path, `scene_${dlNum}.mp4`);
+        dlNum++;
         if (i < scenes.length - 1) await new Promise(r => setTimeout(r, 500));
       }
     }
@@ -142,6 +149,11 @@ export const useExportActions = (deps: ExportActionsDeps) => {
   };
 
   const handleMergeExport = async () => {
+    const eligibleVisible = scenes.filter(s => !s.hidden && !!s.video_path);
+    if (eligibleVisible.length === 0) {
+      setMergeProgress('오류: 최소 1개 이상의 활성 씬에 비디오가 있어야 합니다. 숨긴 씬을 확인해 주세요.');
+      return;
+    }
     const assessment = buildAssessment();
     if (assessment.level === 'block') {
       const msg = `${assessment.summary} ${assessment.reasons[0] || ''}`.trim();
@@ -158,8 +170,10 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     clearFFmpegLoadRetry();
     try {
       const captionsEnabled = captionStyle.preset !== 'none';
-      const inputs: MergeInput[] = scenes.map(s => {
-        const dur = s.audio_duration || duration / Math.max(1, scenes.length) || 6;
+      const visibleScenes = scenes.filter(s => !s.hidden);
+      const fallbackDur = visibleScenes.length > 0 ? (duration / visibleScenes.length) || 6 : 6;
+      const inputs: MergeInput[] = visibleScenes.map(s => {
+        const dur = s.durationSec || s.audio_duration || fallbackDur;
         const text = (s.audio_script || s.script_segment || '').trim();
         const captionWords =
           captionsEnabled && text
@@ -210,6 +224,11 @@ export const useExportActions = (deps: ExportActionsDeps) => {
   };
 
   const handleRenderPresentation = async () => {
+    const eligibleVisible = scenes.filter(s => !s.hidden && !!s.image_path);
+    if (eligibleVisible.length === 0) {
+      setMergeProgress('오류: 최소 1개 이상의 활성 씬에 이미지가 있어야 합니다. 숨긴 씬을 확인해 주세요.');
+      return;
+    }
     const assessment = buildAssessment();
     if (assessment.level === 'block') {
       const msg = `${assessment.summary} ${assessment.reasons[0] || ''}`.trim();
@@ -225,19 +244,25 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     setMergedVideoUrl(null);
     try {
       const captionsEnabled = captionStyle.preset !== 'none';
-      const inputs: PresentationSceneInput[] = scenes.map((s, i) => {
+      const visiblePresentationScenes = scenes.filter(s => !s.hidden);
+      const fallbackPresoDur = visiblePresentationScenes.length > 0 ? (duration / visiblePresentationScenes.length) || 6 : 6;
+      const inputs: PresentationSceneInput[] = visiblePresentationScenes.map((s, i) => {
         const pres = s.presentation || getDefaultPresentation(i);
-        const dur = s.audio_duration || duration / scenes.length || 6;
+        const dur = s.durationSec || s.audio_duration || fallbackPresoDur;
         const text = (s.audio_script || s.script_segment || '').trim();
         const captionWords =
           captionsEnabled && text
             ? alignWordsToDuration(text, dur, captionStyle.enableEmoji)
             : undefined;
+        // Prefer the previous scene's transitionTo (set by TimelineEditor) over
+        // this scene's own presentation.transition (set by the presentation editor).
+        const prevScene = i > 0 ? visiblePresentationScenes[i - 1] : null;
+        const transition = (prevScene?.transitionTo ?? pres.transition) as import('../../../types').TransitionType;
         return {
           imageUrl: s.image_path || '',
           audioUrl: s.audio_path || undefined,
           duration: dur,
-          transition: pres.transition,
+          transition,
           transitionDuration: pres.transitionDuration,
           motion: pres.motion,
           textOverlay: pres.textOverlay,
@@ -270,7 +295,7 @@ export const useExportActions = (deps: ExportActionsDeps) => {
     const eligibleIdx = scenes
       .map((s, i) => ({ s, i }))
       .filter(({ s }) =>
-        isPresentationMode ? !!s.image_path : !!s.video_path
+        !s.hidden && (isPresentationMode ? !!s.image_path : !!s.video_path)
       )
       .map(({ i }) => i);
 
@@ -330,20 +355,25 @@ export const useExportActions = (deps: ExportActionsDeps) => {
         let blob: Blob;
 
         if (isPresentationMode) {
-          const inputs: PresentationSceneInput[] = indices.map(i => {
-            const s = scenes[i];
-            const pres = s.presentation || getDefaultPresentation(i);
-            const dur = durations[i];
+          const inputs: PresentationSceneInput[] = indices.map((sceneIdx, chunkPos) => {
+            const s = scenes[sceneIdx];
+            const pres = s.presentation || getDefaultPresentation(sceneIdx);
+            const dur = durations[sceneIdx];
             const text = (s.audio_script || s.script_segment || '').trim();
             const captionWords =
               captionsEnabled && text
                 ? alignWordsToDuration(text, dur, captionStyle.enableEmoji)
                 : undefined;
+            // Prefer previous scene's transitionTo (TimelineEditor) over
+            // this scene's presentation.transition (presentation editor).
+            const prevSceneIdx = chunkPos > 0 ? indices[chunkPos - 1] : null;
+            const prevScene = prevSceneIdx !== null ? scenes[prevSceneIdx] : null;
+            const transition = (prevScene?.transitionTo ?? pres.transition) as import('../../../types').TransitionType;
             return {
               imageUrl: s.image_path || '',
               audioUrl: s.audio_path || undefined,
               duration: dur,
-              transition: pres.transition,
+              transition,
               transitionDuration: pres.transitionDuration,
               motion: pres.motion,
               textOverlay: pres.textOverlay,

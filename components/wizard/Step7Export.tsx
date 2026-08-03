@@ -42,13 +42,15 @@ export const Step7Export: React.FC = () => {
   // Task #99: long-form mode auto-engages once total duration crosses 3 min,
   // or whenever the safe-chunk planner needs to split into 4+ parts.
   const isLongForm = duration >= 180 || autoSplitPlan.chunks.length >= 4;
+  // Only non-hidden scenes count for export eligibility
+  const visibleScenes = scenes.filter(s => !s.hidden);
   const canAutoSplit =
     !merging &&
-    scenes.length > 0 &&
+    visibleScenes.length > 0 &&
     autoSplitPlan.needsSplit &&
     (isPresentationMode
-      ? scenes.every(s => !!s.image_path)
-      : scenes.some(s => !!s.video_path));
+      ? visibleScenes.every(s => !!s.image_path)
+      : visibleScenes.some(s => !!s.video_path));
 
   const runExport = () => {
     if (isLongForm && canAutoSplit) {
@@ -64,8 +66,11 @@ export const Step7Export: React.FC = () => {
     else runExport();
   };
 
-  const presentationDisabled = merging || !isImagesReady || isBlocked;
-  const mergeDisabled = merging || scenes.every(s => !s.video_path) || isBlocked;
+  // Disable export buttons when all scenes are hidden or no required assets exist
+  const noVisibleImages = visibleScenes.every(s => !s.image_path);
+  const noVisibleVideos = visibleScenes.every(s => !s.video_path);
+  const presentationDisabled = merging || visibleScenes.length === 0 || noVisibleImages || isBlocked;
+  const mergeDisabled = merging || visibleScenes.length === 0 || noVisibleVideos || isBlocked;
 
   const bannerStyle =
     exportRiskAssessment.level === 'safe'

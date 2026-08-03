@@ -351,6 +351,9 @@ export interface Scene {
   // initial generation (when the durable upload queue eventually succeeds
   // or gives up).
   video_meta?: VideoMeta;
+  // Task #114: when true the scene is excluded from the final export but
+  // kept in the project so the user can re-enable it without regenerating.
+  hidden?: boolean;
 }
 
 export type VideoUploadStatus = 'ok' | 'pending-upload' | 'upload-failed';
