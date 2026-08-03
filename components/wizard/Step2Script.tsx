@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { generateScript, segmentScriptIntoScenes, generateStyleSheet, refineAllScenesWithInstruction } from '../../services/geminiService';
-import { generateRemixedScenes } from '../../services/youtubeAnalysisService';
+import { generateRemixedScenes, regenerateSingleRemixScene } from '../../services/youtubeAnalysisService';
 import { useWizard } from './WizardContext';
 import type { CreativeBrief, Scene } from '../../types';
 import { StoryboardCard } from './StoryboardCard';
@@ -123,6 +123,42 @@ export const Step2Script: React.FC = () => {
   // Side-by-side comparison toggle (only shown when remix scenes are present)
   const [showComparison, setShowComparison] = useState(false);
   const hasRemixScenes = scenes.some(s => (s as any).remix_original_script);
+
+  // Per-card regeneration state (index of the scene currently being regenerated)
+  const [regeneratingSceneIdx, setRegeneratingSceneIdx] = useState<number | null>(null);
+
+  const handleRegenerateSingleScene = async (i: number) => {
+    if (!remixSource || regeneratingSceneIdx !== null) return;
+    setRegeneratingSceneIdx(i);
+    try {
+      const charReplacements: Record<string, string> = {};
+      remixSource.detectedCharacters.forEach((dc, ci) => {
+        const ref = characterReferences[ci];
+        if (ref) {
+          const nameChanged = ref.name && ref.name !== dc.name;
+          const descChanged = ref.description && ref.description !== dc.description;
+          if (nameChanged || descChanged) {
+            charReplacements[dc.name] =
+              `${ref.name || dc.name}${ref.description ? ': ' + ref.description : ''}`;
+          }
+        }
+      });
+      const updated = await regenerateSingleRemixScene(remixSource, i, {
+        characterReplacements: Object.keys(charReplacements).length > 0 ? charReplacements : undefined,
+        backgroundReplacements: Object.keys(backgroundReplacements).length > 0 ? backgroundReplacements : undefined,
+      });
+      updateSceneAt(i, {
+        script_segment: updated.script_segment,
+        visual_prompt: updated.visual_prompt,
+        remix_original_script: updated.remix_original_script,
+      });
+      sync();
+    } catch (e: any) {
+      alertGeminiError(`씬 ${i + 1} 재생성 실패`, e);
+    } finally {
+      setRegeneratingSceneIdx(null);
+    }
+  };
 
   const [activeTab, setActiveTab] = useState<Tab>('script');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -416,9 +452,23 @@ export const Step2Script: React.FC = () => {
                     </p>
                   </div>
                   <div>
-                    <p className="text-[10px] font-black uppercase tracking-wider text-indigo-600 mb-2 flex items-center gap-1">
-                      <Icons.Sparkles size={10} /> 리믹스 버전
-                    </p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-indigo-600 flex items-center gap-1">
+                        <Icons.Sparkles size={10} /> 리믹스 버전
+                      </p>
+                      <button
+                        onClick={() => handleRegenerateSingleScene(i)}
+                        disabled={regeneratingSceneIdx !== null}
+                        title="이 씬 다시 생성"
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black bg-indigo-50 text-indigo-600 border border-indigo-200 hover:bg-indigo-100 hover:border-indigo-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {regeneratingSceneIdx === i ? (
+                          <><Icons.Loader2 size={10} className="animate-spin" /> 생성 중…</>
+                        ) : (
+                          <><Icons.RefreshCw size={10} /> 다시 생성</>
+                        )}
+                      </button>
+                    </div>
                     <textarea
                       value={s.script_segment || ''}
                       onChange={e => updateSceneAt(i, { script_segment: e.target.value })}

@@ -522,6 +522,102 @@ Output ONLY the JSON matching the schema — no prose before or after.`;
   });
 }
 
+/**
+ * Re-generate a single remix scene (by index) without rebuilding the whole
+ * storyboard.  Returns an updated `Partial<Scene>` ready for `updateSceneAt`.
+ */
+export async function regenerateSingleRemixScene(
+  remixSource: RemixSourceData,
+  sceneIndex: number,
+  options: {
+    characterReplacements?: Record<string, string>;
+    backgroundReplacements?: Record<string, string>;
+  } = {},
+): Promise<Partial<Scene>> {
+  const apiKey = requireApiKey();
+  const ai = new GoogleGenAI({ apiKey });
+
+  const orig = remixSource.originalScenes[sceneIndex];
+  if (!orig) throw new Error(`씬 ${sceneIndex + 1}을 찾을 수 없습니다.`);
+
+  const tipsList = remixSource.selectedTips
+    .map((t, i) => `${i + 1}. ${t.tip} — ${t.reasoning}`)
+    .join('\n');
+
+  const charMap = options.characterReplacements || {};
+  const bgMap = options.backgroundReplacements || {};
+
+  const charLines = Object.entries(charMap)
+    .map(([o, r]) => `• "${o}" → "${r}"`)
+    .join('\n');
+
+  const bgLines = Object.entries(bgMap)
+    .map(([o, r]) => `• "${o}" → "${r}"`)
+    .join('\n');
+
+  const systemPrompt = `You are a YouTube creative scriptwriter and video director.
+Rewrite the provided single video scene to implement the view-maximisation tips below.
+Incorporate any character or background replacements specified.
+
+OPTIMISATION TIPS TO APPLY:
+${tipsList || '(none selected — improve overall quality)'}
+
+${charLines ? `CHARACTER REPLACEMENTS:\n${charLines}` : ''}
+${bgLines ? `BACKGROUND REPLACEMENTS:\n${bgLines}` : ''}
+
+Return ONLY the JSON matching the schema — no prose before or after.`;
+
+  const sceneText =
+    `Scene ${sceneIndex + 1} [${Math.floor(orig.startSec)}s–${Math.floor(orig.endSec)}s]:\n` +
+    `Script: ${orig.scriptText}\nVisual: ${orig.visualDescription}`;
+
+  const SINGLE_SCENE_SCHEMA = {
+    type: Type.OBJECT,
+    properties: {
+      scriptSegment: { type: Type.STRING },
+      visualPrompt: { type: Type.STRING },
+    },
+    required: ['scriptSegment', 'visualPrompt'],
+  } as const;
+
+  let response: Awaited<ReturnType<typeof ai.models.generateContent>>;
+  try {
+    response = await withTimeout(
+      ai.models.generateContent({
+        model: 'gemini-2.0-flash',
+        contents: [{ parts: [{ text: `${systemPrompt}\n\nSCENE TO REWRITE:\n${sceneText}` }] }],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: SINGLE_SCENE_SCHEMA as any,
+        },
+      }),
+      60_000,
+      `씬 ${sceneIndex + 1} 리믹스 재생성`,
+    );
+  } catch (e: any) {
+    const msg = String(e?.message || '');
+    if (msg.includes('API 키가 설정되지 않았습니다') || msg.toLowerCase().includes('api key')) {
+      throw e instanceof Error ? e : new Error(msg);
+    }
+    throw new Error(`씬 ${sceneIndex + 1} 재생성 중 오류가 발생했습니다: ${msg || '알 수 없는 오류'}`);
+  }
+
+  const raw = (() => {
+    try { return JSON.parse(response.text || '{}'); } catch {
+      throw new Error('씬 재생성 결과를 처리하는 중 오류가 발생했습니다. 다시 시도해주세요.');
+    }
+  })();
+
+  return {
+    id: `remix-${sceneIndex}-${Date.now()}`,
+    project_id: '',
+    scene_number: sceneIndex + 1,
+    script_segment: String(raw.scriptSegment || orig.scriptText),
+    visual_prompt: String(raw.visualPrompt || orig.visualDescription),
+    remix_original_script: orig.scriptText,
+  } as Partial<Scene>;
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
