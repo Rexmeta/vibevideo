@@ -149,6 +149,7 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     bgs: new Set(),
   });
   const [scriptCopied, setScriptCopied] = useState(false);
+  const [copiedSceneIdx, setCopiedSceneIdx] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Focus input on open
@@ -219,6 +220,14 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     onClose();
   };
 
+  const handleCopySceneLine = (scene: YoutubeScene, idx: number) => {
+    if (!scene.scriptText) return;
+    navigator.clipboard.writeText(scene.scriptText).then(() => {
+      setCopiedSceneIdx(idx);
+      setTimeout(() => setCopiedSceneIdx(prev => (prev === idx ? null : prev)), 2000);
+    });
+  };
+
   const handleCopyScript = (a: YoutubeAnalysis) => {
     const text = a.scenes
       .map((s: YoutubeScene) => s.scriptText)
@@ -276,6 +285,23 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
                   {scene.visualDescription}
                 </p>
               </div>
+              {scene.scriptText && (
+                <button
+                  onClick={() => handleCopySceneLine(scene, i)}
+                  title="스크립트 복사"
+                  className={`shrink-0 self-start mt-0.5 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black transition-all border ${
+                    copiedSceneIdx === i
+                      ? 'bg-green-50 text-green-600 border-green-200'
+                      : 'bg-white text-gray-400 border-gray-200 hover:text-gray-600 hover:border-gray-400'
+                  }`}
+                >
+                  {copiedSceneIdx === i ? (
+                    <><Icons.Check size={10} /> 복사됨 ✓</>
+                  ) : (
+                    <Icons.Copy size={10} />
+                  )}
+                </button>
+              )}
             </div>
           ))}
         </div>
