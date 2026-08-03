@@ -17,6 +17,7 @@ import {
   ContextPack,
   CreativeBrief,
   BrandKit,
+  RemixSourceData,
 } from '../../types';
 import { SyncFn } from './hooks/useSync';
 import type { RestoreErrorKind, RestoreStatus } from './hooks/useRestore';
@@ -95,6 +96,14 @@ export interface WizardContextValue {
   setStyleSheet: React.Dispatch<React.SetStateAction<StyleSheet | undefined>>;
   creativeBrief: CreativeBrief;
   setCreativeBrief: React.Dispatch<React.SetStateAction<CreativeBrief>>;
+
+  // Task #156: YouTube remix — analysis summary stored on the project
+  remixSource: RemixSourceData | undefined;
+  setRemixSource: React.Dispatch<React.SetStateAction<RemixSourceData | undefined>>;
+  /** Per-background replacement map: originalBg → newDescription */
+  backgroundReplacements: Record<string, string>;
+  setBackgroundReplacements: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+
   visionCriticEnabled: boolean;
   setVisionCriticEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   qualityThreshold: number;

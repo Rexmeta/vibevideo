@@ -9,6 +9,73 @@ import { Step6Preview } from './Step6Preview';
 import { Step7Export } from './Step7Export';
 import { setStoredMode, type WizardMode } from './ModeGate';
 import { ConfirmModal } from './ConfirmModal';
+import type { RemixSourceData } from '../../types';
+
+// ─── Remix Source Banner ─────────────────────────────────────────────────────
+
+const RemixSourceBanner: React.FC<{
+  source: RemixSourceData;
+  onDismiss: () => void;
+}> = ({ source, onDismiss }) => {
+  const scoreColor =
+    source.overallScore >= 7
+      ? 'text-green-600'
+      : source.overallScore >= 5
+      ? 'text-amber-600'
+      : 'text-red-500';
+  return (
+    <div className="mb-6 p-4 rounded-2xl border-2 border-red-100 bg-gradient-to-r from-red-50 to-orange-50 flex gap-3 items-start">
+      <div className="w-9 h-9 rounded-xl bg-red-500 flex items-center justify-center shrink-0 mt-0.5">
+        <Icons.Play size={13} className="text-white fill-white" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[10px] font-black uppercase tracking-widest text-red-600">
+            원본 분석 요약
+          </span>
+          <span className={`text-xs font-black ${scoreColor}`}>
+            {source.overallScore.toFixed(1)}/10
+          </span>
+          {source.format && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-bold">
+              {source.format}
+            </span>
+          )}
+        </div>
+        <p className="text-sm font-bold text-gray-800 leading-snug line-clamp-1 mb-1.5">
+          {source.detectedTitle || source.videoUrl}
+        </p>
+        <div className="flex flex-wrap gap-3 text-[11px]">
+          {source.topStrength && (
+            <span className="flex items-center gap-1 text-green-700">
+              <span>✅</span>
+              <span className="font-semibold">{source.topStrength.label}</span>
+            </span>
+          )}
+          {source.topWeakness && (
+            <span className="flex items-center gap-1 text-red-600">
+              <span>⚠️</span>
+              <span className="font-semibold">{source.topWeakness.label}</span>
+            </span>
+          )}
+          {source.selectedTips.length > 0 && (
+            <span className="text-indigo-600 font-semibold">
+              {source.selectedTips.length}개 팁 적용 예정
+            </span>
+          )}
+        </div>
+      </div>
+      <button
+        onClick={onDismiss}
+        className="shrink-0 text-gray-300 hover:text-gray-600 transition-colors"
+        title="배너 닫기"
+        aria-label="리믹스 배너 닫기"
+      >
+        <Icons.X size={14} />
+      </button>
+    </div>
+  );
+};
 
 interface WizardShellProps {
   onSwitchMode?: (mode: WizardMode) => void;
@@ -32,7 +99,11 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode, onStartF
     loadingMessage,
     scenes,
     projectId,
+    remixSource,
+    setRemixSource,
   } = w;
+
+  const [remixBannerDismissed, setRemixBannerDismissed] = useState(false);
 
   const projectHasProgress = (scenes && scenes.length > 0) || maxStep > 1 || step > 1;
   const cloudDisabled = getFirestoreHealthInfo().disabled;
@@ -150,6 +221,14 @@ export const WizardShell: React.FC<WizardShellProps> = ({ onSwitchMode, onStartF
             <p className="text-3xl font-black text-brand-dark mb-4">{loadingMessage}</p>
             <p className="text-gray-400 font-medium tracking-tight italic">당신의 모든 창작물은 구글 클라우드에서 안전하게 관리됩니다.</p>
           </div>
+        )}
+
+        {/* Remix source banner — shown on Steps 1 & 2 when project was derived from a YouTube video */}
+        {remixSource && !remixBannerDismissed && (step === 1 || step === 2) && (
+          <RemixSourceBanner
+            source={remixSource}
+            onDismiss={() => setRemixBannerDismissed(true)}
+          />
         )}
 
         {step === 1 && <Step1Setup />}

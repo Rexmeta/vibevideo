@@ -12,7 +12,8 @@ import { BrandKitSettings } from './components/BrandKitSettings';
 import { StudioDock } from './components/StudioDock';
 import { NewProjectModal } from './components/NewProjectModal';
 import { ViewState } from './types';
-import type { YoutubeAnalysis } from './types';
+import type { YoutubeAnalysis, OptimizationTip } from './types';
+import { buildRemixProject } from './services/youtubeAnalysisService';
 import { Icons } from './components/Icons';
 import { auth, isFirebaseConfigured } from './services/firebaseConfig';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -235,18 +236,42 @@ const App: React.FC = () => {
     setWizardSessionKey(k => k + 1);
   };
 
-  // Task #155: YouTube 분석 결과를 들고 새 프로젝트 위저드로 이동.
-  // The actual remix wizard integration (pre-filling scenes/characters from the
-  // analysis) is Task #3's downstream work; here we just navigate to 'create'.
-  const handleRemixYoutube = (_analysis: YoutubeAnalysis) => {
+  // Task #156: Build a remix project from a YouTube analysis result, persist it
+  // to localStorage (for immediate restore), and open it in the Pro Mode wizard.
+  const handleRemixYoutube = (analysis: YoutubeAnalysis, selectedTips: OptimizationTip[]) => {
     if (!currentUser) {
       setCurrentView('login');
       return;
     }
-    setExpressMode(false);
-    setEditingProjectId(null);
-    setCurrentView('create');
-    setWizardSessionKey(k => k + 1);
+    try {
+      const { project } = buildRemixProject(currentUser.uid, analysis, selectedTips);
+      // Persist to localStorage so useRestore can pick it up immediately.
+      try {
+        localStorage.setItem(
+          `vibe_video_backup_${project.id}`,
+          JSON.stringify({ ...project, saved_scenes: [] }),
+        );
+        // Keep the project index up to date.
+        const indexKey = `vibe_project_index_${currentUser.uid}`;
+        const index: string[] = JSON.parse(localStorage.getItem(indexKey) || '[]');
+        if (!index.includes(project.id)) index.unshift(project.id);
+        if (index.length > 50) index.length = 50;
+        localStorage.setItem(indexKey, JSON.stringify(index));
+      } catch (storageErr) {
+        console.warn('[Remix] localStorage write failed:', storageErr);
+      }
+      setExpressMode(false);
+      setEditingProjectId(project.id);
+      setCurrentView('create');
+      setWizardSessionKey(k => k + 1);
+    } catch (err) {
+      console.error('[Remix] Failed to build remix project:', err);
+      // Fallback: open wizard without pre-fill
+      setExpressMode(false);
+      setEditingProjectId(null);
+      setCurrentView('create');
+      setWizardSessionKey(k => k + 1);
+    }
   };
 
   if (authLoading) {

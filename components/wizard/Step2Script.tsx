@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { generateScript, segmentScriptIntoScenes, generateStyleSheet, refineAllScenesWithInstruction } from '../../services/geminiService';
+import { generateRemixedScenes } from '../../services/youtubeAnalysisService';
 import { useWizard } from './WizardContext';
 import type { CreativeBrief, Scene } from '../../types';
 import { StoryboardCard } from './StoryboardCard';
@@ -115,7 +116,13 @@ export const Step2Script: React.FC = () => {
     sync,
     maxStep,
     updateSceneAt,
+    remixSource,
+    backgroundReplacements,
   } = w;
+
+  // Side-by-side comparison toggle (only shown when remix scenes are present)
+  const [showComparison, setShowComparison] = useState(false);
+  const hasRemixScenes = scenes.some(s => (s as any).remix_original_script);
 
   const [activeTab, setActiveTab] = useState<Tab>('script');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -292,10 +299,26 @@ export const Step2Script: React.FC = () => {
       {/* Storyboard grid */}
       {activeTab === 'storyboard' && hasScenes && (
         <div className="flex-1 flex flex-col gap-4">
-          <p className="text-xs text-gray-400 font-medium flex items-center gap-1.5">
-            <Icons.GripVertical size={12} />
-            카드를 드래그해 씬 순서를 바꿀 수 있습니다. 카드를 클릭하면 인라인 편집이 가능합니다.
-          </p>
+          <div className="flex items-center gap-4 flex-wrap">
+            <p className="text-xs text-gray-400 font-medium flex items-center gap-1.5">
+              <Icons.GripVertical size={12} />
+              카드를 드래그해 씬 순서를 바꿀 수 있습니다. 카드를 클릭하면 인라인 편집이 가능합니다.
+            </p>
+            {/* Remix comparison toggle — shown when any scene has remix_original_script */}
+            {hasRemixScenes && (
+              <button
+                onClick={() => setShowComparison(v => !v)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-black transition-all border-2 ${
+                  showComparison
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                    : 'bg-white text-indigo-600 border-indigo-200 hover:border-indigo-400'
+                }`}
+              >
+                <Icons.List size={11} />
+                {showComparison ? '비교 보기 끄기' : '원본 비교 보기'}
+              </button>
+            )}
+          </div>
 
           {/* Bulk AI instruction bar */}
           <div className="p-5 bg-gradient-to-r from-teal-50 to-cyan-50 rounded-[2rem] border-2 border-teal-100">
@@ -379,23 +402,53 @@ export const Step2Script: React.FC = () => {
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 pb-4">
-            {scenes.map((s, i) => (
-              <StoryboardCard
-                key={s.id ?? i}
-                scene={s}
-                index={i}
-                dragging={dragIdx === i}
-                dragOver={dragOverIdx === i}
-                onDragStart={handleDragStart}
-                onDragEnd={handleDragEnd}
-                onDragOver={handleDragOver}
-                onDrop={handleDrop}
-                onSave={handleCardSave}
-                aiContext={{ topic, videoStyle }}
-              />
-            ))}
-          </div>
+          {/* Side-by-side comparison view for remix projects */}
+          {showComparison && hasRemixScenes ? (
+            <div className="space-y-3 pb-4">
+              {scenes.map((s, i) => (
+                <div key={s.id ?? i} className="grid grid-cols-2 gap-3 p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1">
+                      <Icons.Film size={10} /> 씬 {i + 1} — 원본
+                    </p>
+                    <p className="text-xs text-gray-500 leading-relaxed italic whitespace-pre-wrap">
+                      {(s as any).remix_original_script || '(원본 없음)'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-indigo-600 mb-2 flex items-center gap-1">
+                      <Icons.Sparkles size={10} /> 리믹스 버전
+                    </p>
+                    <textarea
+                      value={s.script_segment || ''}
+                      onChange={e => updateSceneAt(i, { script_segment: e.target.value })}
+                      onBlur={() => sync()}
+                      className="w-full text-xs text-gray-800 leading-relaxed font-medium bg-white border border-indigo-100 rounded-xl p-3 outline-none resize-none min-h-[120px] focus:border-indigo-300 transition-colors"
+                      placeholder="(생성 중)"
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 pb-4">
+              {scenes.map((s, i) => (
+                <StoryboardCard
+                  key={s.id ?? i}
+                  scene={s}
+                  index={i}
+                  dragging={dragIdx === i}
+                  dragOver={dragOverIdx === i}
+                  onDragStart={handleDragStart}
+                  onDragEnd={handleDragEnd}
+                  onDragOver={handleDragOver}
+                  onDrop={handleDrop}
+                  onSave={handleCardSave}
+                  aiContext={{ topic, videoStyle }}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -407,16 +460,45 @@ export const Step2Script: React.FC = () => {
         <button
           onClick={async () => {
             setLoading(true);
-            setLoadingMessage('스크립트를 씬 단위로 분석하고 있습니다...');
+            setLoadingMessage(
+              remixSource
+                ? 'AI가 원본 씬을 최적화 팁에 맞게 리믹스하고 있습니다…'
+                : '스크립트를 씬 단위로 분석하고 있습니다...',
+            );
             try {
-              const s = await segmentScriptIntoScenes(
-                script,
-                videoStyle,
-                aspectRatio,
-                characterProfile || undefined,
-                targetSceneCount,
-                { genre, platform, characterReferences, creativeBrief }
-              );
+              let s: Partial<Scene>[];
+              if (remixSource) {
+                // Build character replacement map from current characterReferences
+                const charReplacements: Record<string, string> = {};
+                remixSource.detectedCharacters.forEach((dc, i) => {
+                  const ref = characterReferences[i];
+                  if (ref) {
+                    const nameChanged = ref.name && ref.name !== dc.name;
+                    const descChanged = ref.description && ref.description !== dc.description;
+                    if (nameChanged || descChanged) {
+                      charReplacements[dc.name] =
+                        `${ref.name || dc.name}${ref.description ? ': ' + ref.description : ''}`;
+                    }
+                  }
+                });
+                s = await generateRemixedScenes(remixSource, {
+                  characterReplacements:
+                    Object.keys(charReplacements).length > 0 ? charReplacements : undefined,
+                  backgroundReplacements:
+                    Object.keys(backgroundReplacements).length > 0
+                      ? backgroundReplacements
+                      : undefined,
+                });
+              } else {
+                s = await segmentScriptIntoScenes(
+                  script,
+                  videoStyle,
+                  aspectRatio,
+                  characterProfile || undefined,
+                  targetSceneCount,
+                  { genre, platform, characterReferences, creativeBrief },
+                );
+              }
               setScenes(s);
               if (!styleSheet) {
                 try {
@@ -432,14 +514,14 @@ export const Step2Script: React.FC = () => {
               setLoading(false);
               await sync(3, s, {}, { script, topic, maxStep: Math.max(maxStep, 3) });
             } catch (e: any) {
-              console.error('Scene segmentation failed:', e);
-              alertGeminiError('스토리보드 구성 실패', e);
+              console.error('Scene segmentation / remix failed:', e);
+              alertGeminiError(remixSource ? '리믹스 씬 생성 실패' : '스토리보드 구성 실패', e);
               setLoading(false);
             }
           }}
           className="flex-1 bg-brand-dark text-white py-6 rounded-full font-black text-2xl shadow-2xl hover:scale-[1.01] transition-all"
         >
-          Construct Storyboard
+          {remixSource ? '🎬 Remix Storyboard' : 'Construct Storyboard'}
         </button>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Icons } from '../Icons';
 import { GENRES, PLATFORMS, applyPlatformDefaults } from '../../services/presets';
 import { generateSceneImage } from '../../services/geminiService';
@@ -61,7 +61,31 @@ export const Step1Setup: React.FC = () => {
     setCaptionStyle,
     creativeBrief,
     setCreativeBrief,
+    remixSource,
+    backgroundReplacements,
+    setBackgroundReplacements,
   } = w;
+
+  // Pre-populate characterReferences from detected characters when this is a remix project
+  const remixPrePopDoneRef = useRef(false);
+  useEffect(() => {
+    if (
+      !remixPrePopDoneRef.current &&
+      remixSource &&
+      characterReferences.length === 0 &&
+      remixSource.detectedCharacters.length > 0
+    ) {
+      remixPrePopDoneRef.current = true;
+      setCharacterReferences(
+        remixSource.detectedCharacters.map(c => ({
+          name: c.name,
+          description: c.description,
+          imageUrl: '',
+        })),
+      );
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remixSource]);
   // ContextPack — pulled separately so we don't widen the rest of the
   // destructure to `any`.
   const {
@@ -339,6 +363,145 @@ export const Step1Setup: React.FC = () => {
             </div>
           )}
         </section>
+
+        {/* ── Remix: Character Replacement Panel ── */}
+        {remixSource && remixSource.detectedCharacters.length > 0 && (
+          <section>
+            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-3 flex items-center gap-2">
+              <Icons.User size={14} /> 캐릭터 교체
+              <span className="text-gray-300 normal-case font-medium">(원본 영상의 등장인물을 교체합니다)</span>
+            </h3>
+            <p className="text-xs text-gray-400 mb-4 italic leading-relaxed">
+              원본 영상에서 감지된 등장인물입니다. 이름·외형 설명을 수정하거나 새 참조 이미지를 업로드하면
+              리믹스 씬 생성 시 해당 설명이 반영됩니다.
+            </p>
+            <div className="p-4 bg-gradient-to-br from-rose-50 to-pink-50 rounded-3xl border-2 border-rose-100 space-y-3">
+              {remixSource.detectedCharacters.map((detected, dIdx) => {
+                const ref = characterReferences[dIdx];
+                return (
+                  <div key={dIdx} className="flex gap-3 items-start p-3 bg-white/80 rounded-2xl border border-rose-100">
+                    <div className="shrink-0">
+                      {ref?.imageUrl ? (
+                        <img src={ref.imageUrl} alt={ref.name} className="w-16 h-16 rounded-xl object-cover border-2 border-white shadow" />
+                      ) : (
+                        <div className="w-16 h-16 rounded-xl bg-rose-100/60 border-2 border-dashed border-rose-200 flex flex-col items-center justify-center gap-1">
+                          <Icons.User size={14} className="text-rose-400" />
+                          <span className="text-[8px] text-rose-400 font-bold text-center px-1 leading-tight">
+                            {Math.round(detected.screenTimeFraction * 100)}% 출연
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <input
+                        value={ref?.name || detected.name}
+                        onChange={e => {
+                          const v = e.target.value;
+                          setCharacterReferences(prev => {
+                            const next = [...prev];
+                            if (next[dIdx]) next[dIdx] = { ...next[dIdx], name: v };
+                            else next[dIdx] = { name: v, description: detected.description, imageUrl: '' };
+                            return next;
+                          });
+                        }}
+                        placeholder={detected.name}
+                        className="w-full p-2.5 bg-white rounded-xl outline-none text-xs font-bold shadow-inner border border-rose-100 focus:border-rose-300"
+                      />
+                      <textarea
+                        value={ref?.description || ''}
+                        onChange={e => {
+                          const v = e.target.value;
+                          setCharacterReferences(prev => {
+                            const next = [...prev];
+                            if (next[dIdx]) next[dIdx] = { ...next[dIdx], description: v };
+                            else next[dIdx] = { name: detected.name, description: v, imageUrl: '' };
+                            return next;
+                          });
+                        }}
+                        placeholder={`원본: ${detected.description}`}
+                        className="w-full p-2.5 bg-white rounded-xl outline-none text-[11px] font-medium shadow-inner resize-none h-12 border border-rose-100 focus:border-rose-300"
+                      />
+                      <label className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-rose-200 rounded-full text-[10px] font-bold text-rose-600 hover:bg-rose-50 cursor-pointer transition-all">
+                        {generatingCharRefIdx === dIdx ? '업로드 중…' : '이미지 교체'}
+                        <input
+                          type="file" accept="image/*" className="hidden"
+                          disabled={generatingCharRefIdx !== null}
+                          onChange={async e => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            if (file.size > 4 * 1024 * 1024) { alert('4MB 이하 이미지를 선택해주세요.'); e.target.value = ''; return; }
+                            setGeneratingCharRefIdx(dIdx);
+                            try {
+                              const ext = (file.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+                              const safeName = ((ref?.name || detected.name) || `remix${dIdx}`).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
+                              const url = await uploadFileToCloud(`users/${userId}/projects/${projectId}/cast/${safeName}_${dIdx}.${ext}`, file, 'blob');
+                              if (!url.startsWith('http')) throw new Error('Storage 업로드 실패');
+                              setCharacterReferences(prev => {
+                                const next = [...prev];
+                                if (next[dIdx]) next[dIdx] = { ...next[dIdx], imageUrl: url };
+                                else next[dIdx] = { name: detected.name, description: detected.description, imageUrl: url };
+                                return next;
+                              });
+                              sync();
+                            } catch (err: any) { alert(`업로드 실패: ${err?.message || ''}`); }
+                            finally { setGeneratingCharRefIdx(null); e.target.value = ''; }
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* ── Remix: Background Replacement Panel ── */}
+        {remixSource && remixSource.detectedBackgrounds.length > 0 && (
+          <section>
+            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-3 flex items-center gap-2">
+              <Icons.ImageIcon size={14} /> 배경 변경
+              <span className="text-gray-300 normal-case font-medium">(감지된 배경을 다른 배경으로 교체합니다)</span>
+            </h3>
+            <p className="text-xs text-gray-400 mb-4 italic">
+              각 배경에 새 설명을 입력하면 씬 생성 시 원본 배경 대신 해당 설명이 사용됩니다. 비워두면 원본 배경이 유지됩니다.
+            </p>
+            <div className="p-4 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-3xl border-2 border-blue-100 space-y-3">
+              {remixSource.detectedBackgrounds.map((bg, bIdx) => {
+                const replacement = backgroundReplacements[bg] || '';
+                return (
+                  <div key={bIdx} className="flex gap-3 items-center">
+                    <div className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-100 text-indigo-700 rounded-xl text-[11px] font-bold min-w-0 max-w-[140px]">
+                      <Icons.Layers size={10} />
+                      <span className="truncate">{bg}</span>
+                    </div>
+                    <Icons.ArrowRight size={12} className="text-gray-300 shrink-0" />
+                    <input
+                      value={replacement}
+                      onChange={e => {
+                        const v = e.target.value;
+                        setBackgroundReplacements(prev => {
+                          if (!v.trim()) {
+                            const { [bg]: _, ...rest } = prev;
+                            return rest;
+                          }
+                          return { ...prev, [bg]: v };
+                        });
+                      }}
+                      placeholder="새 배경 설명 (예: 미래 도시의 유리 빌딩 옥상)"
+                      className="flex-1 p-2.5 bg-white rounded-xl outline-none text-xs font-medium shadow-inner border border-blue-100 focus:border-blue-300 transition-colors"
+                    />
+                  </div>
+                );
+              })}
+              {Object.keys(backgroundReplacements).length > 0 && (
+                <p className="text-[10px] text-indigo-600 font-bold">
+                  ✓ {Object.keys(backgroundReplacements).length}개 배경이 교체됩니다
+                </p>
+              )}
+            </div>
+          </section>
+        )}
 
         <section>
           <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-4 flex items-center gap-2">

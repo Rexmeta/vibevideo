@@ -11,6 +11,7 @@ import {
   StyleSheet,
   VideoMode,
   CreativeBrief,
+  RemixSourceData,
 } from '../../../types';
 import {
   saveProjectToCloud,
@@ -56,6 +57,8 @@ interface SyncDeps {
   contextPackVersionRef: React.MutableRefObject<number | undefined>;
   contextPackDirtyRef: React.MutableRefObject<boolean>;
   creativeBriefRef: React.MutableRefObject<CreativeBrief>;
+  remixSourceRef: React.MutableRefObject<RemixSourceData | undefined>;
+  backgroundReplacementsRef: React.MutableRefObject<Record<string, string>>;
   scenesRef: React.MutableRefObject<Partial<Scene>[]>;
   stepRef: React.MutableRefObject<number>;
   maxStepRef: React.MutableRefObject<number>;
@@ -100,6 +103,8 @@ export const useSync = (deps: SyncDeps): SyncFn => {
     contextPackVersionRef,
     contextPackDirtyRef,
     creativeBriefRef,
+    remixSourceRef,
+    backgroundReplacementsRef,
     scenesRef,
     stepRef,
     maxStepRef,
@@ -307,8 +312,10 @@ export const useSync = (deps: SyncDeps): SyncFn => {
       character_reference_image: characterReferenceImageRef.current?.startsWith('http')
         ? characterReferenceImageRef.current
         : (null as any),
+      // Keep entries with a valid name regardless of imageUrl; only strip
+      // local blob:// URLs so text-only remix character edits survive sync.
       character_references: (characterReferencesRef.current || []).filter(
-        c => c && c.name && c.imageUrl && c.imageUrl.startsWith('http'),
+        c => c && c.name && (!c.imageUrl || c.imageUrl.startsWith('http')),
       ),
       scene_duration_mode: sceneDurationMode,
       target_scene_count: targetSceneCount,
@@ -328,6 +335,11 @@ export const useSync = (deps: SyncDeps): SyncFn => {
       creative_brief: Object.keys(creativeBriefRef.current).length > 0
         ? creativeBriefRef.current
         : undefined,
+      remix_source: remixSourceRef.current,
+      background_replacements:
+        Object.keys(backgroundReplacementsRef.current).length > 0
+          ? backgroundReplacementsRef.current
+          : undefined,
       ...extraData,
     } as Project;
   };
@@ -447,7 +459,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
           ? characterReferenceImageRef.current
           : (null as any),
         character_references: (characterReferencesRef.current || []).filter(
-          c => c && c.name && c.imageUrl && c.imageUrl.startsWith('http')
+          c => c && c.name && (!c.imageUrl || c.imageUrl.startsWith('http'))
         ),
         scene_duration_mode: sceneDurationMode,
         target_scene_count: targetSceneCount,
@@ -467,6 +479,11 @@ export const useSync = (deps: SyncDeps): SyncFn => {
         creative_brief: Object.keys(creativeBriefRef.current).length > 0
           ? creativeBriefRef.current
           : undefined,
+        remix_source: remixSourceRef.current,
+        background_replacements:
+          Object.keys(backgroundReplacementsRef.current).length > 0
+            ? backgroundReplacementsRef.current
+            : undefined,
         ...params.extraData,
       };
 
@@ -637,7 +654,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
             ? characterReferenceImageRef.current
             : (null as any),
           character_references: (characterReferencesRef.current || []).filter(
-            c => c && c.name && c.imageUrl && c.imageUrl.startsWith('http')
+            c => c && c.name && (!c.imageUrl || c.imageUrl.startsWith('http'))
           ),
           scene_duration_mode: sceneDurationMode,
           target_scene_count: targetSceneCount,
@@ -653,6 +670,14 @@ export const useSync = (deps: SyncDeps): SyncFn => {
           linked_context_pack_id: linkedContextPackIdRef.current,
           context_pack_version: contextPackVersionRef.current,
           context_pack_dirty: contextPackDirtyRef.current,
+          creative_brief: Object.keys(creativeBriefRef.current).length > 0
+            ? creativeBriefRef.current
+            : undefined,
+          remix_source: remixSourceRef.current,
+          background_replacements:
+            Object.keys(backgroundReplacementsRef.current).length > 0
+              ? backgroundReplacementsRef.current
+              : undefined,
           ...params.extraData,
         };
         const localProj = {

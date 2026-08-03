@@ -22,7 +22,7 @@ import { NewProjectModal } from './NewProjectModal';
 import { YouTubeImportModal } from './YouTubeImportModal';
 import { jobManager } from '../services/jobManager';
 import { isCloudSyncEnabled, CLOUD_SYNC_CHANGE_EVENT } from '../services/cloudSyncSettings';
-import type { YoutubeAnalysis } from '../types';
+import type { YoutubeAnalysis, OptimizationTip } from '../types';
 
 const modePrefCleanupRanByUser = new Set<string>();
 
@@ -46,7 +46,7 @@ interface ProjectManagementPropsExtras {
   /** Task #95: Express Quick Mode entry. */
   onStartExpress?: () => void;
   /** Task #155: YouTube 분석 & 리믹스 — called when user clicks "이 영상 리믹스하기". */
-  onRemixYoutube?: (analysis: YoutubeAnalysis) => void;
+  onRemixYoutube?: (analysis: YoutubeAnalysis, selectedTips: OptimizationTip[]) => void;
 }
 
 interface ProjectManagementProps extends ProjectManagementPropsExtras {
@@ -451,10 +451,10 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
       {showYoutubeModal && (
         <YouTubeImportModal
           onClose={() => setShowYoutubeModal(false)}
-          onRemix={(analysis) => {
+          onRemix={(analysis, selectedTips) => {
             setShowYoutubeModal(false);
             if (onRemixYoutube) {
-              onRemixYoutube(analysis);
+              onRemixYoutube(analysis, selectedTips);
             } else {
               // Fallback: navigate to new project creation
               onNavigate('create');

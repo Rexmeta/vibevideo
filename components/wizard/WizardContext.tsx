@@ -20,6 +20,7 @@ import {
   CharacterReference,
   ContextPack,
   CreativeBrief,
+  RemixSourceData,
 } from '../../types';
 import type { WizardMode } from './ModeGate';
 
@@ -178,6 +179,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const [negativePrompt, setNegativePrompt] = useState<string>('');
   const [generatingStyleSheet, setGeneratingStyleSheet] = useState<boolean>(false);
   const [creativeBrief, setCreativeBrief] = useState<CreativeBrief>({});
+  const [remixSource, setRemixSource] = useState<RemixSourceData | undefined>(undefined);
+  const [backgroundReplacements, setBackgroundReplacements] = useState<Record<string, string>>({});
   const [stats, setStats] = useState<ProjectStats>({
     imagesGenerated: sampleSeed?.stats?.imagesGenerated || 0,
     criticCalls: sampleSeed?.stats?.criticCalls || 0,
@@ -266,6 +269,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const contextPackVersionRef = useRef(contextPackVersion);
   const contextPackDirtyRef = useRef(contextPackDirty);
   const creativeBriefRef = useRef(creativeBrief);
+  const remixSourceRef = useRef(remixSource);
+  const backgroundReplacementsRef = useRef(backgroundReplacements);
   const savedModeRef = useRef<WizardMode | null>(savedMode);
   const syncRef = useRef<WizardContextValue['sync'] | null>(null);
   const syncPendingRef = useRef<boolean>(false);
@@ -327,6 +332,12 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   useEffect(() => {
     creativeBriefRef.current = creativeBrief;
   }, [creativeBrief]);
+  useEffect(() => {
+    remixSourceRef.current = remixSource;
+  }, [remixSource]);
+  useEffect(() => {
+    backgroundReplacementsRef.current = backgroundReplacements;
+  }, [backgroundReplacements]);
 
   // ---- Blob URL tracking ----
   const trackBlobUrl = (url: string) => {
@@ -419,6 +430,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     contextPackVersionRef,
     contextPackDirtyRef,
     creativeBriefRef,
+    remixSourceRef,
+    backgroundReplacementsRef,
     scenesRef,
     stepRef,
     maxStepRef,
@@ -499,6 +512,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setContextPackVersion,
     setContextPackDirty,
     setCreativeBrief,
+    setRemixSource,
+    setBackgroundReplacements,
     setScenes,
     characterReferencesRef,
     statsRef,
@@ -925,6 +940,10 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setStyleSheet,
     creativeBrief,
     setCreativeBrief,
+    remixSource,
+    setRemixSource,
+    backgroundReplacements,
+    setBackgroundReplacements,
     visionCriticEnabled,
     setVisionCriticEnabled,
     qualityThreshold,

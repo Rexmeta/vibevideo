@@ -10,6 +10,7 @@ import {
   StyleSheet,
   VideoMode,
   CreativeBrief,
+  RemixSourceData,
 } from '../../../types';
 import type { WizardMode } from '../ModeGate';
 import {
@@ -86,6 +87,8 @@ interface RestoreDeps {
   setContextPackVersion: React.Dispatch<React.SetStateAction<number | undefined>>;
   setContextPackDirty: React.Dispatch<React.SetStateAction<boolean>>;
   setCreativeBrief: React.Dispatch<React.SetStateAction<CreativeBrief>>;
+  setRemixSource: React.Dispatch<React.SetStateAction<RemixSourceData | undefined>>;
+  setBackgroundReplacements: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setScenes: React.Dispatch<React.SetStateAction<Partial<Scene>[]>>;
   characterReferencesRef: React.MutableRefObject<CharacterReference[]>;
   statsRef: React.MutableRefObject<ProjectStats>;
@@ -146,6 +149,8 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
     setContextPackVersion,
     setContextPackDirty,
     setCreativeBrief,
+    setRemixSource,
+    setBackgroundReplacements,
     setScenes,
     characterReferencesRef,
     statsRef,
@@ -317,8 +322,10 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
           if (p.character_reference_image) setCharacterReferenceImage(p.character_reference_image);
           if (Array.isArray(p.character_references)) {
             const cleaned = p.character_references
-              .filter(c => c && c.name && c.imageUrl)
-              .map(c => ({ name: c.name, description: c.description, imageUrl: c.imageUrl }));
+              // Allow text-only entries (no imageUrl) so remix character
+              // replacement descriptions survive reload/restore.
+              .filter(c => c && c.name)
+              .map(c => ({ name: c.name, description: c.description ?? '', imageUrl: c.imageUrl ?? '' }));
             setCharacterReferences(cleaned);
             characterReferencesRef.current = cleaned;
           }
@@ -352,6 +359,12 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
           if (p.caption_style) setCaptionStyle({ ...DEFAULT_CAPTION_STYLE, ...p.caption_style });
           if (p.creative_brief && typeof p.creative_brief === 'object') {
             setCreativeBrief(p.creative_brief);
+          }
+          if (p.remix_source && typeof p.remix_source === 'object') {
+            setRemixSource(p.remix_source as RemixSourceData);
+          }
+          if (p.background_replacements && typeof p.background_replacements === 'object') {
+            setBackgroundReplacements(p.background_replacements as Record<string, string>);
           }
 
           let restoredScenes = migrateSceneFields(p.saved_scenes || []);
@@ -526,7 +539,12 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
               !p.saved_script &&
               (p.saved_step || 1) <= 1 &&
               (p.saved_max_step || 1) <= 1;
-            if (!isUntouched) {
+            // Task #156: remix projects are intentionally scene-less when first
+            // opened — scenes are generated in Step 2 via "Remix Storyboard".
+            // Treat them the same as untouched shells so the wizard opens at
+            // Step 1 instead of surfacing a "no scenes" restore error.
+            const isRemixSeed = !!(p as any).remix_source;
+            if (!isUntouched && !isRemixSeed) {
               const health = getFirestoreHealthInfo();
               setRestoreError({
                 kind: 'no_scenes',

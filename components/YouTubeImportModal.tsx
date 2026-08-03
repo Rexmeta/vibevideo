@@ -126,8 +126,11 @@ type Tab = 'breakdown' | 'swot' | 'tips';
 
 export interface YouTubeImportModalProps {
   onClose: () => void;
-  /** Called when the user clicks "이 영상 리믹스하기 →". */
-  onRemix: (analysis: YoutubeAnalysis) => void;
+  /**
+   * Called when the user clicks "이 영상 리믹스하기 →".
+   * Receives the full analysis result and the user's selected optimisation tips.
+   */
+  onRemix: (analysis: YoutubeAnalysis, selectedTips: OptimizationTip[]) => void;
 }
 
 // ─── Main component ──────────────────────────────────────────────────────────
@@ -210,7 +213,8 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
 
   const handleRemix = () => {
     if (!analysis) return;
-    onRemix(analysis);
+    const tips = [...selectedTips].map(i => analysis.viewOptimizationTips[i]).filter(Boolean);
+    onRemix(analysis, tips);
     onClose();
   };
 

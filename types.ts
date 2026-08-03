@@ -110,6 +110,18 @@ export interface Project {
   scenes_blob_updated_at?: string;
   /** Task #112: optional creative brief injected into script generation prompts. */
   creative_brief?: CreativeBrief;
+  /**
+   * Task #156: set when this project was started from a YouTube remix.
+   * Drives the analysis summary banner, character/background panels in Step 1,
+   * and the side-by-side scenario editor in Step 2.
+   */
+  remix_source?: RemixSourceData;
+  /**
+   * Task #156: per-background replacement map (originalBg → newDescription)
+   * collected in the Step 1 background panel; injected into visual_prompts
+   * during scene segmentation.
+   */
+  background_replacements?: Record<string, string>;
   // Task #99: long-form (>180s) flag and auto-derived chapters used to
   // group ~60-90s of consecutive scenes for chapter-aware UX and
   // memory-safe multipart export.
@@ -360,6 +372,9 @@ export interface Scene {
   // before the first AI-driven edit so the user can revert at any time.
   visual_prompt_original?: string;
   script_segment_original?: string;
+  // Task #156: for remix projects, the original YouTube scene script before
+  // Gemini adaptation. Used to show the side-by-side "원본 비교 보기" in Step 2.
+  remix_original_script?: string;
   // True when visual_prompt or script_segment has been changed by the AI
   // edit assistant since the last media generation. Surfaces the
   // "재생성 권장" badge.
@@ -514,6 +529,34 @@ export interface OptimizationTip {
   reasoning: string;
   /** Estimated impact (1 = low … 3 = high). */
   impactLevel: 1 | 2 | 3;
+}
+
+/**
+ * Compact summary of a YouTube analysis stored on a remix project.
+ * Keeps everything needed for the banner, character/background panels,
+ * and scene adaptation without duplicating the full `YoutubeAnalysis` structure.
+ */
+export interface RemixSourceData {
+  /** Original YouTube URL. */
+  videoUrl: string;
+  /** Title detected by Gemini. */
+  detectedTitle: string;
+  /** Holistic score 0–10. */
+  overallScore: number;
+  /** Detected format string (e.g. "YouTube Shorts"). */
+  format: string;
+  /** Top strength for the summary banner. */
+  topStrength?: AnalysisFinding;
+  /** Top weakness for the summary banner. */
+  topWeakness?: AnalysisFinding;
+  /** Characters detected in the original video. */
+  detectedCharacters: DetectedCharacter[];
+  /** Backgrounds detected in the original video. */
+  detectedBackgrounds: string[];
+  /** Optimisation tips the user selected to apply during remix. */
+  selectedTips: OptimizationTip[];
+  /** Original scene breakdown — needed by generateRemixedScenes. */
+  originalScenes: YoutubeScene[];
 }
 
 /** Full structured result returned by `analyzeYoutubeVideo`. */
