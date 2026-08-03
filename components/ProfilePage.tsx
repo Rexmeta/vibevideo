@@ -102,6 +102,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
   const [pingStatus, setPingStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [pingError, setPingError] = useState<string | null>(null);
   const [copiedCmd, setCopiedCmd] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [syncCount, setSyncCount] = useState<number>(0);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   useEffect(() => {
     const update = () => {
@@ -181,6 +184,20 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
     } catch (e: any) {
       setPingStatus('error');
       setPingError(e?.message ?? '알 수 없는 오류가 발생했습니다.');
+    }
+  };
+
+  const handleSyncNow = async () => {
+    if (syncStatus === 'loading' || !currentUser) return;
+    setSyncStatus('loading');
+    setSyncError(null);
+    try {
+      const count = await backfillLocalProjectsToCloud(currentUser.uid, { force: true });
+      setSyncCount(count);
+      setSyncStatus('done');
+    } catch (e: any) {
+      setSyncError(e?.message ?? '알 수 없는 오류가 발생했습니다.');
+      setSyncStatus('error');
     }
   };
 
@@ -409,12 +426,53 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
 
                       {setupVerified ? (
                         /* Verified state */
-                        <div className="px-5 py-4 flex items-start gap-3">
-                          <Icons.Check size={18} className="text-emerald-600 shrink-0 mt-0.5" />
-                          <div>
-                            <p className="text-sm font-black text-emerald-800">연결 확인 완료!</p>
-                            <p className="text-xs text-emerald-700 mt-0.5">Firebase 보안 규칙이 정상 배포됐습니다. "내 프로젝트"에서 클라우드 데이터를 바로 사용할 수 있습니다.</p>
+                        <div className="px-5 py-4 space-y-4">
+                          <div className="flex items-start gap-3">
+                            <Icons.Check size={18} className="text-emerald-600 shrink-0 mt-0.5" />
+                            <div>
+                              <p className="text-sm font-black text-emerald-800">연결 확인 완료!</p>
+                              <p className="text-xs text-emerald-700 mt-0.5">Firebase 보안 규칙이 정상 배포됐습니다. "내 프로젝트"에서 클라우드 데이터를 바로 사용할 수 있습니다.</p>
+                            </div>
                           </div>
+
+                          {/* Post-setup sync prompt */}
+                          {syncStatus !== 'done' && (
+                            <div className="flex items-center justify-between gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-black text-emerald-800">로컬 프로젝트를 클라우드에 동기화할까요?</p>
+                                <p className="text-[11px] text-emerald-700 mt-0.5 leading-snug">이 기기에 저장된 프로젝트를 클라우드로 한 번에 백업합니다.</p>
+                              </div>
+                              <button
+                                onClick={handleSyncNow}
+                                disabled={syncStatus === 'loading'}
+                                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 transition-colors flex-shrink-0"
+                              >
+                                {syncStatus === 'loading' ? (
+                                  <><Icons.Loader2 size={13} className="animate-spin" />동기화 중…</>
+                                ) : (
+                                  <><Icons.Cloud size={13} />지금 동기화</>
+                                )}
+                              </button>
+                            </div>
+                          )}
+
+                          {syncStatus === 'done' && (
+                            <div className="flex items-start gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                              <Icons.Check size={14} className="text-emerald-600 shrink-0 mt-0.5" />
+                              <p className="text-xs text-emerald-800">
+                                {syncCount > 0
+                                  ? `${syncCount}개 프로젝트가 클라우드에 동기화됐습니다.`
+                                  : '동기화할 새 프로젝트가 없습니다. 이미 최신 상태입니다.'}
+                              </p>
+                            </div>
+                          )}
+
+                          {syncStatus === 'error' && syncError && (
+                            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+                              <Icons.AlertCircle size={14} className="text-red-500 shrink-0 mt-0.5" />
+                              <p className="text-xs text-red-700 leading-snug">{syncError}</p>
+                            </div>
+                          )}
                         </div>
                       ) : (
                         /* Setup steps */
