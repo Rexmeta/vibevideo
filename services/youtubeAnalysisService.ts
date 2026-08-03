@@ -494,8 +494,18 @@ Output ONLY the JSON matching the schema — no prose before or after.`;
     );
   } catch (e: any) {
     const msg = String(e?.message || '');
-    if (msg.includes('API 키가 설정되지 않았습니다') || msg.toLowerCase().includes('api key')) {
+    const lower = msg.toLowerCase();
+    if (msg.includes('API 키가 설정되지 않았습니다') || lower.includes('api key')) {
       throw e instanceof Error ? e : new Error(msg);
+    }
+    if (lower.includes('시간 초과') || lower.includes('timeout') || lower.includes('deadline')) {
+      throw new Error('리믹스 씬 생성 요청이 시간 초과되었습니다. 잠시 후 다시 시도해 주세요.');
+    }
+    if (lower.includes('429') || lower.includes('resource_exhausted')) {
+      throw new Error('Gemini 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.');
+    }
+    if (lower.includes('503') || lower.includes('unavailable') || lower.includes('overloaded')) {
+      throw new Error('Gemini 서버가 일시적으로 혼잡합니다. 잠시 후 다시 시도해 주세요.');
     }
     throw new Error(`리믹스 씬 생성 중 오류가 발생했습니다: ${msg || '알 수 없는 오류'}`);
   }
@@ -596,8 +606,18 @@ Return ONLY the JSON matching the schema — no prose before or after.`;
     );
   } catch (e: any) {
     const msg = String(e?.message || '');
-    if (msg.includes('API 키가 설정되지 않았습니다') || msg.toLowerCase().includes('api key')) {
+    const lower = msg.toLowerCase();
+    if (msg.includes('API 키가 설정되지 않았습니다') || lower.includes('api key')) {
       throw e instanceof Error ? e : new Error(msg);
+    }
+    if (lower.includes('시간 초과') || lower.includes('timeout') || lower.includes('deadline')) {
+      throw new Error(`씬 ${sceneIndex + 1} 재생성 요청이 시간 초과되었습니다. 잠시 후 다시 시도해 주세요.`);
+    }
+    if (lower.includes('429') || lower.includes('resource_exhausted')) {
+      throw new Error('Gemini 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.');
+    }
+    if (lower.includes('503') || lower.includes('unavailable') || lower.includes('overloaded')) {
+      throw new Error('Gemini 서버가 일시적으로 혼잡합니다. 잠시 후 다시 시도해 주세요.');
     }
     throw new Error(`씬 ${sceneIndex + 1} 재생성 중 오류가 발생했습니다: ${msg || '알 수 없는 오류'}`);
   }

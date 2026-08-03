@@ -180,6 +180,16 @@ describe('analyzeYoutubeVideo', () => {
       analyzeYoutubeVideo('https://www.youtube.com/watch?v=abc123'),
     ).rejects.toThrow('요청 한도');
   });
+
+  it('surfaces a server-overloaded (503) error clearly', async () => {
+    mockGenerateContent.mockRejectedValueOnce(
+      new Error('503 Service Unavailable: The model is overloaded'),
+    );
+
+    await expect(
+      analyzeYoutubeVideo('https://www.youtube.com/watch?v=abc123'),
+    ).rejects.toThrow('Gemini 서버가 일시적으로 혼잡합니다');
+  });
 });
 
 // ─── generateRemixedScenes ────────────────────────────────────────────────────
@@ -232,6 +242,24 @@ describe('generateRemixedScenes', () => {
     expect(scenes[0].script_segment).toBe('Hello world');
     expect(scenes[0].visual_prompt).toBe('Person talking');
   });
+
+  it('surfaces a rate-limit (429) error clearly', async () => {
+    mockGenerateContent.mockRejectedValueOnce(
+      new Error('429 RESOURCE_EXHAUSTED: quota exceeded'),
+    );
+
+    await expect(generateRemixedScenes(REMIX_SOURCE)).rejects.toThrow('요청 한도');
+  });
+
+  it('surfaces a server-overloaded (503) error clearly', async () => {
+    mockGenerateContent.mockRejectedValueOnce(
+      new Error('503 Service Unavailable: The model is overloaded'),
+    );
+
+    await expect(generateRemixedScenes(REMIX_SOURCE)).rejects.toThrow(
+      'Gemini 서버가 일시적으로 혼잡합니다',
+    );
+  });
 });
 
 // ─── regenerateSingleRemixScene ───────────────────────────────────────────────
@@ -279,6 +307,24 @@ describe('regenerateSingleRemixScene', () => {
 
     await expect(regenerateSingleRemixScene(REMIX_SOURCE, 0)).rejects.toThrow(
       'API 키가 설정되지 않았습니다',
+    );
+  });
+
+  it('surfaces a rate-limit (429) error clearly', async () => {
+    mockGenerateContent.mockRejectedValueOnce(
+      new Error('429 RESOURCE_EXHAUSTED: quota exceeded'),
+    );
+
+    await expect(regenerateSingleRemixScene(REMIX_SOURCE, 0)).rejects.toThrow('요청 한도');
+  });
+
+  it('surfaces a server-overloaded (503) error clearly', async () => {
+    mockGenerateContent.mockRejectedValueOnce(
+      new Error('503 Service Unavailable: The model is overloaded'),
+    );
+
+    await expect(regenerateSingleRemixScene(REMIX_SOURCE, 0)).rejects.toThrow(
+      'Gemini 서버가 일시적으로 혼잡합니다',
     );
   });
 });
