@@ -13,6 +13,7 @@ import type { Scene } from '../../types';
 
 export const StepsAudioImageVideo: React.FC = () => {
   const [aiEditSceneIdx, setAiEditSceneIdx] = useState<number | null>(null);
+  const [promptChangedPopoverIdx, setPromptChangedPopoverIdx] = useState<number | null>(null);
   const w = useWizard();
   const {
     step,
@@ -382,12 +383,48 @@ export const StepsAudioImageVideo: React.FC = () => {
                   {isFailed && <span className="bg-red-100 text-red-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">Failed</span>}
                   {isActive && <span className="bg-brand-cyan/20 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-black uppercase animate-pulse">Processing</span>}
                   {s.promptChanged && (
-                    <span
-                      className="bg-amber-100 text-amber-700 border border-amber-300 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-amber-200 transition-colors"
-                      title="AI 편집으로 프롬프트가 변경됨. 클릭하면 재생성합니다."
-                      onClick={() => step === 4 ? handleSingleImage(i) : step === 5 ? handleSingleVideo(i) : undefined}
-                    >
-                      ✦ 재생성 권장
+                    <span className="relative">
+                      <span
+                        className="bg-amber-100 text-amber-700 border border-amber-300 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-amber-200 transition-colors"
+                        title={step === 4 || step === 5 ? 'AI 편집으로 프롬프트가 변경됨. 클릭하면 옵션을 선택하세요.' : 'AI 편집으로 프롬프트가 변경됨.'}
+                        onClick={(e) => {
+                          if (step === 4 || step === 5) {
+                            e.stopPropagation();
+                            setPromptChangedPopoverIdx(promptChangedPopoverIdx === i ? null : i);
+                          }
+                        }}
+                      >
+                        ✦ 재생성 권장
+                      </span>
+                      {promptChangedPopoverIdx === i && (step === 4 || step === 5) && (
+                        <div
+                          className="absolute top-full mt-1 left-0 z-50 bg-white border border-amber-200 rounded-2xl shadow-xl p-2 flex flex-col gap-1 min-w-[200px]"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPromptChangedPopoverIdx(null);
+                              if (step === 4) handleSingleImage(i);
+                              else handleSingleVideo(i);
+                            }}
+                            className="px-3 py-2 rounded-xl text-[11px] font-bold text-left hover:bg-amber-50 text-amber-800 transition-colors flex items-center gap-2"
+                          >
+                            <Icons.RefreshCw size={11} /> 재생성
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateSceneAt(i, { promptChanged: false });
+                              sync();
+                              setPromptChangedPopoverIdx(null);
+                            }}
+                            className="px-3 py-2 rounded-xl text-[11px] font-bold text-left hover:bg-gray-50 text-gray-700 transition-colors flex items-center gap-2"
+                          >
+                            <Icons.ImageIcon size={11} /> 미디어 유지 (텍스트만 적용)
+                          </button>
+                        </div>
+                      )}
                     </span>
                   )}
                   {step === 5 && !isPresentationMode && s.video_path && s.seedSource && (() => {
