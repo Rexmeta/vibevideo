@@ -482,7 +482,7 @@ Output ONLY the JSON matching the schema — no prose before or after.`;
   try {
     response = await withTimeout(
       ai.models.generateContent({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         contents: [{ parts: [{ text: `${systemPrompt}\n\nORIGINAL SCENES:\n${scenesText}` }] }],
         config: {
           responseMimeType: 'application/json',
@@ -584,7 +584,7 @@ Return ONLY the JSON matching the schema — no prose before or after.`;
   try {
     response = await withTimeout(
       ai.models.generateContent({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         contents: [{ parts: [{ text: `${systemPrompt}\n\nSCENE TO REWRITE:\n${sceneText}` }] }],
         config: {
           responseMimeType: 'application/json',
@@ -636,7 +636,7 @@ export async function analyzeYoutubeVideo(url: string): Promise<YoutubeAnalysis>
   try {
     response = await withTimeout(
       ai.models.generateContent({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         contents: [
           {
             parts: [
