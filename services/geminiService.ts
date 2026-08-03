@@ -199,6 +199,8 @@ export interface GenerateScriptOptions {
   genre?: GenreId;
   platform?: PlatformId;
   creativeBrief?: CreativeBrief;
+  /** Optional text model ID override (e.g. 'gemini-2.5-pro', 'gpt-4o'). Defaults to 'gemini-2.5-flash'. */
+  textModel?: string;
 }
 
 /** Build a concise brief block to inject into AI prompts when a creative brief is provided. */
@@ -267,12 +269,13 @@ export const generateScriptOutline = async (
   const briefBlock = buildCreativeBriefBlock(options.creativeBrief);
   const prompt = `Topic: "${topic}"\nVisual style hint: ${style}\nGoal duration: ${lengthSeconds}s.${briefBlock}\n\nReturn JSON: { hook: string, beats: string[${sceneCount}], cta?: string }. The first beat must implement the hook.`;
 
+  const textModel = options.textModel || 'gemini-2.5-flash';
   let response;
   try {
     response = await withRetry(
       () => withTimeout(
         ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: textModel,
           contents: `${sys}\n\n${prompt}`,
           config: {
             responseMimeType: 'application/json',
@@ -338,12 +341,13 @@ export const generateScript = async (
 
   const userPrompt = `Topic: "${topic}". Visual style cue: ${style}. Goal duration: ${lengthSeconds}s.${briefBlock}${outlineBlock}\n\nWrite the spoken script now. The first sentence is the hook.`;
 
+  const textModel = options.textModel || 'gemini-2.5-flash';
   let response;
   try {
     response = await withRetry(
       () => withTimeout(
         ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: textModel,
           contents: `${sys}\n\n${userPrompt}`,
         }),
         60000,
@@ -394,7 +398,7 @@ export const segmentScriptIntoScenes = async (
   ratio: string,
   characterProfile?: string,
   sceneCount?: number,
-  options: { genre?: GenreId; platform?: PlatformId; characterReferences?: CharacterReference[]; creativeBrief?: CreativeBrief } = {},
+  options: { genre?: GenreId; platform?: PlatformId; characterReferences?: CharacterReference[]; creativeBrief?: CreativeBrief; textModel?: string } = {},
 ): Promise<Partial<Scene>[]> => {
   const ai = new GoogleGenAI({ apiKey: requireApiKey() });
   const charInstruction = characterProfile
@@ -432,7 +436,7 @@ Output JSON array. Script: "${script}"`;
     response = await withRetry(
       () => withTimeout(
         ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: options.textModel || 'gemini-2.5-flash',
           contents: prompt,
           config: {
             responseMimeType: 'application/json',

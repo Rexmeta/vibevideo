@@ -3,7 +3,7 @@ import { Icons } from '../Icons';
 import { generateScript, segmentScriptIntoScenes, generateStyleSheet, refineAllScenesWithInstruction } from '../../services/geminiService';
 import { generateRemixedScenes, regenerateSingleRemixScene } from '../../services/youtubeAnalysisService';
 import { useWizard } from './WizardContext';
-import type { CreativeBrief, Scene } from '../../types';
+import type { AIModel, CreativeBrief, Scene } from '../../types';
 import { StoryboardCard } from './StoryboardCard';
 import { useInstructionPresets } from '../../hooks/useInstructionPresets';
 
@@ -118,7 +118,18 @@ export const Step2Script: React.FC = () => {
     updateSceneAt,
     remixSource,
     backgroundReplacements,
+    selectedTextModel,
+    setSelectedTextModel,
+    allModels,
   } = w;
+
+  // Text models available for script generation
+  const textModels = allModels.filter(m => m.type === 'text' && m.isActive);
+  // Active text model display name
+  const activeTextModel = textModels.find(m => m.modelId === selectedTextModel) || textModels[0];
+
+  // State for the text model picker mini-modal
+  const [showTextModelPicker, setShowTextModelPicker] = useState(false);
 
   // Side-by-side comparison toggle (only shown when remix scenes are present)
   const [showComparison, setShowComparison] = useState(false);
@@ -263,6 +274,51 @@ export const Step2Script: React.FC = () => {
       {hasBriefContent(creativeBrief) && (
         <BriefBanner brief={creativeBrief} onGoToStep1={() => setStep(1)} />
       )}
+
+      {/* Text model selector chip */}
+      {textModels.length > 0 && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-400 font-medium">텍스트 모델:</span>
+          <div className="relative">
+            <button
+              onClick={() => setShowTextModelPicker(v => !v)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-full text-xs font-semibold text-gray-700 hover:border-gray-400 hover:bg-gray-50 transition-all shadow-sm"
+            >
+              <Icons.Type size={11} className="text-green-500" />
+              {activeTextModel?.name || selectedTextModel || 'Gemini 2.5 Flash'}
+              <Icons.ChevronDown size={11} className="text-gray-400" />
+            </button>
+            {showTextModelPicker && (
+              <div className="absolute left-0 top-full mt-1.5 z-30 bg-white border border-gray-100 rounded-2xl shadow-xl p-2 min-w-[220px]">
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-2 py-1.5">텍스트 모델 선택</p>
+                {textModels.map(m => (
+                  <button
+                    key={m.id}
+                    onClick={() => { setSelectedTextModel(m.modelId); setShowTextModelPicker(false); }}
+                    className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm transition-colors text-left ${
+                      selectedTextModel === m.modelId
+                        ? 'bg-green-50 text-green-800 font-semibold'
+                        : 'text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    <Icons.Type size={12} className="text-green-500 flex-shrink-0" />
+                    <div className="min-w-0">
+                      <p className="font-semibold truncate">{m.name}</p>
+                      <p className="text-[10px] text-gray-400 truncate">{m.description}</p>
+                    </div>
+                    {selectedTextModel === m.modelId && <Icons.Check size={12} className="ml-auto text-green-600 flex-shrink-0" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {/* Close picker on outside click */}
+          {showTextModelPicker && (
+            <div className="fixed inset-0 z-20" onClick={() => setShowTextModelPicker(false)} />
+          )}
+        </div>
+      )}
+
       {/* Topic input + generate button */}
       <div className="flex gap-4">
         <input
@@ -276,7 +332,7 @@ export const Step2Script: React.FC = () => {
             setLoading(true);
             setLoadingMessage('AI가 창의적인 스크립트를 빌드 중입니다...');
             try {
-              const result = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform, creativeBrief });
+              const result = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform, creativeBrief, textModel: selectedTextModel || undefined });
               setScript(result);
             } catch (e: any) {
               console.error('Script generation failed:', e);
@@ -546,7 +602,7 @@ export const Step2Script: React.FC = () => {
                   aspectRatio,
                   characterProfile || undefined,
                   targetSceneCount,
-                  { genre, platform, characterReferences, creativeBrief },
+                  { genre, platform, characterReferences, creativeBrief, textModel: selectedTextModel || undefined },
                 );
               }
               setScenes(s);

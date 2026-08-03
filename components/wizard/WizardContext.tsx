@@ -209,6 +209,7 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   const [allModels, setAllModels] = useState<AIModel[]>([]);
   const [selectedImageModel, setSelectedImageModel] = useState<string>('');
   const [selectedVideoModel, setSelectedVideoModel] = useState<string>('');
+  const [selectedTextModel, setSelectedTextModel] = useState<string>('');
   const [showModelSelector, setShowModelSelector] = useState<'image' | 'video' | null>(null);
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(
     sampleSeed?.caption_style || DEFAULT_CAPTION_STYLE
@@ -371,8 +372,10 @@ export const WizardProvider: React.FC<ProviderProps> = ({
         setAllModels(models);
         const imgModels = getModelsByType(models, 'image');
         const vidModels = getModelsByType(models, 'video');
+        const txtModels = getModelsByType(models, 'text');
         if (imgModels.length > 0 && !selectedImageModel) setSelectedImageModel(imgModels[0].id);
         if (vidModels.length > 0 && !selectedVideoModel) setSelectedVideoModel(vidModels[0].id);
+        if (txtModels.length > 0 && !selectedTextModel) setSelectedTextModel(txtModels[0].modelId);
       })
       .catch(e => console.warn('[Models] Load failed:', e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -985,6 +988,8 @@ export const WizardProvider: React.FC<ProviderProps> = ({
     setSelectedImageModel,
     selectedVideoModel,
     setSelectedVideoModel,
+    selectedTextModel,
+    setSelectedTextModel,
     showModelSelector,
     setShowModelSelector,
     captionStyle,

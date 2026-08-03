@@ -421,7 +421,7 @@ export interface VideoMeta {
   longWait?: boolean;
 }
 
-export type ModelType = 'image' | 'video' | 'audio';
+export type ModelType = 'image' | 'video' | 'audio' | 'text';
 
 export interface AIModel {
   id: string;

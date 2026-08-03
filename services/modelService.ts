@@ -7,6 +7,13 @@ const LOCAL_KEY = 'vibe_ai_models';
 const ADMIN_UIDS_KEY = 'vibe_admin_uids';
 
 const DEFAULT_MODELS: AIModel[] = [
+  // ── Text models ──────────────────────────────────────────────────────────────
+  { id: 'txt-gemini-flash', name: 'Gemini 2.5 Flash', type: 'text', provider: 'NanoBanana', description: '빠르고 강력한 Google Gemini 2.5 Flash 텍스트 모델 (기본값)', modelId: 'gemini-2.5-flash', isActive: true, sortOrder: 1, supportsKorean: true },
+  { id: 'txt-gemini-pro', name: 'Gemini 2.5 Pro', type: 'text', provider: 'NanoBanana', description: '고품질 추론 및 창의적 작업에 최적화된 Gemini Pro', modelId: 'gemini-2.5-pro', isActive: true, sortOrder: 2, supportsKorean: true },
+  { id: 'txt-gpt4o', name: 'GPT-4o', type: 'text', provider: 'OpenAI', description: 'OpenAI의 최신 멀티모달 텍스트 모델', modelId: 'gpt-4o', isActive: false, sortOrder: 3, supportsKorean: true },
+  { id: 'txt-gemini-flash-8b', name: 'Gemini 2.0 Flash', type: 'text', provider: 'NanoBanana', description: '초고속 경량 Gemini 텍스트 모델', modelId: 'gemini-2.0-flash', isActive: true, sortOrder: 4, supportsKorean: true },
+
+  // ── Image models ─────────────────────────────────────────────────────────────
   { id: 'img-nano-banana-pro', name: 'Nano Banana Pro', type: 'image', provider: 'NanoBanana', description: '최고의 퀄리티와 일관성 유지가 가능한 나노바나나 프로', modelId: 'gemini-3-pro-image-preview', isActive: true, sortOrder: 1, supportsKorean: true },
   { id: 'img-seedream-v45', name: 'Seedream V4.5', type: 'image', provider: 'ByteDance', description: '놀라운 연속성과 높은 퀄리티. 한글은 미지원', modelId: 'seedream-v4.5', isActive: true, sortOrder: 2, supportsKorean: false },
   { id: 'img-nano-banana', name: 'Nano-Banana', type: 'image', provider: 'NanoBanana', description: '나노바나나 일반 버전', modelId: 'gemini-2.5-flash-image', isActive: true, sortOrder: 3, supportsKorean: true },

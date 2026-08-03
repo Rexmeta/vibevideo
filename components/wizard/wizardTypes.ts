@@ -153,6 +153,9 @@ export interface WizardContextValue {
   setSelectedImageModel: React.Dispatch<React.SetStateAction<string>>;
   selectedVideoModel: string;
   setSelectedVideoModel: React.Dispatch<React.SetStateAction<string>>;
+  /** ID of the currently selected text model (used for script/scene generation). */
+  selectedTextModel: string;
+  setSelectedTextModel: React.Dispatch<React.SetStateAction<string>>;
   showModelSelector: 'image' | 'video' | null;
   setShowModelSelector: React.Dispatch<React.SetStateAction<'image' | 'video' | null>>;
   captionStyle: CaptionStyle;

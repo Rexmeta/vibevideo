@@ -3,11 +3,12 @@ import { AIModel, ModelType, ViewState } from '../types';
 import { getModels, saveModel, deleteModel, seedDefaultModels, isAdminUser, checkGoogleModelIdInput } from '../services/modelService';
 import { getModelApiKey, setModelApiKey, getModelEndpoint, setModelEndpoint, getProviderApiKey, setProviderApiKey, getGoogleApiKeySource, GoogleApiKeySource, API_KEY_CHANGE_EVENT } from '../services/apiKeyService';
 import { Icons } from './Icons';
+import { ModelHubPanel } from './ModelHubPanel';
 
 interface AdminPageProps {
   userId: string;
   onNavigate: (view: ViewState) => void;
-  initialTab?: 'image' | 'video' | 'api';
+  initialTab?: 'image' | 'video' | 'api' | 'hub';
   apiKeysOnly?: boolean;
 }
 
@@ -28,7 +29,7 @@ const KNOWN_PROVIDERS = ['Google', 'OpenAI', 'ByteDance', 'Kuaishou', 'Minimax',
 export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate, initialTab, apiKeysOnly }) => {
   const [models, setModels] = useState<AIModel[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'image' | 'video' | 'api'>(
+  const [activeTab, setActiveTab] = useState<'image' | 'video' | 'api' | 'hub'>(
     apiKeysOnly ? 'api' : (initialTab || 'image')
   );
   const [editingModel, setEditingModel] = useState<AIModel | null>(null);
@@ -221,7 +222,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate, initia
               기본값 초기화
             </button>
           )}
-          {!apiKeysOnly && activeTab !== 'api' && (
+          {!apiKeysOnly && activeTab !== 'api' && activeTab !== 'hub' && (
             <button
               onClick={() => { setNewModel(emptyModel(activeTab)); setShowAddForm(true); }}
               className="flex items-center gap-2 px-4 py-2.5 bg-black text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-colors"
@@ -268,8 +269,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate, initia
               {activeProviders.length}
             </span>
           </button>
+          <button
+            onClick={() => setActiveTab('hub')}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'hub' ? 'bg-white text-black shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            <Icons.Layers size={16} />
+            모델 허브
+          </button>
         </div>
-        {activeTab !== 'api' && (
+        {activeTab !== 'api' && activeTab !== 'hub' && (
           <>
             <div className="flex-1" />
             <div className="relative">
@@ -287,7 +295,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate, initia
       </div>
       )}
 
-      {activeTab === 'api' ? (
+      {activeTab === 'hub' ? (
+        <ModelHubPanel />
+      ) : activeTab === 'api' ? (
         <div className="space-y-6">
           <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5">
             <div className="flex items-start gap-3">
@@ -767,9 +777,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({ userId, onNavigate, initia
         </>
       )}
 
-      <div className="mt-8 text-center text-xs text-gray-300">
-        전체 모델: {models.length}개 | 이미지: {models.filter(m => m.type === 'image').length}개 | 비디오: {models.filter(m => m.type === 'video').length}개
-      </div>
+      {activeTab !== 'hub' && (
+        <div className="mt-8 text-center text-xs text-gray-300">
+          전체 모델: {models.length}개 | 텍스트: {models.filter(m => m.type === 'text').length}개 | 이미지: {models.filter(m => m.type === 'image').length}개 | 비디오: {models.filter(m => m.type === 'video').length}개
+        </div>
+      )}
     </div>
   );
 };

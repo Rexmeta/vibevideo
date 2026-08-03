@@ -69,6 +69,9 @@ import {
   List,
   Youtube,
   Copy,
+  ExternalLink,
+  Package,
+  Zap,
 } from 'lucide-react';
 
 export const Icons = {
@@ -81,5 +84,5 @@ export const Icons = {
   Layers, Move, Palette, Sparkles, ZoomIn, ZoomOut, ArrowLeftRight, ArrowUpDown, Circle, SlidersHorizontal, Presentation, PanelLeft,
   Upload, ChevronLeft,
   GripVertical, LayoutGrid, List,
-  Youtube, Copy,
+  Youtube, Copy, ExternalLink, Package, Zap,
 };
