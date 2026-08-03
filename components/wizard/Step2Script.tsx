@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { generateScript, segmentScriptIntoScenes, generateStyleSheet } from '../../services/geminiService';
 import { useWizard } from './WizardContext';
+import type { CreativeBrief } from '../../types';
 
 function alertGeminiError(prefix: string, e: any) {
   const msg = String(e?.message || '');
@@ -13,6 +14,75 @@ function alertGeminiError(prefix: string, e: any) {
     alert(`${prefix}: ${msg || '알 수 없는 오류'}`);
   }
 }
+
+const PURPOSE_LABELS: Record<string, string> = {
+  awareness: '인지도 제고',
+  conversion: '전환·구매 유도',
+  education: '교육·정보 전달',
+  entertainment: '엔터테인먼트',
+};
+
+const TONE_LABELS: Record<string, string> = {
+  formal: '격식체',
+  casual: '캐주얼',
+  friendly: '친근함',
+  expert: '전문적',
+};
+
+function hasBriefContent(b: CreativeBrief): boolean {
+  return !!(b.audience || b.purpose || b.toneVoice || b.keyMessage);
+}
+
+interface BriefBannerProps {
+  brief: CreativeBrief;
+  onGoToStep1: () => void;
+}
+
+const BriefBanner: React.FC<BriefBannerProps> = ({ brief, onGoToStep1 }) => {
+  const [dismissed, setDismissed] = useState(false);
+
+  if (dismissed || !hasBriefContent(brief)) return null;
+
+  const chips: { label: string; value: string }[] = [];
+  if (brief.audience) chips.push({ label: '타겟', value: brief.audience });
+  if (brief.purpose) chips.push({ label: '목적', value: PURPOSE_LABELS[brief.purpose] ?? brief.purpose });
+  if (brief.toneVoice) chips.push({ label: '톤', value: TONE_LABELS[brief.toneVoice] ?? brief.toneVoice });
+
+  return (
+    <div className="flex items-start gap-3 px-5 py-3 bg-indigo-50 border border-indigo-100 rounded-2xl text-sm text-indigo-700">
+      <Icons.Sparkles size={16} className="mt-0.5 shrink-0 text-indigo-400" />
+      <div className="flex-1 min-w-0">
+        <span className="font-semibold mr-2">크리에이티브 브리프</span>
+        <span className="inline-flex flex-wrap gap-2 items-center">
+          {chips.map(c => (
+            <span key={c.label} className="inline-flex items-center gap-1">
+              <span className="text-indigo-400">{c.label}:</span>
+              <span className="font-medium text-indigo-800">{c.value}</span>
+            </span>
+          ))}
+        </span>
+        {brief.keyMessage && (
+          <p className="mt-1 text-indigo-600 italic truncate">"{brief.keyMessage}"</p>
+        )}
+      </div>
+      <button
+        onClick={onGoToStep1}
+        className="shrink-0 text-indigo-400 hover:text-indigo-700 underline underline-offset-2 transition-colors"
+        title="Step 1에서 브리프 편집"
+      >
+        편집
+      </button>
+      <button
+        onClick={() => setDismissed(true)}
+        className="shrink-0 text-indigo-300 hover:text-indigo-600 transition-colors"
+        title="닫기"
+        aria-label="브리프 배너 닫기"
+      >
+        <Icons.X size={14} />
+      </button>
+    </div>
+  );
+};
 
 export const Step2Script: React.FC = () => {
   const w = useWizard();
@@ -43,6 +113,9 @@ export const Step2Script: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full gap-8">
+      {hasBriefContent(creativeBrief) && (
+        <BriefBanner brief={creativeBrief} onGoToStep1={() => setStep(1)} />
+      )}
       <div className="flex gap-4">
         <input
           value={topic}
