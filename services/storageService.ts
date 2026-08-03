@@ -196,7 +196,7 @@ const writeCardCache = (p: Project): boolean => {
   }
 };
 
-const getLocalProjects = (userId: string): Project[] => {
+export const getLocalProjects = (userId: string): Project[] => {
   const projects: Project[] = [];
   try {
     const indexStr = localStorage.getItem(`vibe_project_index_${userId}`);

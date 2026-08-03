@@ -20,6 +20,7 @@ import {
   pingFirestoreHealth,
   resetFirestoreHealthCheck,
   getFirebaseProjectId,
+  getLocalProjects,
 } from '../services/storageService';
 
 interface ProfilePageProps {
@@ -105,6 +106,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
   const [syncStatus, setSyncStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [syncCount, setSyncCount] = useState<number>(0);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [localProjectCount, setLocalProjectCount] = useState<number | null>(null);
 
   useEffect(() => {
     const update = () => {
@@ -130,6 +132,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Load local project count for the sync prompt
+  useEffect(() => {
+    if (currentUser) {
+      setLocalProjectCount(getLocalProjects(currentUser.uid).length);
+    }
+  }, [currentUser]);
 
   const handleCloudSyncToggle = async (enable: boolean) => {
     if (cloudTogglePending) return;
@@ -433,11 +442,15 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
                           </div>
 
                           {/* Post-setup sync prompt */}
-                          {syncStatus !== 'done' && (
+                          {syncStatus !== 'done' && localProjectCount !== 0 && (
                             <div className="flex items-center justify-between gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
                               <div className="flex-1 min-w-0">
                                 <p className="text-xs font-black text-emerald-800">로컬 프로젝트를 클라우드에 동기화할까요?</p>
-                                <p className="text-[11px] text-emerald-700 mt-0.5 leading-snug">이 기기에 저장된 프로젝트를 클라우드로 한 번에 백업합니다.</p>
+                                <p className="text-[11px] text-emerald-700 mt-0.5 leading-snug">
+                                  {localProjectCount !== null
+                                    ? `이 기기의 로컬 프로젝트 ${localProjectCount}개를 클라우드에 백업합니다.`
+                                    : '이 기기에 저장된 프로젝트를 클라우드로 한 번에 백업합니다.'}
+                                </p>
                               </div>
                               <button
                                 onClick={handleSyncNow}
