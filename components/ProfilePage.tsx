@@ -15,7 +15,12 @@ import {
   setCloudSyncEnabled,
   CLOUD_SYNC_CHANGE_EVENT,
 } from '../services/cloudSyncSettings';
-import { backfillLocalProjectsToCloud } from '../services/storageService';
+import {
+  backfillLocalProjectsToCloud,
+  pingFirestoreHealth,
+  resetFirestoreHealthCheck,
+  getFirebaseProjectId,
+} from '../services/storageService';
 
 interface ProfilePageProps {
     currentUser: User | null;
@@ -90,6 +95,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
   const [cloudSync, setCloudSync] = useState(() => isCloudSyncEnabled());
   const [cloudTogglePending, setCloudTogglePending] = useState(false);
   const [cloudToggleMsg, setCloudToggleMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [showSetupCard, setShowSetupCard] = useState(false);
+  const [setupVerified, setSetupVerified] = useState(false);
+  const [pingStatus, setPingStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [pingError, setPingError] = useState<string | null>(null);
+  const [copiedCmd, setCopiedCmd] = useState(false);
 
   useEffect(() => {
     const update = () => {
@@ -116,8 +126,13 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
       setCloudSyncEnabled(enable);
       setCloudSync(enable);
       if (enable && currentUser) {
-        setCloudToggleMsg({ kind: 'success', text: '클라우드 동기화가 켜졌습니다. 로컬 프로젝트를 동기화하려면 "내 프로젝트"에서 "클라우드에 다시 동기화" 버튼을 사용하세요.' });
+        setShowSetupCard(true);
+        setSetupVerified(false);
+        setPingStatus('idle');
+        setPingError(null);
       } else {
+        setShowSetupCard(false);
+        setSetupVerified(false);
         setCloudToggleMsg({ kind: 'success', text: '로컬 전용 모드로 전환됐습니다. 모든 데이터는 이 기기에만 저장됩니다.' });
       }
     } catch {
@@ -126,6 +141,36 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
       setCloudTogglePending(false);
     }
   };
+
+  const handleTestConnection = async () => {
+    if (pingStatus === 'loading') return;
+    setPingStatus('loading');
+    setPingError(null);
+    resetFirestoreHealthCheck(true);
+    try {
+      const info = await pingFirestoreHealth();
+      if (info.disabled) {
+        const reasonMap: Record<string, string> = {
+          service_disabled: 'Cloud Firestore API가 비활성화돼 있습니다. GCP 콘솔에서 Firestore API를 활성화하세요.',
+          permission_denied: '권한이 거부됐습니다. 보안 규칙이 올바르게 배포됐는지 확인하세요.',
+          database_not_found: 'Firestore 기본 데이터베이스를 찾을 수 없습니다. GCP 콘솔에서 Firestore를 초기화하세요.',
+          project_id_mismatch: 'Firebase 프로젝트 ID가 일치하지 않습니다. 환경변수 FIREBASE_PROJECT_ID를 확인하세요.',
+        };
+        const msg = (info.reason && reasonMap[info.reason]) || `연결 실패 (${info.reason ?? 'unknown'})`;
+        setPingStatus('error');
+        setPingError(msg);
+      } else {
+        setPingStatus('success');
+        setSetupVerified(true);
+      }
+    } catch (e: any) {
+      setPingStatus('error');
+      setPingError(e?.message ?? '알 수 없는 오류가 발생했습니다.');
+    }
+  };
+
+  const deployProjectId = getFirebaseProjectId() || 'YOUR_PROJECT_ID';
+  const deployCommand = `firebase deploy --project ${deployProjectId} --only firestore:rules,storage`;
 
   if (!currentUser) return null;
 
@@ -321,6 +366,121 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
                     <div className={`flex items-start gap-3 p-4 rounded-xl text-sm ${cloudToggleMsg.kind === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
                       {cloudToggleMsg.kind === 'success' ? <Icons.Check size={16} className="shrink-0 mt-0.5" /> : <Icons.AlertCircle size={16} className="shrink-0 mt-0.5" />}
                       <span>{cloudToggleMsg.text}</span>
+                    </div>
+                  )}
+
+                  {/* Firebase Rules Setup Card — shown when cloud sync just turned ON */}
+                  {showSetupCard && (
+                    <div className="border-2 border-amber-300 bg-amber-50 rounded-2xl overflow-hidden">
+                      {/* Header */}
+                      <div className="flex items-center justify-between px-5 py-3 bg-amber-100 border-b border-amber-200">
+                        <div className="flex items-center gap-2">
+                          <Icons.Shield size={16} className="text-amber-700" />
+                          <span className="text-sm font-black text-amber-800">Firebase 보안 규칙 배포 필요</span>
+                          {setupVerified && (
+                            <span className="text-[10px] font-black bg-emerald-500 text-white px-2 py-0.5 rounded-full">✓ 완료</span>
+                          )}
+                        </div>
+                        {setupVerified && (
+                          <button
+                            onClick={() => setShowSetupCard(false)}
+                            className="text-amber-600 hover:text-amber-800 transition-colors"
+                            aria-label="닫기"
+                          >
+                            <Icons.X size={16} />
+                          </button>
+                        )}
+                      </div>
+
+                      {setupVerified ? (
+                        /* Verified state */
+                        <div className="px-5 py-4 flex items-start gap-3">
+                          <Icons.Check size={18} className="text-emerald-600 shrink-0 mt-0.5" />
+                          <div>
+                            <p className="text-sm font-black text-emerald-800">연결 확인 완료!</p>
+                            <p className="text-xs text-emerald-700 mt-0.5">Firebase 보안 규칙이 정상 배포됐습니다. "내 프로젝트"에서 클라우드 데이터를 바로 사용할 수 있습니다.</p>
+                          </div>
+                        </div>
+                      ) : (
+                        /* Setup steps */
+                        <div className="px-5 py-4 space-y-4">
+                          <p className="text-xs text-amber-800 leading-relaxed">
+                            클라우드 동기화를 사용하려면 Firebase 보안 규칙을 먼저 배포해야 합니다. 아래 단계를 따라 진행하세요.
+                          </p>
+
+                          {/* Step 1 */}
+                          <div className="flex gap-3">
+                            <span className="flex-shrink-0 w-6 h-6 rounded-full bg-amber-700 text-white text-xs font-black flex items-center justify-center">1</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-black text-amber-900 mb-1.5">배포 명령어 복사</p>
+                              <div className="flex items-center gap-2 bg-gray-900 rounded-xl px-3 py-2.5 overflow-hidden">
+                                <code className="text-xs text-green-400 font-mono flex-1 min-w-0 truncate">{deployCommand}</code>
+                                <button
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(deployCommand).then(() => {
+                                      setCopiedCmd(true);
+                                      setTimeout(() => setCopiedCmd(false), 2000);
+                                    });
+                                  }}
+                                  className="flex-shrink-0 flex items-center gap-1 text-[10px] font-bold text-gray-300 hover:text-white transition-colors bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded-lg"
+                                  title="클립보드에 복사"
+                                >
+                                  {copiedCmd ? (
+                                    <><Icons.Check size={11} className="text-green-400" /><span className="text-green-400">복사됨</span></>
+                                  ) : (
+                                    <><Icons.FileText size={11} /><span>복사</span></>
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Step 2 */}
+                          <div className="flex gap-3">
+                            <span className="flex-shrink-0 w-6 h-6 rounded-full bg-amber-700 text-white text-xs font-black flex items-center justify-center">2</span>
+                            <div className="flex-1">
+                              <p className="text-xs font-black text-amber-900 mb-1">Google Cloud Shell에서 실행</p>
+                              <p className="text-xs text-amber-700 leading-relaxed">
+                                <a
+                                  href={`https://console.cloud.google.com/cloudshell?project=${deployProjectId}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="underline font-bold hover:text-amber-900"
+                                >
+                                  Google Cloud Shell 열기 ↗
+                                </a>
+                                {' '}에서 위 명령어를 붙여넣고 실행하세요. Firebase CLI가 없으면{' '}
+                                <code className="bg-amber-200 px-1 rounded text-[11px]">npm i -g firebase-tools</code> 먼저 설치하세요.
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Step 3 */}
+                          <div className="flex gap-3">
+                            <span className="flex-shrink-0 w-6 h-6 rounded-full bg-amber-700 text-white text-xs font-black flex items-center justify-center">3</span>
+                            <div className="flex-1">
+                              <p className="text-xs font-black text-amber-900 mb-2">연결 테스트</p>
+                              <button
+                                onClick={handleTestConnection}
+                                disabled={pingStatus === 'loading'}
+                                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black bg-amber-700 text-white hover:bg-amber-800 disabled:opacity-60 transition-colors"
+                              >
+                                {pingStatus === 'loading' ? (
+                                  <><Icons.Loader2 size={13} className="animate-spin" />확인 중…</>
+                                ) : (
+                                  <><Icons.RefreshCw size={13} />연결 테스트</>
+                                )}
+                              </button>
+                              {pingStatus === 'error' && pingError && (
+                                <div className="mt-2 flex items-start gap-2 p-2.5 bg-red-50 border border-red-200 rounded-xl">
+                                  <Icons.AlertCircle size={13} className="text-red-500 shrink-0 mt-0.5" />
+                                  <p className="text-[11px] text-red-700 leading-snug">{pingError}</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

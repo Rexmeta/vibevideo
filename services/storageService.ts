@@ -918,7 +918,7 @@ const restDocToProject = (doc: RestDocument): Project => {
 };
 
 let projectIdMismatchChecked = false;
-const getFirebaseProjectId = (): string | null => {
+export const getFirebaseProjectId = (): string | null => {
   const opts = auth?.app?.options as { projectId?: string } | undefined;
   const sdkId = opts?.projectId || null;
   // Cross-check the SDK-resolved project id against the env var so a
