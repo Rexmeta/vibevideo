@@ -3,7 +3,7 @@ import { Icons } from './Icons';
 import { analyzeYoutubeVideo } from '../services/youtubeAnalysisService';
 import type { YoutubeAnalysis, YoutubeScene, DetectedCharacter, AnalysisFinding, OptimizationTip } from '../types';
 
-// ─── Circular gauge ──────────────────────────────────────────────────────────
+// ─── Analysis cache (localStorage) ───────────────────────────────────────────
 
 interface GaugeProps {
   score: number; // 0–10
@@ -151,6 +151,7 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
   const [scriptCopied, setScriptCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [copiedSceneIdx, setCopiedSceneIdx] = useState<number | null>(null);
+  const [cacheEntry, setCacheEntry] = useState<CacheEntry | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Focus input on open
@@ -171,16 +172,35 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     return true;
   };
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = async (forceRefresh = false) => {
     if (!validateUrl(url)) return;
+
+    // Return cached result immediately unless the user explicitly forces a refresh
+    if (!forceRefresh) {
+      const hit = getCachedAnalysis(url);
+      if (hit) {
+        setAnalysis(hit.analysis);
+        setCacheEntry(hit);
+        setActiveTab('breakdown');
+        setSelectedTips(new Set());
+        setMarkedChips({ chars: new Set(), bgs: new Set() });
+        setApiError(null);
+        return;
+      }
+    }
+
     setLoading(true);
     setApiError(null);
     setAnalysis(null);
+    setCacheEntry(null);
     setSelectedTips(new Set());
     setMarkedChips({ chars: new Set(), bgs: new Set() });
     try {
       const result = await analyzeYoutubeVideo(url.trim());
+      setCachedAnalysis(url, result);
+      const newEntry = getCachedAnalysis(url);
       setAnalysis(result);
+      setCacheEntry(newEntry);
       setActiveTab('breakdown');
     } catch (e: any) {
       setApiError(e?.message || '분석 중 오류가 발생했습니다. 다시 시도해주세요.');
@@ -190,7 +210,7 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') handleAnalyze();
+    if (e.key === 'Enter') handleAnalyze(false);
   };
 
   const toggleTip = (idx: number) =>
@@ -637,11 +657,19 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
               <div className="flex items-center gap-5 bg-gradient-to-br from-gray-50 to-white rounded-3xl p-5 border border-gray-100">
                 <CircularGauge score={analysis.overallScore} size={100} />
                 <div className="flex-1 min-w-0">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">종합 점수</p>
+                  <div className="flex items-center gap-2 mb-1">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">종합 점수</p>
+                    {cacheEntry && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-600 text-[9px] font-black shrink-0">
+                        <Icons.Clock size={8} />
+                        캐시됨 · {formatCacheAge(cacheEntry.cachedAt)}
+                      </span>
+                    )}
+                  </div>
                   <h3 className="text-base font-black text-gray-900 leading-tight line-clamp-2 mb-1.5">
                     {analysis.detectedTitle || '(제목 감지 중)'}
                   </h3>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-2 items-center">
                     {analysis.format && (
                       <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black">
                         {analysis.format}
@@ -657,6 +685,15 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
                     <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-[10px] font-bold">
                       씬 {analysis.scenes.length}개
                     </span>
+                    {cacheEntry && (
+                      <button
+                        onClick={() => handleAnalyze(true)}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-gray-200 bg-white text-gray-500 text-[9px] font-black hover:border-gray-400 hover:text-gray-700 transition-all"
+                      >
+                        <Icons.RotateCcw size={8} />
+                        새로 분석
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -715,3 +752,52 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     </div>
   );
 };
+
+const CACHE_KEY = 'yt_analysis_cache_v1';
+
+function readCache(): CacheEntry[] {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return [];
+    const parsed: CacheEntry[] = JSON.parse(raw);
+    const now = Date.now();
+    return parsed.filter(e => now - e.cachedAt < CACHE_TTL_MS);
+  } catch {
+    return [];
+  }
+}
+
+function getCachedAnalysis(url: string): CacheEntry | null {
+  const entries = readCache();
+  return entries.find(e => e.url === url.trim()) ?? null;
+}
+
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+const CACHE_MAX_ENTRIES = 5;
+
+function setCachedAnalysis(url: string, analysis: YoutubeAnalysis): void {
+  try {
+    let entries = readCache().filter(e => e.url !== url.trim());
+    entries = [{ url: url.trim(), analysis, cachedAt: Date.now() }, ...entries].slice(0, CACHE_MAX_ENTRIES);
+    localStorage.setItem(CACHE_KEY, JSON.stringify(entries));
+  } catch {
+    // Storage full or unavailable — silently skip
+  }
+}
+
+interface CacheEntry {
+  url: string;
+  analysis: YoutubeAnalysis;
+  cachedAt: number; // Unix ms
+}
+
+function formatCacheAge(cachedAt: number): string {
+  const diffMs = Date.now() - cachedAt;
+  const diffMin = Math.floor(diffMs / 60_000);
+  const diffHr = Math.floor(diffMs / 3_600_000);
+  if (diffMin < 1) return '방금 전';
+  if (diffHr < 1) return `${diffMin}분 전`;
+  if (diffHr < 24) return `${diffHr}시간 전`;
+  return `${Math.floor(diffHr / 24)}일 전`;
+}
