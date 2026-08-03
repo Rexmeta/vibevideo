@@ -11,6 +11,7 @@ import { SceneAIEditModal } from './SceneAIEditModal';
 import type { SceneRefineResult } from '../../services/geminiService';
 import type { Scene } from '../../types';
 
+// hint: Structural and logic conflict. Both design and behavior differ.
 export const StepsAudioImageVideo: React.FC = () => {
   const [aiEditSceneIdx, setAiEditSceneIdx] = useState<number | null>(null);
   const [promptChangedPopoverIdx, setPromptChangedPopoverIdx] = useState<number | null>(null);
@@ -123,18 +124,36 @@ export const StepsAudioImageVideo: React.FC = () => {
             </select>
           </div>
         ) : (
-          <button
-            disabled={isProcessing}
-            onClick={step === 3 ? handleBatchAudio : step === 4 ? handleBatchImages : handleBatchVideos}
-            className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all ${isProcessing ? 'bg-gray-100 text-gray-300' : 'bg-brand-cyan text-black hover:scale-105 active:scale-95'}`}
-          >
-            {isProcessing ? (
-              <span className="flex items-center gap-3">
-                <Icons.Loader2 className="animate-spin" size={20} />
-                {loadingMessage || `처리 중... (${processingSet.size}개 동시)`}
-              </span>
-            ) : `Auto-Generate All`}
-          </button>
+          <div className="flex flex-col items-end gap-2">
+            <button
+              disabled={isProcessing}
+              onClick={step === 3 ? handleBatchAudio : step === 4 ? handleBatchImages : handleBatchVideos}
+              className={`px-12 py-5 rounded-full font-black text-lg shadow-xl transition-all ${isProcessing ? 'bg-gray-100 text-gray-300' : 'bg-brand-cyan text-black hover:scale-105 active:scale-95'}`}
+            >
+              {isProcessing ? (
+                <span className="flex items-center gap-3">
+                  <Icons.Loader2 className="animate-spin" size={20} />
+                  {loadingMessage || `처리 중... (${processingSet.size}개 동시)`}
+                </span>
+              ) : `Auto-Generate All`}
+            </button>
+            {step === 3 && !isProcessing && scenes.some(s => s.promptChanged && s.script_segment_original && s.script_segment !== s.script_segment_original) && (
+              <button
+                onClick={() => {
+                  scenes.forEach((s, i) => {
+                    if (s.promptChanged && s.script_segment_original && s.script_segment !== s.script_segment_original) {
+                      handleSingleAudio(i);
+                    }
+                  });
+                }}
+                className="flex items-center gap-2 px-6 py-2.5 rounded-full font-black text-sm shadow-md transition-all bg-orange-500 text-white hover:scale-105 active:scale-95"
+                title="스크립트가 변경된 모든 씬의 오디오를 한 번에 재생성합니다."
+              >
+                <Icons.RefreshCw size={14} />
+                변경된 씬 오디오 재생성
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -385,8 +404,8 @@ export const StepsAudioImageVideo: React.FC = () => {
                   {s.promptChanged && (
                     <span className="relative">
                       <span
-                        className="bg-amber-100 text-amber-700 border border-amber-300 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-amber-200 transition-colors"
-                        title={step === 4 || step === 5 ? 'AI 편집으로 프롬프트가 변경됨. 클릭하면 옵션을 선택하세요.' : 'AI 편집으로 프롬프트가 변경됨.'}
+                        className={`bg-amber-100 text-amber-700 border border-amber-300 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider transition-colors ${step === 4 || step === 5 ? 'cursor-pointer hover:bg-amber-200' : 'cursor-default'}`}
+                        title={step === 3 ? 'AI 편집으로 프롬프트가 변경됨. 스크립트가 바뀐 경우 오디오를 재생성하세요.' : 'AI 편집으로 프롬프트가 변경됨. 클릭하면 옵션을 선택하세요.'}
                         onClick={(e) => {
                           if (step === 4 || step === 5) {
                             e.stopPropagation();
@@ -426,6 +445,17 @@ export const StepsAudioImageVideo: React.FC = () => {
                         </div>
                       )}
                     </span>
+                  )}
+                  {step === 3 && s.promptChanged && s.script_segment_original && s.script_segment !== s.script_segment_original && (
+                    <button
+                      type="button"
+                      onClick={() => handleSingleAudio(i)}
+                      disabled={isProcessing}
+                      className={`flex items-center gap-1 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border transition-colors ${isProcessing ? 'bg-orange-50 border-orange-200 text-orange-400 cursor-not-allowed opacity-60' : 'bg-orange-100 text-orange-700 border-orange-300 hover:bg-orange-200 cursor-pointer'}`}
+                      title="스크립트가 변경됨 — 클릭하면 나레이션을 새 대사로 재생성합니다."
+                    >
+                      <Icons.RefreshCw size={10} /> 오디오 재생성
+                    </button>
                   )}
                   {step === 5 && !isPresentationMode && s.video_path && s.seedSource && (() => {
                     const seedBadge = s.seedSource === 'reference'
