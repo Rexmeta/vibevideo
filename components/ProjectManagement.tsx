@@ -19,8 +19,10 @@ import {
 import { Icons } from './Icons';
 import { clearStoredMode, cleanupOrphanedModePrefs } from './wizard/ModeGate';
 import { NewProjectModal } from './NewProjectModal';
+import { YouTubeImportModal } from './YouTubeImportModal';
 import { jobManager } from '../services/jobManager';
 import { isCloudSyncEnabled, CLOUD_SYNC_CHANGE_EVENT } from '../services/cloudSyncSettings';
+import type { YoutubeAnalysis } from '../types';
 
 const modePrefCleanupRanByUser = new Set<string>();
 
@@ -43,6 +45,8 @@ interface ProjectManagementPropsExtras {
   onStartSample?: () => void;
   /** Task #95: Express Quick Mode entry. */
   onStartExpress?: () => void;
+  /** Task #155: YouTube 분석 & 리믹스 — called when user clicks "이 영상 리믹스하기". */
+  onRemixYoutube?: (analysis: YoutubeAnalysis) => void;
 }
 
 interface ProjectManagementProps extends ProjectManagementPropsExtras {
@@ -66,12 +70,13 @@ const mergeUniqueByDate = (a: Project[], b: Project[]): Project[] => {
   });
 };
 
-export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, onNavigate, onEditProject, onStartSample, onStartExpress }) => {
+export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, onNavigate, onEditProject, onStartSample, onStartExpress, onRemixYoutube }) => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [syncState, setSyncState] = useState<SyncState>('idle');
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [showNewModal, setShowNewModal] = useState(false);
+  const [showYoutubeModal, setShowYoutubeModal] = useState(false);
   const cursorRef = useRef<string | null>(null);
   const initialLoadDone = useRef(false);
   const mountedRef = useRef(true);
@@ -397,7 +402,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
         </button>
       </div>
 
-      {(onStartSample || onStartExpress) && (
+      {(onStartSample || onStartExpress || true) && (
         <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4">
           {onStartSample && (
             <button
@@ -427,7 +432,35 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
               </div>
             </button>
           )}
+          {/* YouTube 분석 & 리믹스 entry point (Task #155) */}
+          <button
+            onClick={() => setShowYoutubeModal(true)}
+            className="text-left bg-gradient-to-br from-red-50 to-white border-2 border-red-100 hover:border-red-400 rounded-3xl p-5 transition-all hover:shadow-lg flex items-center gap-4"
+          >
+            <div className="w-12 h-12 bg-red-500 rounded-2xl flex items-center justify-center shrink-0">
+              <Icons.Youtube size={20} className="text-white" />
+            </div>
+            <div className="flex-1">
+              <h4 className="font-black text-base">YouTube 리믹스</h4>
+              <p className="text-xs text-gray-500 mt-0.5">YouTube 영상을 분석하고 장단점·팁을 확인한 뒤 리믹스합니다.</p>
+            </div>
+          </button>
         </div>
+      )}
+
+      {showYoutubeModal && (
+        <YouTubeImportModal
+          onClose={() => setShowYoutubeModal(false)}
+          onRemix={(analysis) => {
+            setShowYoutubeModal(false);
+            if (onRemixYoutube) {
+              onRemixYoutube(analysis);
+            } else {
+              // Fallback: navigate to new project creation
+              onNavigate('create');
+            }
+          }}
+        />
       )}
 
       {showNewModal && (

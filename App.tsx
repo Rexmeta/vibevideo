@@ -12,6 +12,7 @@ import { BrandKitSettings } from './components/BrandKitSettings';
 import { StudioDock } from './components/StudioDock';
 import { NewProjectModal } from './components/NewProjectModal';
 import { ViewState } from './types';
+import type { YoutubeAnalysis } from './types';
 import { Icons } from './components/Icons';
 import { auth, isFirebaseConfigured } from './services/firebaseConfig';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -234,6 +235,20 @@ const App: React.FC = () => {
     setWizardSessionKey(k => k + 1);
   };
 
+  // Task #155: YouTube 분석 결과를 들고 새 프로젝트 위저드로 이동.
+  // The actual remix wizard integration (pre-filling scenes/characters from the
+  // analysis) is Task #3's downstream work; here we just navigate to 'create'.
+  const handleRemixYoutube = (_analysis: YoutubeAnalysis) => {
+    if (!currentUser) {
+      setCurrentView('login');
+      return;
+    }
+    setExpressMode(false);
+    setEditingProjectId(null);
+    setCurrentView('create');
+    setWizardSessionKey(k => k + 1);
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -310,6 +325,7 @@ const App: React.FC = () => {
             onEditProject={handleEditProject}
             onStartSample={handleStartSample}
             onStartExpress={handleStartExpress}
+            onRemixYoutube={handleRemixYoutube}
           />
         )}
 
