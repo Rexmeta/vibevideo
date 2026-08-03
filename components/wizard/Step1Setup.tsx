@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { GENRES, PLATFORMS, applyPlatformDefaults } from '../../services/presets';
 import { generateSceneImage } from '../../services/geminiService';
@@ -66,26 +66,6 @@ export const Step1Setup: React.FC = () => {
     setBackgroundReplacements,
   } = w;
 
-  // Pre-populate characterReferences from detected characters when this is a remix project
-  const remixPrePopDoneRef = useRef(false);
-  useEffect(() => {
-    if (
-      !remixPrePopDoneRef.current &&
-      remixSource &&
-      characterReferences.length === 0 &&
-      remixSource.detectedCharacters.length > 0
-    ) {
-      remixPrePopDoneRef.current = true;
-      setCharacterReferences(
-        remixSource.detectedCharacters.map(c => ({
-          name: c.name,
-          description: c.description,
-          imageUrl: '',
-        })),
-      );
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remixSource]);
   // ContextPack — pulled separately so we don't widen the rest of the
   // destructure to `any`.
   const {

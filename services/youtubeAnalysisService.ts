@@ -363,6 +363,17 @@ export function buildRemixProject(
   const aspectRatio: '16:9' | '9:16' | '1:1' | '3:4' =
     platform === 'youtube-shorts' ? '9:16' : '16:9';
 
+  // Pre-populate character_references so they are persisted with the project
+  // from the moment it is created. This means the restore path in useRestore
+  // will always hydrate characterReferences from saved data, and the
+  // component-level useEffect pre-population guard in Step1Setup is no longer
+  // needed (and cannot accidentally reset user edits on re-mount).
+  const characterReferences = analysis.characters.map(c => ({
+    name: c.name,
+    description: c.description,
+    imageUrl: '',
+  }));
+
   const project = {
     id: projectId,
     user_id: userId,
@@ -385,6 +396,7 @@ export function buildRemixProject(
     genre: genre || undefined,
     creative_brief: creativeBrief,
     remix_source: remixSource,
+    character_references: characterReferences.length > 0 ? characterReferences : undefined,
   } as unknown as Project;
 
   return { project, remixSource };
