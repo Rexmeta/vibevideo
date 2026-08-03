@@ -498,6 +498,122 @@ const STYLE_SHEET_SCHEMA = {
   required: ['palette', 'lighting', 'mood'],
 } as const;
 
+// ── Task #116: AI Scene Edit Assistant ──────────────────────────────────────
+
+const SCENE_REFINE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    visual_prompt: { type: Type.STRING },
+    script_segment: { type: Type.STRING },
+    shotType: { type: Type.STRING },
+    cameraMovement: { type: Type.STRING },
+    characters: { type: Type.ARRAY, items: { type: Type.STRING } },
+  },
+  required: ['visual_prompt', 'script_segment'],
+} as const;
+
+export interface SceneRefineResult {
+  visual_prompt: string;
+  script_segment: string;
+  shotType?: string;
+  cameraMovement?: string;
+  characters?: string[];
+}
+
+export interface SceneRefineContext {
+  topic?: string;
+  videoStyle?: string;
+  genre?: string;
+}
+
+/**
+ * Send a single scene and a free-text user instruction to Gemini.
+ * Returns the refined scene fields as a JSON object.
+ */
+export const refineSceneWithInstruction = async (
+  scene: { visual_prompt?: string; script_segment?: string; shotType?: string; cameraMovement?: string; characters?: string[] },
+  instruction: string,
+  context: SceneRefineContext = {},
+): Promise<SceneRefineResult> => {
+  const ai = new GoogleGenAI({ apiKey: requireApiKey() });
+
+  const contextLines: string[] = [];
+  if (context.topic) contextLines.push(`Project topic: "${context.topic}"`);
+  if (context.videoStyle) contextLines.push(`Visual style: ${context.videoStyle}`);
+  if (context.genre) contextLines.push(`Genre: ${context.genre}`);
+
+  const sys = [
+    'You are a video director assistant. The user will give you an existing scene description and a natural-language instruction for how to modify it.',
+    'Return ONLY the updated fields as JSON. Preserve any fields not mentioned in the instruction.',
+    'Keep visual_prompt as a vivid, cinematic one-paragraph description. Keep script_segment as concise spoken narration.',
+    contextLines.join(' '),
+  ].filter(Boolean).join(' ');
+
+  const currentScene = JSON.stringify({
+    visual_prompt: scene.visual_prompt || '',
+    script_segment: scene.script_segment || '',
+    shotType: scene.shotType || '',
+    cameraMovement: scene.cameraMovement || '',
+    characters: scene.characters || [],
+  }, null, 2);
+
+  const userPrompt = `Current scene:\n${currentScene}\n\nUser instruction: "${instruction}"\n\nReturn the modified scene fields as JSON.`;
+
+  let response;
+  try {
+    response = await withRetry(
+      () => withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: `${sys}\n\n${userPrompt}`,
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: SCENE_REFINE_SCHEMA as any,
+          },
+        }),
+        45000,
+        'AI 씬 수정',
+      ),
+      1,
+      'refineSceneWithInstruction',
+    );
+  } catch (e) {
+    throw normalizeGeminiError(e, 'refineSceneWithInstruction');
+  }
+
+  const parsed = JSON.parse(response.text || '{}');
+  return {
+    visual_prompt: String(parsed.visual_prompt || scene.visual_prompt || '').trim(),
+    script_segment: String(parsed.script_segment || scene.script_segment || '').trim(),
+    shotType: parsed.shotType ? String(parsed.shotType).trim() : scene.shotType,
+    cameraMovement: parsed.cameraMovement ? String(parsed.cameraMovement).trim() : scene.cameraMovement,
+    characters: Array.isArray(parsed.characters) ? parsed.characters.map((c: any) => String(c).trim()).filter(Boolean) : scene.characters,
+  };
+};
+
+/**
+ * Apply the same instruction to every scene in the array concurrently.
+ * onProgress(done, total) is called after each scene completes.
+ */
+export const refineAllScenesWithInstruction = async (
+  scenes: { visual_prompt?: string; script_segment?: string; shotType?: string; cameraMovement?: string; characters?: string[] }[],
+  instruction: string,
+  context: SceneRefineContext = {},
+  onProgress?: (done: number, total: number) => void,
+): Promise<SceneRefineResult[]> => {
+  let done = 0;
+  const total = scenes.length;
+  const results = await Promise.all(
+    scenes.map(async (scene) => {
+      const result = await refineSceneWithInstruction(scene, instruction, context);
+      done += 1;
+      onProgress?.(done, total);
+      return result;
+    }),
+  );
+  return results;
+};
+
 export const generateStyleSheet = async (
   topic: string,
   script: string,

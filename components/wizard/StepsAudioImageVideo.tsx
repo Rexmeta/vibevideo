@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
 import { jobManager } from '../../services/jobManager';
@@ -7,8 +7,12 @@ import { generateStyleSheet } from '../../services/geminiService';
 import { estimateCost, formatUsd, resolveApiModelId } from '../../services/pricing';
 import { CAPTION_PRESETS } from '../../services/captionService';
 import { TransitionType, MotionPreset, SeedSource } from '../../types';
+import { SceneAIEditModal } from './SceneAIEditModal';
+import type { SceneRefineResult } from '../../services/geminiService';
+import type { Scene } from '../../types';
 
 export const StepsAudioImageVideo: React.FC = () => {
+  const [aiEditSceneIdx, setAiEditSceneIdx] = useState<number | null>(null);
   const w = useWizard();
   const {
     step,
@@ -377,6 +381,15 @@ export const StepsAudioImageVideo: React.FC = () => {
                   )}
                   {isFailed && <span className="bg-red-100 text-red-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">Failed</span>}
                   {isActive && <span className="bg-brand-cyan/20 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-black uppercase animate-pulse">Processing</span>}
+                  {s.promptChanged && (
+                    <span
+                      className="bg-amber-100 text-amber-700 border border-amber-300 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider cursor-pointer hover:bg-amber-200 transition-colors"
+                      title="AI 편집으로 프롬프트가 변경됨. 클릭하면 재생성합니다."
+                      onClick={() => step === 4 ? handleSingleImage(i) : step === 5 ? handleSingleVideo(i) : undefined}
+                    >
+                      ✦ 재생성 권장
+                    </span>
+                  )}
                   {step === 5 && !isPresentationMode && s.video_path && s.seedSource && (() => {
                     const seedBadge = s.seedSource === 'reference'
                       ? { cls: 'bg-emerald-50 text-emerald-700 border border-emerald-200', label: '참조 이미지로 시드', title: '캐릭터 참조 이미지로 정체성 잠금' }
@@ -791,6 +804,30 @@ export const StepsAudioImageVideo: React.FC = () => {
                             <Icons.Wand2 size={12} /> Regenerate Image
                           </button>
                         )}
+                        {(step === 4 || (step === 5 && !isPresentationMode)) && (
+                          <button
+                            onClick={() => setAiEditSceneIdx(i)}
+                            className="flex items-center gap-2 px-6 py-2.5 bg-white border-2 border-brand-cyan text-teal-700 rounded-full text-[11px] font-black uppercase hover:bg-brand-cyan/10 transition-all shadow-sm"
+                            title="AI에게 자연어로 씬 수정 지시"
+                          >
+                            <Icons.Sparkles size={12} /> AI 수정
+                          </button>
+                        )}
+                        {s.promptChanged && (s.visual_prompt_original || s.script_segment_original) && (
+                          <button
+                            onClick={() => updateSceneAt(i, {
+                              visual_prompt: s.visual_prompt_original ?? s.visual_prompt,
+                              script_segment: s.script_segment_original ?? s.script_segment,
+                              promptChanged: false,
+                              visual_prompt_original: undefined,
+                              script_segment_original: undefined,
+                            } as Partial<Scene>)}
+                            className="flex items-center gap-2 px-4 py-2.5 bg-white border-2 border-amber-300 text-amber-700 rounded-full text-[11px] font-black uppercase hover:bg-amber-50 transition-all shadow-sm"
+                            title="AI 수정 전 원본으로 되돌리기"
+                          >
+                            <Icons.RotateCcw size={12} /> 되돌리기
+                          </button>
+                        )}
                         {step === 5 && !isPresentationMode && (isFailed || !s.video_path) && (
                           <button onClick={() => handleSingleVideo(i)} className="flex items-center gap-2 px-6 py-2.5 bg-red-500 text-white rounded-full text-[11px] font-black uppercase hover:scale-105 transition-all shadow-md">
                             <Icons.RefreshCw size={12} /> {isFailed ? '재시도' : '비디오 생성'}
@@ -866,6 +903,35 @@ export const StepsAudioImageVideo: React.FC = () => {
           );
         })}
       </div>
+
+      {/* AI Scene Edit Modal */}
+      {aiEditSceneIdx !== null && (() => {
+        const scene = scenes[aiEditSceneIdx];
+        if (!scene) return null;
+        const handleApply = (result: SceneRefineResult) => {
+          updateSceneAt(aiEditSceneIdx, {
+            visual_prompt: result.visual_prompt,
+            script_segment: result.script_segment,
+            ...(result.shotType ? { shotType: result.shotType as any } : {}),
+            ...(result.cameraMovement ? { cameraMovement: result.cameraMovement as any } : {}),
+            ...(result.characters ? { characters: result.characters } : {}),
+            promptChanged: true,
+            visual_prompt_original: scene.visual_prompt_original ?? scene.visual_prompt,
+            script_segment_original: scene.script_segment_original ?? scene.script_segment,
+          } as Partial<Scene>);
+          sync();
+          setAiEditSceneIdx(null);
+        };
+        return (
+          <SceneAIEditModal
+            scene={scene}
+            sceneIndex={aiEditSceneIdx}
+            context={{ topic, videoStyle }}
+            onApply={handleApply}
+            onClose={() => setAiEditSceneIdx(null)}
+          />
+        );
+      })()}
 
       <div className="flex gap-4 mt-10">
         <button disabled={isProcessing} onClick={() => setStep((step - 1) as any)} className="px-10 py-6 rounded-full font-black text-gray-400 hover:text-black disabled:opacity-0 transition-all">Back</button>

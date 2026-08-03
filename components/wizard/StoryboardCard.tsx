@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Scene } from '../../types';
 import { Icons } from '../Icons';
+import { SceneAIEditModal } from './SceneAIEditModal';
+import type { SceneRefineContext, SceneRefineResult } from '../../services/geminiService';
 
 // ── Icon mappings ────────────────────────────────────────────────────────────
 
@@ -85,7 +87,9 @@ export interface StoryboardCardProps {
   onDragOver: (e: React.DragEvent, i: number) => void;
   onDrop: (e: React.DragEvent, i: number) => void;
   // inline edit
-  onSave: (idx: number, updates: { script_segment?: string; visual_prompt?: string }) => void;
+  onSave: (idx: number, updates: Partial<Scene>) => void;
+  // AI edit context (optional — if omitted the AI button is hidden)
+  aiContext?: SceneRefineContext;
 }
 
 export const StoryboardCard: React.FC<StoryboardCardProps> = ({
@@ -98,10 +102,12 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = ({
   onDragOver,
   onDrop,
   onSave,
+  aiContext,
 }) => {
   const [editing, setEditing] = useState(false);
   const [editScript, setEditScript] = useState('');
   const [editPrompt, setEditPrompt] = useState('');
+  const [showAIEdit, setShowAIEdit] = useState(false);
 
   const shotIcon = getShotIcon(s.shotType);
   const camIcon = getCameraIcon(s.cameraMovement);
@@ -115,6 +121,33 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = ({
   const handleSave = () => {
     onSave(i, { script_segment: editScript, visual_prompt: editPrompt });
     setEditing(false);
+  };
+
+  const handleAIApply = (result: SceneRefineResult) => {
+    // Snapshot originals on first AI edit so revert is always possible
+    const updates: Partial<Scene> = {
+      visual_prompt: result.visual_prompt,
+      script_segment: result.script_segment,
+      promptChanged: true,
+      visual_prompt_original: s.visual_prompt_original ?? s.visual_prompt,
+      script_segment_original: s.script_segment_original ?? s.script_segment,
+    };
+    if (result.shotType) updates.shotType = result.shotType as any;
+    if (result.cameraMovement) updates.cameraMovement = result.cameraMovement as any;
+    if (result.characters) updates.characters = result.characters;
+    onSave(i, updates);
+    setShowAIEdit(false);
+  };
+
+  const handleRevert = () => {
+    if (!s.visual_prompt_original && !s.script_segment_original) return;
+    onSave(i, {
+      visual_prompt: s.visual_prompt_original ?? s.visual_prompt,
+      script_segment: s.script_segment_original ?? s.script_segment,
+      promptChanged: false,
+      visual_prompt_original: undefined,
+      script_segment_original: undefined,
+    });
   };
 
   const handleCancel = () => setEditing(false);
@@ -158,6 +191,12 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = ({
         {s.beatRole && (
           <span className={`absolute top-2 right-2 text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${beatColor(s.beatRole)}`}>
             {s.beatRole}
+          </span>
+        )}
+        {/* Prompt-changed badge */}
+        {s.promptChanged && (
+          <span className="absolute bottom-2 left-2 bg-amber-500 text-white text-[9px] font-black px-2 py-0.5 rounded-full flex items-center gap-1">
+            ✦ 재생성 권장
           </span>
         )}
         {/* Drag handle hint */}
@@ -214,14 +253,45 @@ export const StoryboardCard: React.FC<StoryboardCardProps> = ({
           </div>
         )}
 
-        {/* Edit button */}
-        <button
-          onClick={handleEditOpen}
-          className="mt-2 text-[11px] text-gray-400 hover:text-brand-dark font-bold flex items-center gap-1 self-end transition-colors"
-        >
-          <Icons.Edit3 size={11} /> 편집
-        </button>
+        {/* Action buttons row */}
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <button
+            onClick={handleEditOpen}
+            className="text-[11px] text-gray-400 hover:text-brand-dark font-bold flex items-center gap-1 transition-colors"
+          >
+            <Icons.Edit3 size={11} /> 편집
+          </button>
+          {aiContext && (
+            <button
+              onClick={() => setShowAIEdit(true)}
+              className="text-[11px] text-brand-cyan hover:text-teal-600 font-bold flex items-center gap-1 transition-colors"
+              title="AI에게 자연어로 씬 수정 지시"
+            >
+              <Icons.Sparkles size={11} /> AI 수정
+            </button>
+          )}
+          {s.promptChanged && s.visual_prompt_original && (
+            <button
+              onClick={handleRevert}
+              className="text-[11px] text-amber-500 hover:text-amber-700 font-bold flex items-center gap-1 transition-colors ml-auto"
+              title="AI 수정 전 원본으로 되돌리기"
+            >
+              <Icons.RotateCcw size={11} /> 되돌리기
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* AI Edit Modal */}
+      {showAIEdit && (
+        <SceneAIEditModal
+          scene={s}
+          sceneIndex={i}
+          context={aiContext}
+          onApply={handleAIApply}
+          onClose={() => setShowAIEdit(false)}
+        />
+      )}
 
       {/* Inline edit overlay */}
       {editing && (

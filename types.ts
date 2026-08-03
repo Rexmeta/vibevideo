@@ -356,6 +356,14 @@ export interface Scene {
   // Task #114: when true the scene is excluded from the final export but
   // kept in the project so the user can re-enable it without regenerating.
   hidden?: boolean;
+  // Task #116: AI scene edit assistant — original field snapshots taken
+  // before the first AI-driven edit so the user can revert at any time.
+  visual_prompt_original?: string;
+  script_segment_original?: string;
+  // True when visual_prompt or script_segment has been changed by the AI
+  // edit assistant since the last media generation. Surfaces the
+  // "재생성 권장" badge.
+  promptChanged?: boolean;
 }
 
 export type VideoUploadStatus = 'ok' | 'pending-upload' | 'upload-failed';

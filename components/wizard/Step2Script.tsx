@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { Icons } from '../Icons';
-import { generateScript, segmentScriptIntoScenes, generateStyleSheet } from '../../services/geminiService';
+import { generateScript, segmentScriptIntoScenes, generateStyleSheet, refineAllScenesWithInstruction } from '../../services/geminiService';
 import { useWizard } from './WizardContext';
-import type { CreativeBrief } from '../../types';
+import type { CreativeBrief, Scene } from '../../types';
 import { StoryboardCard } from './StoryboardCard';
 
 function alertGeminiError(prefix: string, e: any) {
@@ -120,6 +120,12 @@ export const Step2Script: React.FC = () => {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
+  // Bulk AI instruction state
+  const [bulkInstruction, setBulkInstruction] = useState('');
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+
   const hasScenes = scenes.length > 0;
 
   // ── Drag and drop handlers ─────────────────────────────────────────────────
@@ -163,12 +169,45 @@ export const Step2Script: React.FC = () => {
 
   // ── Inline edit handler ────────────────────────────────────────────────────
 
-  const handleCardSave = (
-    idx: number,
-    updates: { script_segment?: string; visual_prompt?: string }
-  ) => {
+  const handleCardSave = (idx: number, updates: Partial<Scene>) => {
     updateSceneAt(idx, updates);
     sync();
+  };
+
+  // ── Bulk AI instruction handler ────────────────────────────────────────────
+
+  const handleBulkApply = async () => {
+    if (!bulkInstruction.trim() || scenes.length === 0) return;
+    setBulkLoading(true);
+    setBulkError(null);
+    setBulkProgress({ done: 0, total: scenes.length });
+    try {
+      const results = await refineAllScenesWithInstruction(
+        scenes,
+        bulkInstruction.trim(),
+        { topic, videoStyle },
+        (done, total) => setBulkProgress({ done, total }),
+      );
+      const next = scenes.map((s, i) => ({
+        ...s,
+        visual_prompt: results[i].visual_prompt,
+        script_segment: results[i].script_segment,
+        ...(results[i].shotType ? { shotType: results[i].shotType as any } : {}),
+        ...(results[i].cameraMovement ? { cameraMovement: results[i].cameraMovement as any } : {}),
+        ...(results[i].characters ? { characters: results[i].characters } : {}),
+        promptChanged: true,
+        visual_prompt_original: s.visual_prompt_original ?? s.visual_prompt,
+        script_segment_original: s.script_segment_original ?? s.script_segment,
+      }));
+      setScenes(next);
+      sync(undefined, next);
+      setBulkInstruction('');
+    } catch (e: any) {
+      setBulkError(e?.message || '알 수 없는 오류');
+    } finally {
+      setBulkLoading(false);
+      setBulkProgress(null);
+    }
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -254,6 +293,65 @@ export const Step2Script: React.FC = () => {
             <Icons.GripVertical size={12} />
             카드를 드래그해 씬 순서를 바꿀 수 있습니다. 카드를 클릭하면 인라인 편집이 가능합니다.
           </p>
+
+          {/* Bulk AI instruction bar */}
+          <div className="p-5 bg-gradient-to-r from-teal-50 to-cyan-50 rounded-[2rem] border-2 border-teal-100">
+            <div className="flex items-center gap-2 mb-3">
+              <Icons.Sparkles size={14} className="text-brand-cyan" />
+              <span className="text-[11px] font-black uppercase tracking-widest text-teal-700">전체 씬 AI 일괄 수정</span>
+              {scenes.some(s => s.promptChanged) && (
+                <span className="ml-auto text-[10px] bg-amber-100 text-amber-700 border border-amber-300 px-2 py-0.5 rounded-full font-bold">
+                  {scenes.filter(s => s.promptChanged).length}개 씬 변경됨
+                </span>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <input
+                value={bulkInstruction}
+                onChange={e => setBulkInstruction(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleBulkApply(); }}
+                placeholder="예: 전체를 따뜻한 황금빛 조명으로 / 모든 씬 카메라를 dolly-in으로 / 전체 톤을 밝고 긍정적으로"
+                disabled={bulkLoading}
+                className="flex-1 px-4 py-2.5 bg-white rounded-2xl border-2 border-teal-200 text-sm font-medium outline-none focus:border-brand-cyan transition-colors disabled:opacity-50"
+              />
+              <button
+                onClick={handleBulkApply}
+                disabled={bulkLoading || !bulkInstruction.trim()}
+                className="px-5 py-2.5 bg-brand-cyan text-black rounded-2xl font-black text-sm hover:scale-105 active:scale-95 transition-all shadow-md disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 flex items-center gap-2"
+              >
+                {bulkLoading ? (
+                  <>
+                    <Icons.Loader2 size={14} className="animate-spin" />
+                    {bulkProgress ? `${bulkProgress.done}/${bulkProgress.total}` : '처리 중…'}
+                  </>
+                ) : (
+                  <>
+                    <Icons.Wand2 size={14} />
+                    전체 적용
+                  </>
+                )}
+              </button>
+            </div>
+            {bulkError && (
+              <p className="mt-2 text-[11px] text-red-500 font-bold flex items-center gap-1">
+                <Icons.AlertCircle size={11} /> {bulkError}
+              </p>
+            )}
+            {bulkLoading && bulkProgress && (
+              <div className="mt-3">
+                <div className="h-1.5 bg-teal-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-brand-cyan rounded-full transition-all duration-300"
+                    style={{ width: `${(bulkProgress.done / bulkProgress.total) * 100}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-teal-600 font-bold mt-1">
+                  {bulkProgress.done}/{bulkProgress.total}개 씬 처리 중…
+                </p>
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 pb-4">
             {scenes.map((s, i) => (
               <StoryboardCard
@@ -267,6 +365,7 @@ export const Step2Script: React.FC = () => {
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
                 onSave={handleCardSave}
+                aiContext={{ topic, videoStyle }}
               />
             ))}
           </div>
