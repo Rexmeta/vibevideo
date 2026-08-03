@@ -123,6 +123,7 @@ export const Step1Setup: React.FC = () => {
       if (fields.video_mode !== undefined) setVideoMode(fields.video_mode);
       if (fields.genre !== undefined) setGenre(fields.genre);
       if (fields.platform !== undefined) setPlatform(fields.platform);
+      if (fields.creative_brief !== undefined) setCreativeBrief(fields.creative_brief);
 
       setContextPackVersion(pack.version);
       setContextPackDirty(false);

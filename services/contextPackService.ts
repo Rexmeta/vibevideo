@@ -221,6 +221,7 @@ export const applyPackToProjectFields = (
     out.quality_threshold = pack.quality_threshold;
   if (pack.genre !== undefined) out.genre = pack.genre;
   if (pack.platform !== undefined) out.platform = pack.platform;
+  if (pack.creative_brief !== undefined) out.creative_brief = pack.creative_brief;
   out.linked_context_pack_id = pack.id;
   out.context_pack_version = pack.version;
   out.context_pack_dirty = false;

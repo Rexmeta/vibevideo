@@ -71,6 +71,15 @@ export const SaveContextPackModal: React.FC<Props> = ({ onClose }) => {
       quality_threshold: w.qualityThreshold,
       genre: w.genre,
       platform: w.platform,
+      creative_brief:
+        w.creativeBrief &&
+        (w.creativeBrief.audience ||
+          w.creativeBrief.keyMessage ||
+          w.creativeBrief.purpose ||
+          w.creativeBrief.toneVoice ||
+          (w.creativeBrief.referenceUrls && w.creativeBrief.referenceUrls.length > 0))
+          ? w.creativeBrief
+          : undefined,
     }),
     [
       w.characterProfile,
@@ -89,6 +98,7 @@ export const SaveContextPackModal: React.FC<Props> = ({ onClose }) => {
       w.qualityThreshold,
       w.genre,
       w.platform,
+      w.creativeBrief,
     ]
   );
 
@@ -292,6 +302,31 @@ export const SaveContextPackModal: React.FC<Props> = ({ onClose }) => {
           )}
           {currentFields.caption_style && <p>· 캡션 스타일</p>}
           {currentFields.negative_prompt && <p>· 네거티브 프롬프트</p>}
+          {currentFields.creative_brief && (
+            <div className="mt-2 pt-2 border-t border-gray-200">
+              <p className="font-black text-[10px] uppercase tracking-wider text-indigo-400 mb-1">기획 브리핑</p>
+              {currentFields.creative_brief.audience && (
+                <p>· 타겟: {currentFields.creative_brief.audience}</p>
+              )}
+              {currentFields.creative_brief.keyMessage && (
+                <p>· 메시지: {currentFields.creative_brief.keyMessage}</p>
+              )}
+              {currentFields.creative_brief.purpose && (
+                <p>· 목적: {{
+                  awareness: '브랜드 인지',
+                  conversion: '전환/구매',
+                  education: '교육/정보',
+                  entertainment: '엔터테인먼트',
+                }[currentFields.creative_brief.purpose]}</p>
+              )}
+              {currentFields.creative_brief.toneVoice && (
+                <p>· 톤: {currentFields.creative_brief.toneVoice}</p>
+              )}
+              {currentFields.creative_brief.referenceUrls && currentFields.creative_brief.referenceUrls.length > 0 && (
+                <p>· 참고 URL {currentFields.creative_brief.referenceUrls.length}개</p>
+              )}
+            </div>
+          )}
         </div>
 
         <button

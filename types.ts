@@ -215,6 +215,8 @@ export interface ContextPack {
   quality_threshold?: number;
   genre?: GenreId;
   platform?: PlatformId;
+  /** Creative brief (audience, message, purpose, tone, reference URLs) */
+  creative_brief?: CreativeBrief;
   // Cached count of projects currently linked to this pack — updated on
   // save / when a project links or unlinks. Used to size the "이 팩을
   // 사용하는 프로젝트 N개에 영향을 줍니다" warning at edit time.
