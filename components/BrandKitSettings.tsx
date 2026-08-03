@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Icons } from './Icons';
 import { BrandKit, LogoPosition } from '../types';
 import { loadBrandKit, saveBrandKit, uploadLogo, deleteLogo, DEFAULT_BRAND_KIT } from '../services/brandKitService';
+import { drawSlideFrame } from '../services/videoMergeService';
 
 interface BrandKitSettingsProps {
   userId: string;
@@ -47,6 +48,50 @@ const ColorSwatch: React.FC<{
         }}
         className="w-20 text-center text-[10px] font-mono border border-gray-200 rounded-lg p-1 outline-none focus:border-brand-cyan"
       />
+    </div>
+  );
+};
+
+// Preview canvas dimensions — 16:9 at a compact display size
+const PREVIEW_W = 320;
+const PREVIEW_H = 180;
+
+const SlidePreviewCanvas: React.FC<{ value: NonNullable<BrandKit['introConfig']> }> = ({ value }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let cancelled = false;
+    drawSlideFrame(canvas, {
+      text: value.text,
+      subtext: value.subtext,
+      bgColor: value.bgColor,
+      durationSec: value.durationSec,
+    }).catch(() => {
+      // If draw fails, at least fill the bg colour
+      if (cancelled) return;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = value.bgColor;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [value.text, value.subtext, value.bgColor]);
+
+  return (
+    <div className="mt-2 rounded-xl overflow-hidden border border-white/10 shadow-inner">
+      <canvas
+        ref={canvasRef}
+        width={PREVIEW_W}
+        height={PREVIEW_H}
+        className="w-full block"
+        style={{ aspectRatio: '16/9' }}
+      />
+      <div className="text-center text-[9px] font-bold text-gray-400 uppercase tracking-widest py-1" style={{ background: '#f9f9f9' }}>
+        미리보기
+      </div>
     </div>
   );
 };
@@ -141,21 +186,8 @@ const IntroOutroForm: React.FC<{
               </div>
             </div>
           </div>
-          {/* Preview swatch */}
-          <div
-            className="w-full h-16 rounded-xl flex flex-col items-center justify-center gap-1 mt-1"
-            style={{ background: value.bgColor }}
-          >
-            {value.text && (
-              <span className="text-white font-black text-sm drop-shadow">{value.text}</span>
-            )}
-            {value.subtext && (
-              <span className="text-white/70 text-xs">{value.subtext}</span>
-            )}
-            {!value.text && (
-              <span className="text-white/30 text-xs italic">미리보기</span>
-            )}
-          </div>
+          {/* Canvas preview */}
+          <SlidePreviewCanvas value={value} />
         </div>
       )}
       {!enabled && (

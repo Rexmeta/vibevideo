@@ -804,23 +804,22 @@ export interface SlideClipConfig {
 }
 
 /**
- * Generate a short slide clip (solid colour background + text overlay) via canvas + FFmpeg.
- * Returns a blob URL of the resulting MP4 clip.
+ * Draw a slide frame onto an existing canvas element using the given config.
+ * This is the shared rendering helper used both by generateSlideClip (for
+ * FFmpeg encoding) and by BrandKitSettings (for the live canvas preview).
  *
- * Uses canvas to render the frame, then encodes to H.264 via FFmpeg's `-loop 1 -t N` trick.
- * This avoids dependency on FFmpeg's drawtext / fontconfig subsystems.
+ * The canvas dimensions are used as-is; callers should size the canvas to the
+ * desired output resolution before calling this function.
+ *
+ * Returns a Promise so that async background-image loading is awaited before
+ * the caller reads back the canvas pixels.
  */
-export const generateSlideClip = async (
+export const drawSlideFrame = async (
+  canvas: HTMLCanvasElement,
   config: SlideClipConfig,
-  resolution: { w: number; h: number },
-): Promise<Blob> => {
-  const { w, h } = resolution;
-  const { bgColor, text, subtext, durationSec } = config;
-
-  // ── 1. Render the frame on a canvas ──────────────────────────────────────
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
+): Promise<void> => {
+  const { w, h } = { w: canvas.width, h: canvas.height };
+  const { bgColor, text, subtext } = config;
   const ctx = canvas.getContext('2d')!;
 
   // Background colour (or background image if provided)
@@ -871,6 +870,28 @@ export const generateSlideClip = async (
     ctx.shadowBlur = 6;
     ctx.fillText(subtext, w / 2, h * 0.57);
   }
+};
+
+/**
+ * Generate a short slide clip (solid colour background + text overlay) via canvas + FFmpeg.
+ * Returns a blob URL of the resulting MP4 clip.
+ *
+ * Uses canvas to render the frame, then encodes to H.264 via FFmpeg's `-loop 1 -t N` trick.
+ * This avoids dependency on FFmpeg's drawtext / fontconfig subsystems.
+ */
+export const generateSlideClip = async (
+  config: SlideClipConfig,
+  resolution: { w: number; h: number },
+): Promise<Blob> => {
+  const { w, h } = resolution;
+  const { durationSec } = config;
+
+  // ── 1. Render the frame on a canvas ──────────────────────────────────────
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+
+  await drawSlideFrame(canvas, config);
 
   const frameBlob = await new Promise<Blob>((resolve) => {
     canvas.toBlob((b) => resolve(b!), 'image/png');
