@@ -149,6 +149,7 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     bgs: new Set(),
   });
   const [scriptCopied, setScriptCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [copiedSceneIdx, setCopiedSceneIdx] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -233,10 +234,38 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
       .map((s: YoutubeScene) => s.scriptText)
       .filter(Boolean)
       .join('\n\n');
-    navigator.clipboard.writeText(text).then(() => {
+
+    const onSuccess = () => {
+      setCopyError(null);
       setScriptCopied(true);
       setTimeout(() => setScriptCopied(false), 2000);
-    });
+    };
+
+    const onFailure = () => {
+      // Fallback: execCommand for older environments / blocked clipboard API
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) { onSuccess(); return; }
+      } catch {
+        // execCommand also failed
+      }
+      setCopyError('복사 실패 — 수동으로 선택하세요');
+      setTimeout(() => setCopyError(null), 3000);
+    };
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(onSuccess).catch(onFailure);
+    } else {
+      onFailure();
+    }
   };
 
   // ── Render helpers ──────────────────────────────────────────────────────
@@ -249,20 +278,29 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
           <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 flex items-center gap-2">
             <Icons.Film size={12} /> 씬 분석 ({a.scenes.length}개 씬)
           </h3>
-          <button
-            onClick={() => handleCopyScript(a)}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-black transition-all border ${
-              scriptCopied
-                ? 'bg-green-50 text-green-600 border-green-200'
-                : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'
-            }`}
-          >
-            {scriptCopied ? (
-              <><Icons.Check size={11} /> 복사됨 ✓</>
-            ) : (
-              <><Icons.Copy size={11} /> 스크립트 복사</>
+          <div className="flex items-center gap-2">
+            {copyError && (
+              <span className="text-[10px] font-bold text-red-500">{copyError}</span>
             )}
-          </button>
+            <button
+              onClick={() => handleCopyScript(a)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-black transition-all border ${
+                copyError
+                  ? 'bg-red-50 text-red-600 border-red-200'
+                  : scriptCopied
+                  ? 'bg-green-50 text-green-600 border-green-200'
+                  : 'bg-white text-gray-600 border-gray-200 hover:border-gray-400'
+              }`}
+            >
+              {copyError ? (
+                <><Icons.X size={11} /> 복사 실패</>
+              ) : scriptCopied ? (
+                <><Icons.Check size={11} /> 복사됨 ✓</>
+              ) : (
+                <><Icons.Copy size={11} /> 스크립트 복사</>
+              )}
+            </button>
+          </div>
         </div>
         <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
           {a.scenes.map((scene: YoutubeScene, i: number) => (
