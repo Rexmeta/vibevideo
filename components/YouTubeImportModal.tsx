@@ -152,6 +152,7 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
   const [copyError, setCopyError] = useState<string | null>(null);
   const [copiedSceneIdx, setCopiedSceneIdx] = useState<number | null>(null);
   const [copiedVisualIdx, setCopiedVisualIdx] = useState<number | null>(null);
+  const [copiedBothIdx, setCopiedBothIdx] = useState<number | null>(null);
   const [cacheEntry, setCacheEntry] = useState<CacheEntry | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -255,6 +256,16 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
     navigator.clipboard.writeText(scene.visualDescription).then(() => {
       setCopiedVisualIdx(idx);
       setTimeout(() => setCopiedVisualIdx(prev => (prev === idx ? null : prev)), 2000);
+    });
+  };
+
+  const handleCopyBoth = (scene: YoutubeScene, idx: number) => {
+    if (!scene.scriptText && !scene.visualDescription) return;
+    const parts = [scene.scriptText, scene.visualDescription].filter(Boolean);
+    const text = parts.join('\n');
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedBothIdx(idx);
+      setTimeout(() => setCopiedBothIdx(prev => (prev === idx ? null : prev)), 2000);
     });
   };
 
@@ -385,6 +396,23 @@ export const YouTubeImportModal: React.FC<YouTubeImportModalProps> = ({ onClose,
                         <><Icons.Check size={10} /> 복사됨 ✓</>
                       ) : (
                         <Icons.ImageIcon size={10} />
+                      )}
+                    </button>
+                  )}
+                  {scene.scriptText && scene.visualDescription && (
+                    <button
+                      onClick={() => handleCopyBoth(scene, i)}
+                      title="스크립트 + 시각 묘사 함께 복사"
+                      className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black transition-all border ${
+                        copiedBothIdx === i
+                          ? 'bg-green-50 text-green-600 border-green-200'
+                          : 'bg-white text-gray-400 border-gray-200 hover:text-gray-600 hover:border-gray-400'
+                      }`}
+                    >
+                      {copiedBothIdx === i ? (
+                        <><Icons.Check size={10} /> 복사됨 ✓</>
+                      ) : (
+                        <Icons.Layers size={10} />
                       )}
                     </button>
                   )}
