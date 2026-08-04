@@ -688,29 +688,33 @@ export const generateSceneAudio = async (text: string, style: string): Promise<{
 
   console.log(`[TTS] 오디오 생성 시작 - voice: ${selectedVoice}, text length: ${cleanText.length}`);
 
-  return withRetry(async () => {
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await withTimeout(
-      ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: cleanText }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } },
-        },
-      }),
-      45000,
-      '오디오 생성'
-    );
-    
-    const audioPart = response.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
-    if (!audioPart?.inlineData?.data) {
-      throw new Error('오디오 데이터가 생성되지 않았습니다.');
-    }
-    
-    const { dataUrl, duration } = await pcmToWav(audioPart.inlineData.data);
-    return { audio_path: dataUrl, duration };
-  }, 1, '오디오 생성');
+  try {
+    return await withRetry(async () => {
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: "gemini-2.5-flash-preview-tts",
+          contents: [{ parts: [{ text: cleanText }] }],
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } },
+          },
+        }),
+        45000,
+        '오디오 생성'
+      );
+
+      const audioPart = response.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
+      if (!audioPart?.inlineData?.data) {
+        throw new Error('오디오 데이터가 생성되지 않았습니다.');
+      }
+
+      const { dataUrl, duration } = await pcmToWav(audioPart.inlineData.data);
+      return { audio_path: dataUrl, duration };
+    }, 1, '오디오 생성');
+  } catch (e) {
+    throw normalizeGeminiError(e, 'generateSceneAudio');
+  }
 };
 
 const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
@@ -823,6 +827,9 @@ async function callImageModel(
     parts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
   }
   parts.push({ text: promptText });
+  // Let raw errors propagate so the outer withRetry in generateSceneImage can
+  // classify them as retryable (429/503). normalizeGeminiError is applied only
+  // at the outermost catch after all retries are exhausted.
   const response = await withTimeout(
     ai.models.generateContent({
       model: actualModel,
@@ -916,7 +923,8 @@ export const generateSceneImage = async (
 
   console.log(`[Image] 이미지 생성 시작 - requested: ${modelId || 'default'}, actual: ${actualModel}, provider: ${provider || 'Google'}, prompt: ${promptText.length}chars, refs: ${allRefParts.length} (main:${mainRefImage ? 'y' : 'n'}, named:${namedRefs.length})`);
 
-  return withRetry(async () => {
+  try {
+   return await withRetry(async () => {
     const stats: GenerationStats = { imagesGenerated: 0, criticCalls: 0, refineCalls: 0 };
     const first = await callImageModel(apiKey, actualModel, promptText, allRefParts);
     stats.imagesGenerated += 1;
@@ -977,6 +985,9 @@ export const generateSceneImage = async (
       return { base64: first.base64, mimeType: first.mimeType, qualityScore: score, stats };
     }
   }, 1, '이미지 생성');
+  } catch (e) {
+    throw normalizeGeminiError(e, 'generateSceneImage');
+  }
 };
 
 async function resizeImageForVideo(imageSource: string, maxDim: number = 768): Promise<{ imageBytes: string; mimeType: string }> {
@@ -1120,6 +1131,8 @@ export async function runVeoOperation(
       operation = await ai.models.generateVideos(payload);
     } catch (submitErr: any) {
       console.error(`[Video Gen][${label}] generateVideos() threw:`, submitErr?.message || submitErr, JSON.stringify(submitErr).slice(0, 500));
+      // Re-throw raw so withRetry in generateSceneVideo can classify 429/503 as
+      // retryable. normalizeGeminiError is applied at the outermost catch only.
       throw submitErr;
     }
     console.log(`[Video Gen][${label}] Operation received. done=${operation.done}, name=${(operation as any).name || 'N/A'}`);
@@ -1434,27 +1447,33 @@ export const generateSceneVideo = async (
     return r.videoUrl;
   };
 
-  const videoUrl = await withRetry(async () => {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    if (imageData) {
-      try {
-        return await runOnce(imageData, 'img');
-      } catch (imgErr: any) {
-        if (imgErr?.name === 'AbortError') throw imgErr;
-        if (imgErr?.name === 'VeoLongWaitError') throw imgErr;
-        const msg = String(imgErr?.message || imgErr);
-        console.warn(`[Video Gen] Image-based generation failed: ${msg}`);
-        if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
-          throw imgErr;
+  let videoUrl: string;
+  try {
+    videoUrl = await withRetry(async () => {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (imageData) {
+        try {
+          return await runOnce(imageData, 'img');
+        } catch (imgErr: any) {
+          if (imgErr?.name === 'AbortError') throw imgErr;
+          if (imgErr?.name === 'VeoLongWaitError') throw imgErr;
+          const msg = String(imgErr?.message || imgErr);
+          console.warn(`[Video Gen] Image-based generation failed: ${msg}`);
+          if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
+            throw imgErr;
+          }
+          console.log(`[Video Gen] Falling back to text-only generation...`);
+          const url = await runOnce(undefined, 'txt-fallback');
+          actualSeedSource = 'text-only';
+          return url;
         }
-        console.log(`[Video Gen] Falling back to text-only generation...`);
-        const url = await runOnce(undefined, 'txt-fallback');
-        actualSeedSource = 'text-only';
-        return url;
       }
-    }
-    return await runOnce(undefined, 'txt');
-  }, 3, '비디오 생성');
+      return await runOnce(undefined, 'txt');
+    }, 3, '비디오 생성');
+  } catch (e: any) {
+    if (e?.name === 'AbortError' || e?.name === 'VeoLongWaitError') throw e;
+    throw normalizeGeminiError(e, 'generateSceneVideo');
+  }
   return {
     videoUrl,
     seedSource: actualSeedSource,
