@@ -1056,29 +1056,54 @@ export interface BackfillTestDeps {
   ignoreDb?: boolean;
 }
 
+/** Result returned by backfillLocalProjectsToCloud. */
+export interface BackfillResult {
+  /** Number of projects whose local snapshot was pushed to the cloud. */
+  pushed: number;
+  /**
+   * Total number of scenes across all pushed projects that had ONLY local
+   * media (sentinel paths like "[local-audio]" or non-http URLs). These
+   * scenes will appear blank on other devices because the raw media bytes
+   * are not in the cloud — the user must regenerate them there.
+   */
+  localOnlySceneCount: number;
+}
+
+/**
+ * Returns true when a scene has at least one media path and ALL of its
+ * media paths are local-only (sentinel strings or non-http URLs). Such
+ * scenes will appear blank on other devices after a cloud backfill.
+ */
+export const sceneHasOnlyLocalMedia = (s: Partial<Scene>): boolean => {
+  const paths = [s.audio_path, s.image_path, s.video_path].filter(Boolean) as string[];
+  if (paths.length === 0) return false;
+  return paths.every(p => !p.startsWith('http'));
+};
+
 export const backfillLocalProjectsToCloud = async (
   userId: string,
   opts: { force?: boolean } = {},
   _testDeps?: BackfillTestDeps,
-): Promise<number> => {
+): Promise<BackfillResult> => {
   if (_testDeps?.resetGuard) {
     backfillRanForUser = null;
     backfillInFlight = false;
   }
   const getCloud = _testDeps?.getCloud ?? getProjectFromCloud;
   const save = _testDeps?.save ?? saveProjectToCloud;
-  if (!userId || (!db && !_testDeps?.ignoreDb)) return 0;
-  if (!isCloudSyncEnabled() && !_testDeps?.ignoreDb) return 0;
-  if (isFirestoreDisabled()) return 0;
-  if (backfillInFlight) return 0;
-  if (!opts.force && backfillRanForUser === userId) return 0;
+  if (!userId || (!db && !_testDeps?.ignoreDb)) return { pushed: 0, localOnlySceneCount: 0 };
+  if (!isCloudSyncEnabled() && !_testDeps?.ignoreDb) return { pushed: 0, localOnlySceneCount: 0 };
+  if (isFirestoreDisabled()) return { pushed: 0, localOnlySceneCount: 0 };
+  if (backfillInFlight) return { pushed: 0, localOnlySceneCount: 0 };
+  if (!opts.force && backfillRanForUser === userId) return { pushed: 0, localOnlySceneCount: 0 };
   backfillInFlight = true;
   let pushed = 0;
+  let localOnlySceneCount = 0;
   try {
     const localList = getLocalProjects(userId);
     if (localList.length === 0) {
       backfillRanForUser = userId;
-      return 0;
+      return { pushed: 0, localOnlySceneCount: 0 };
     }
     for (const card of localList) {
       try {
@@ -1104,6 +1129,23 @@ export const backfillLocalProjectsToCloud = async (
         const localScore = projectProgressScore(local);
         const cloudScore = projectProgressScore(cloud);
         if (localScore <= cloudScore) continue;
+
+        // Detect scenes whose media lives only in local storage (data: URLs
+        // were replaced with sentinel strings like "[local-audio]" by
+        // toLocalForm). These will appear blank on other devices because
+        // the raw bytes are never in the cloud — warn the user.
+        const localOnlyScenesForProject = (local.saved_scenes || []).filter(
+          sceneHasOnlyLocalMedia,
+        );
+        if (localOnlyScenesForProject.length > 0) {
+          console.warn(
+            `[Backfill] Project ${local.id} has ${localOnlyScenesForProject.length} scene(s) ` +
+              `with local-only media. These scenes will appear blank on other devices. ` +
+              `Please regenerate images/audio/video on each device.`,
+          );
+          localOnlySceneCount += localOnlyScenesForProject.length;
+        }
+
         // Strip placeholder paths so the cloud doc doesn't end up with
         // "[local-audio]" sentinels — those are local-only markers.
         const pushable: Project = {
@@ -1141,7 +1183,7 @@ export const backfillLocalProjectsToCloud = async (
   } finally {
     backfillInFlight = false;
   }
-  return pushed;
+  return { pushed, localOnlySceneCount };
 };
 
 export const getProjectsPage = async (

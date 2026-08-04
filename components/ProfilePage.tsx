@@ -106,6 +106,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
   const [copiedCmd, setCopiedCmd] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [syncCount, setSyncCount] = useState<number>(0);
+  const [syncLocalOnlySceneCount, setSyncLocalOnlySceneCount] = useState<number>(0);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [localProjectCount, setLocalProjectCount] = useState<number | null>(null);
 
@@ -206,8 +207,9 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
     setSyncStatus('loading');
     setSyncError(null);
     try {
-      const count = await backfillLocalProjectsToCloud(currentUser.uid, { force: true });
-      setSyncCount(count);
+      const backfillResult = await backfillLocalProjectsToCloud(currentUser.uid, { force: true });
+      setSyncCount(backfillResult.pushed);
+      setSyncLocalOnlySceneCount(backfillResult.localOnlySceneCount);
       setSyncStatus('done');
       localStorage.setItem(BACKFILL_DONE_KEY(currentUser.uid), '1');
     } catch (e: any) {
@@ -476,13 +478,23 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ currentUser, onNavigat
                           )}
 
                           {syncStatus === 'done' && (
-                            <div className="flex items-start gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
-                              <Icons.Check size={14} className="text-emerald-600 shrink-0 mt-0.5" />
-                              <p className="text-xs text-emerald-800">
-                                {syncCount > 0
-                                  ? `${syncCount}개 프로젝트가 클라우드에 동기화됐습니다.`
-                                  : '동기화할 새 프로젝트가 없습니다. 이미 최신 상태입니다.'}
-                              </p>
+                            <div className="flex flex-col gap-2">
+                              <div className="flex items-start gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                                <Icons.Check size={14} className="text-emerald-600 shrink-0 mt-0.5" />
+                                <p className="text-xs text-emerald-800">
+                                  {syncCount > 0
+                                    ? `${syncCount}개 프로젝트가 클라우드에 동기화됐습니다.`
+                                    : '동기화할 새 프로젝트가 없습니다. 이미 최신 상태입니다.'}
+                                </p>
+                              </div>
+                              {syncLocalOnlySceneCount > 0 && (
+                                <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                                  <Icons.AlertCircle size={14} className="text-amber-600 shrink-0 mt-0.5" />
+                                  <p className="text-xs text-amber-800 leading-snug">
+                                    {`${syncLocalOnlySceneCount}개 씬의 미디어(이미지·오디오·영상)가 이 기기에만 저장되어 있어 다른 기기에서는 빈 화면으로 보일 수 있습니다. 해당 씬은 다른 기기에서 다시 생성해 주세요.`}
+                                  </p>
+                                </div>
+                              )}
                             </div>
                           )}
 

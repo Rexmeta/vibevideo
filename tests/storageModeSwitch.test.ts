@@ -207,14 +207,14 @@ describe('storageService mode-switch safety', () => {
       const save = vi.fn().mockResolvedValue(undefined);
       const getCloud = vi.fn().mockResolvedValue(undefined); // nothing in cloud yet
 
-      const pushed = await backfillLocalProjectsToCloud(userId, {}, {
+      const result = await backfillLocalProjectsToCloud(userId, {}, {
         getCloud,
         save,
         ignoreDb: true,
         resetGuard: true,
       });
 
-      expect(pushed).toBe(1);
+      expect(result.pushed).toBe(1);
       expect(save).toHaveBeenCalledTimes(1);
       const [pushedProj, skipLocal] = save.mock.calls[0];
       expect(pushedProj.id).toBe(project.id);
@@ -253,14 +253,14 @@ describe('storageService mode-switch safety', () => {
       const save = vi.fn().mockResolvedValue(undefined);
       const getCloud = vi.fn().mockResolvedValue(richCloud);
 
-      const pushed = await backfillLocalProjectsToCloud(userId, {}, {
+      const result = await backfillLocalProjectsToCloud(userId, {}, {
         getCloud,
         save,
         ignoreDb: true,
         resetGuard: true,
       });
 
-      expect(pushed).toBe(0);
+      expect(result.pushed).toBe(0);
       expect(save).not.toHaveBeenCalled();
     });
   });

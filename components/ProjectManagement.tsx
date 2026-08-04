@@ -180,9 +180,15 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
           // Firestore answered cleanly. If any local-only snapshots
           // accumulated while the API was down, mirror them back up.
           backfillLocalProjectsToCloud(uid)
-            .then(n => {
-              if (n > 0) {
-                console.log(`[ProjectManagement] backfill pushed ${n} project(s) to cloud`);
+            .then(result => {
+              if (result.pushed > 0) {
+                console.log(`[ProjectManagement] backfill pushed ${result.pushed} project(s) to cloud`);
+              }
+              if (result.localOnlySceneCount > 0) {
+                console.warn(
+                  `[ProjectManagement] ${result.localOnlySceneCount} scene(s) had local-only media ` +
+                    `and will appear blank on other devices — please regenerate them there.`,
+                );
               }
             })
             .catch(err => console.warn('[ProjectManagement] backfill failed:', err?.message));
@@ -294,9 +300,12 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
         return;
       }
       showResyncToast('info', '로컬 프로젝트를 클라우드에 동기화하는 중...', 0);
-      const pushed = await backfillLocalProjectsToCloud(userId, { force: true });
-      if (pushed > 0) {
-        showResyncToast('success', `${pushed}개 프로젝트를 클라우드에 복사했습니다.`, 5000);
+      const backfillResult = await backfillLocalProjectsToCloud(userId, { force: true });
+      if (backfillResult.pushed > 0) {
+        const warningPart = backfillResult.localOnlySceneCount > 0
+          ? ` (일부 씬은 로컬 미디어만 있어 다른 기기에서 재생성이 필요합니다)`
+          : '';
+        showResyncToast('success', `${backfillResult.pushed}개 프로젝트를 클라우드에 복사했습니다.${warningPart}`, 5000);
       } else {
         showResyncToast('success', '이미 모든 프로젝트가 최신 상태입니다.', 4000);
       }
