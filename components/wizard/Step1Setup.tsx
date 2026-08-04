@@ -77,6 +77,7 @@ export const Step1Setup: React.FC = () => {
     setStyleSheet,
     setSelectedImageModel,
     setSelectedVideoModel,
+    setSelectedTextModel,
   } = w;
   const InheritedBadge = () =>
     linkedContextPack ? (
@@ -117,6 +118,8 @@ export const Step1Setup: React.FC = () => {
         setSelectedImageModel(fields.selected_image_model);
       if (fields.selected_video_model !== undefined)
         setSelectedVideoModel(fields.selected_video_model);
+      if (fields.selected_text_model !== undefined)
+        setSelectedTextModel(fields.selected_text_model);
       if (fields.use_veo_audio !== undefined) setUseVeoAudio(fields.use_veo_audio);
       if (fields.negative_prompt !== undefined) setNegativePrompt(fields.negative_prompt || '');
       if (fields.vision_critic_enabled !== undefined)

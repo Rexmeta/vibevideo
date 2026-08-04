@@ -211,6 +211,8 @@ export const applyPackToProjectFields = (
     out.selected_image_model = pack.selected_image_model;
   if (pack.selected_video_model !== undefined)
     out.selected_video_model = pack.selected_video_model;
+  if (pack.selected_text_model !== undefined)
+    out.selected_text_model = pack.selected_text_model;
   if (pack.use_veo_audio !== undefined) out.use_veo_audio = pack.use_veo_audio;
   if (pack.caption_style !== undefined) out.caption_style = pack.caption_style;
   if (pack.video_mode !== undefined) out.video_mode = pack.video_mode;

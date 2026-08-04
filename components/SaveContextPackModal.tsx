@@ -63,6 +63,7 @@ export const SaveContextPackModal: React.FC<Props> = ({ onClose }) => {
       aspect_ratio: w.aspectRatio,
       selected_image_model: w.selectedImageModel || undefined,
       selected_video_model: w.selectedVideoModel || undefined,
+      selected_text_model: w.selectedTextModel || undefined,
       use_veo_audio: w.useVeoAudio,
       caption_style: w.captionStyle,
       video_mode: w.videoMode,
@@ -90,6 +91,7 @@ export const SaveContextPackModal: React.FC<Props> = ({ onClose }) => {
       w.aspectRatio,
       w.selectedImageModel,
       w.selectedVideoModel,
+      w.selectedTextModel,
       w.useVeoAudio,
       w.captionStyle,
       w.videoMode,
@@ -294,6 +296,7 @@ export const SaveContextPackModal: React.FC<Props> = ({ onClose }) => {
           )}
           {currentFields.selected_image_model && <p>· 이미지 모델</p>}
           {currentFields.selected_video_model && <p>· 비디오 모델</p>}
+          {currentFields.selected_text_model && <p>· 텍스트 모델</p>}
           {currentFields.video_mode && (
             <p>
               · 비디오 모드:{' '}

@@ -121,12 +121,17 @@ export const Step2Script: React.FC = () => {
     selectedTextModel,
     setSelectedTextModel,
     allModels,
+    linkedContextPack,
   } = w;
 
   // Text models available for script generation
   const textModels = allModels.filter(m => m.type === 'text' && m.isActive);
   // Active text model display name
   const activeTextModel = textModels.find(m => m.modelId === selectedTextModel) || textModels[0];
+  // True when the selected text model was inherited from the linked ContextPack
+  const textModelFromPack =
+    !!linkedContextPack?.selected_text_model &&
+    linkedContextPack.selected_text_model === selectedTextModel;
 
   // State for the text model picker mini-modal
   const [showTextModelPicker, setShowTextModelPicker] = useState(false);
@@ -289,6 +294,14 @@ export const Step2Script: React.FC = () => {
               {activeTextModel?.name || selectedTextModel || 'Gemini 2.5 Flash'}
               <Icons.ChevronDown size={11} className="text-gray-400" />
             </button>
+            {textModelFromPack && (
+              <span
+                title={`팩 '${linkedContextPack!.name}'에서 상속됨`}
+                className="absolute -top-2 -right-2 inline-flex items-center gap-0.5 text-[8px] font-black px-1.5 py-0.5 rounded-full bg-brand-cyan/20 text-brand-dark uppercase tracking-wider leading-none pointer-events-none"
+              >
+                <Icons.Layers size={7} /> 팩 상속
+              </span>
+            )}
             {showTextModelPicker && (
               <div className="absolute left-0 top-full mt-1.5 z-30 bg-white border border-gray-100 rounded-2xl shadow-xl p-2 min-w-[220px]">
                 <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-2 py-1.5">텍스트 모델 선택</p>

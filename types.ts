@@ -220,6 +220,7 @@ export interface ContextPack {
   aspect_ratio?: '16:9' | '9:16' | '1:1' | '3:4';
   selected_image_model?: string;
   selected_video_model?: string;
+  selected_text_model?: string;
   use_veo_audio?: boolean;
   caption_style?: CaptionStyle;
   video_mode?: VideoMode;
