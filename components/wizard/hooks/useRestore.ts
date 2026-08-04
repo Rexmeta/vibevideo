@@ -75,6 +75,7 @@ interface RestoreDeps {
   setVideoMode: React.Dispatch<React.SetStateAction<VideoMode>>;
   setSelectedImageModel: React.Dispatch<React.SetStateAction<string>>;
   setSelectedVideoModel: React.Dispatch<React.SetStateAction<string>>;
+  setSelectedTextModel: React.Dispatch<React.SetStateAction<string>>;
   setGenre: React.Dispatch<React.SetStateAction<GenreId | undefined>>;
   setPlatform: React.Dispatch<React.SetStateAction<PlatformId | undefined>>;
   setStyleSheet: React.Dispatch<React.SetStateAction<StyleSheet | undefined>>;
@@ -137,6 +138,7 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
     setVideoMode,
     setSelectedImageModel,
     setSelectedVideoModel,
+    setSelectedTextModel,
     setGenre,
     setPlatform,
     setStyleSheet,
@@ -335,6 +337,7 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
           if (p.video_mode) setVideoMode(p.video_mode);
           if (p.selected_image_model) setSelectedImageModel(p.selected_image_model);
           if (p.selected_video_model) setSelectedVideoModel(p.selected_video_model);
+          if (p.selected_text_model) setSelectedTextModel(p.selected_text_model);
           if (p.genre) setGenre(p.genre);
           if (p.platform) setPlatform(p.platform);
           if (p.style_sheet) setStyleSheet(p.style_sheet);

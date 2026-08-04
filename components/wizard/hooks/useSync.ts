@@ -41,6 +41,7 @@ interface SyncDeps {
   duration: number;
   selectedImageModel: string;
   selectedVideoModel: string;
+  selectedTextModel: string;
   useReferenceImage: boolean;
   sceneDurationMode: 'time' | 'scenes';
   targetSceneCount: number;
@@ -87,6 +88,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
     duration,
     selectedImageModel,
     selectedVideoModel,
+    selectedTextModel,
     useReferenceImage,
     sceneDurationMode,
     targetSceneCount,
@@ -307,6 +309,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
       thumbnail: extraData.thumbnail || thumbnailRef.current,
       selected_image_model: selectedImageModel,
       selected_video_model: selectedVideoModel,
+      selected_text_model: selectedTextModel || undefined,
       character_profile: characterProfileRef.current,
       use_reference_image: useReferenceImage,
       character_reference_image: characterReferenceImageRef.current?.startsWith('http')
@@ -390,6 +393,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
           thumbnail: localProj.thumbnail,
           selected_image_model: localProj.selected_image_model,
           selected_video_model: localProj.selected_video_model,
+          selected_text_model: localProj.selected_text_model,
           saved_scenes: localProj.saved_scenes?.map(s => ({
             scene_number: s.scene_number,
             audio_path: s.audio_path,
@@ -453,6 +457,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
         thumbnail: params.extraData.thumbnail || thumbnailRef.current,
         selected_image_model: selectedImageModel,
         selected_video_model: selectedVideoModel,
+        selected_text_model: selectedTextModel || undefined,
         character_profile: characterProfileRef.current,
         use_reference_image: useReferenceImage,
         character_reference_image: characterReferenceImageRef.current?.startsWith('http')
@@ -532,6 +537,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
             thumbnail: localProj.thumbnail,
             selected_image_model: localProj.selected_image_model,
             selected_video_model: localProj.selected_video_model,
+            selected_text_model: localProj.selected_text_model,
             saved_scenes: localProj.saved_scenes?.map(s => ({
               scene_number: s.scene_number,
               audio_path: s.audio_path,
