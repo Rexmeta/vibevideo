@@ -157,6 +157,7 @@ export const Step2Script: React.FC = () => {
       const updated = await regenerateSingleRemixScene(remixSource, i, {
         characterReplacements: Object.keys(charReplacements).length > 0 ? charReplacements : undefined,
         backgroundReplacements: Object.keys(backgroundReplacements).length > 0 ? backgroundReplacements : undefined,
+        textModel: selectedTextModel || undefined,
       });
       updateSceneAt(i, {
         script_segment: updated.script_segment,
@@ -594,6 +595,7 @@ export const Step2Script: React.FC = () => {
                     Object.keys(backgroundReplacements).length > 0
                       ? backgroundReplacements
                       : undefined,
+                  textModel: selectedTextModel || undefined,
                 });
               } else {
                 s = await segmentScriptIntoScenes(

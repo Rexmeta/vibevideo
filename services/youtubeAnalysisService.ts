@@ -433,10 +433,12 @@ export async function generateRemixedScenes(
   options: {
     characterReplacements?: Record<string, string>;
     backgroundReplacements?: Record<string, string>;
+    textModel?: string;
   } = {},
 ): Promise<Partial<Scene>[]> {
   const apiKey = requireApiKey();
   const ai = new GoogleGenAI({ apiKey });
+  const model = options.textModel || 'gemini-2.5-flash';
 
   const tipsList = remixSource.selectedTips
     .map((t, i) => `${i + 1}. ${t.tip} — ${t.reasoning}`)
@@ -482,7 +484,7 @@ Output ONLY the JSON matching the schema — no prose before or after.`;
   try {
     response = await withTimeout(
       ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model,
         contents: [{ parts: [{ text: `${systemPrompt}\n\nORIGINAL SCENES:\n${scenesText}` }] }],
         config: {
           responseMimeType: 'application/json',
@@ -542,10 +544,12 @@ export async function regenerateSingleRemixScene(
   options: {
     characterReplacements?: Record<string, string>;
     backgroundReplacements?: Record<string, string>;
+    textModel?: string;
   } = {},
 ): Promise<Partial<Scene>> {
   const apiKey = requireApiKey();
   const ai = new GoogleGenAI({ apiKey });
+  const model = options.textModel || 'gemini-2.5-flash';
 
   const orig = remixSource.originalScenes[sceneIndex];
   if (!orig) throw new Error(`씬 ${sceneIndex + 1}을 찾을 수 없습니다.`);
@@ -594,7 +598,7 @@ Return ONLY the JSON matching the schema — no prose before or after.`;
   try {
     response = await withTimeout(
       ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model,
         contents: [{ parts: [{ text: `${systemPrompt}\n\nSCENE TO REWRITE:\n${sceneText}` }] }],
         config: {
           responseMimeType: 'application/json',
@@ -647,16 +651,17 @@ Return ONLY the JSON matching the schema — no prose before or after.`;
  * @returns A structured `YoutubeAnalysis` object.
  * @throws If the URL is invalid, the API key is missing, or Gemini fails.
  */
-export async function analyzeYoutubeVideo(url: string): Promise<YoutubeAnalysis> {
+export async function analyzeYoutubeVideo(url: string, textModel?: string): Promise<YoutubeAnalysis> {
   assertYoutubeUrl(url);
   const apiKey = requireApiKey();
   const ai = new GoogleGenAI({ apiKey });
+  const model = textModel || 'gemini-2.5-flash';
 
   let response: Awaited<ReturnType<typeof ai.models.generateContent>>;
   try {
     response = await withTimeout(
       ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model,
         contents: [
           {
             parts: [
