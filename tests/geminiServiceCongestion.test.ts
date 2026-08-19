@@ -8,16 +8,24 @@
  *  - generateSceneAudio: 503 → retries, then friendly Korean congestion message
  *  - generateSceneVideo: 429 → retries, then friendly Korean rate-limit message
  *  - generateSceneVideo: 503 → retries, then friendly Korean congestion message
+ *  - runVeoOperation: repeated poll 429/503 errors → friendly Korean message
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
 
-const { mockGenerateContent, mockGenerateVideos, mockGetGoogleApiKey, mockGetEffectiveApiKey } =
+const {
+  mockGenerateContent,
+  mockGenerateVideos,
+  mockGetVideosOperation,
+  mockGetGoogleApiKey,
+  mockGetEffectiveApiKey,
+} =
   vi.hoisted(() => ({
     mockGenerateContent: vi.fn(),
     mockGenerateVideos: vi.fn(),
+    mockGetVideosOperation: vi.fn(),
     mockGetGoogleApiKey: vi.fn<() => string>(),
     mockGetEffectiveApiKey: vi.fn<() => string | null>(),
   }));
@@ -31,7 +39,7 @@ vi.mock('@google/genai', () => ({
       generateVideos: mockGenerateVideos,
     },
     operations: {
-      getVideosOperation: vi.fn(),
+      getVideosOperation: mockGetVideosOperation,
     },
   })),
   Modality: { IMAGE: 'IMAGE', TEXT: 'TEXT', AUDIO: 'AUDIO' },
@@ -67,7 +75,12 @@ vi.mock('../services/promptAdapter', () => ({
 
 // ─── Services under test ──────────────────────────────────────────────────────
 
-import { generateSceneImage, generateSceneAudio, generateSceneVideo } from '../services/geminiService';
+import {
+  generateSceneImage,
+  generateSceneAudio,
+  generateSceneVideo,
+  runVeoOperation,
+} from '../services/geminiService';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -79,6 +92,17 @@ async function expectRejectedAfterTimers(p: Promise<unknown>, message: string) {
   const assertion = expect(p).rejects.toThrow(message);
   await vi.runAllTimersAsync();
   await assertion;
+}
+
+async function expectRejectedWithExactMessageAfterTimers(p: Promise<unknown>, message: string) {
+  const errorPromise = p.then(
+    () => null,
+    (error) => error,
+  );
+  await vi.runAllTimersAsync();
+  const error = await errorPromise;
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toBe(message);
 }
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
@@ -221,5 +245,41 @@ describe('generateSceneVideo — congestion errors on submit', () => {
     await vi.runAllTimersAsync();
     await assertion;
     expect(mockGenerateVideos.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('runVeoOperation — congestion errors while polling', () => {
+  it('throws a friendly Korean message after eight consecutive 429 poll errors', async () => {
+    mockGenerateVideos.mockResolvedValue({ name: 'operations/test-429', done: false });
+    mockGetVideosOperation.mockRejectedValue(new Error('429 RESOURCE_EXHAUSTED: quota exceeded'));
+
+    const p = runVeoOperation('a car chase', {
+      apiKey: 'fake-api-key',
+      validRatio: '16:9',
+    });
+    await expectRejectedWithExactMessageAfterTimers(
+      p,
+      'Gemini 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.',
+    );
+
+    expect(mockGetVideosOperation).toHaveBeenCalledTimes(8);
+  });
+
+  it('throws a friendly Korean message after eight consecutive 503 poll errors', async () => {
+    mockGenerateVideos.mockResolvedValue({ name: 'operations/test-503', done: false });
+    mockGetVideosOperation.mockRejectedValue(
+      new Error('503 Service Unavailable: The model is overloaded'),
+    );
+
+    const p = runVeoOperation('a car chase', {
+      apiKey: 'fake-api-key',
+      validRatio: '16:9',
+    });
+    await expectRejectedWithExactMessageAfterTimers(
+      p,
+      'Gemini 서버가 일시적으로 혼잡합니다. 잠시 후 다시 시도해 주세요.',
+    );
+
+    expect(mockGetVideosOperation).toHaveBeenCalledTimes(8);
   });
 });

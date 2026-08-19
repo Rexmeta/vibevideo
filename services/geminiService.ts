@@ -1185,7 +1185,10 @@ export async function runVeoOperation(
       // Tolerate up to 8 consecutive errors before bailing — the durable
       // poll budget gives plenty of room for transient backend hiccups.
       if (consecutivePollErrors >= 8) {
-        throw new Error(`폴링 중 연속 ${consecutivePollErrors}회 오류: ${msg}`);
+        throw normalizeGeminiError(
+          new Error(`폴링 중 연속 ${consecutivePollErrors}회 오류: ${msg}`),
+          'runVeoOperation',
+        );
       }
     }
   }
