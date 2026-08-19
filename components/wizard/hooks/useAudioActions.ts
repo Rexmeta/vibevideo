@@ -7,7 +7,9 @@ import {
   CONCURRENCY,
   hasMedia,
   isMediaUploaded,
+  getGenerationErrorMessage,
   runParallel,
+  summarizeGenerationErrors,
   tryUploadExisting,
 } from './wizardHelpers';
 
@@ -105,7 +107,7 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
       }
     } catch (e: any) {
       console.error(`Scene ${idx} audio retry error:`, e);
-      setFailedScenes(prev => new Map(prev).set(fKey, e?.message || '오류'));
+      setFailedScenes(prev => new Map(prev).set(fKey, getGenerationErrorMessage(e)));
     }
     setProcessingSet(new Set());
     setProcessingType(null);
@@ -164,7 +166,7 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
         // (Quick mode grid) can show failed scenes mid-batch.
         setFailedScenes(prev => {
           const n = new Map(prev);
-          if (error) n.set(`audio-${idx}`, error?.message || '오류');
+          if (error) n.set(`audio-${idx}`, getGenerationErrorMessage(error));
           else n.delete(`audio-${idx}`);
           return n;
         });
@@ -176,10 +178,14 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
     setProcessingType(null);
     setLoadingMessage('');
     sync();
-    if (errors.length > 0)
+    if (errors.length > 0) {
+      const errorDetails = summarizeGenerationErrors(errors.map(({ error }) => error));
       alert(
-        `오디오 생성 실패 (${errors.length}/${tasks.length}개 씬)\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`
+        `오디오 생성 실패 (${errors.length}/${tasks.length}개 씬)${
+          errorDetails.length > 0 ? `\n\n오류 내용:\n${errorDetails.join('\n')}` : ''
+        }\n\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`
       );
+    }
   };
 
   return { handlePlayAudio, handleSingleAudio, handleBatchAudio };

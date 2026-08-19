@@ -8,6 +8,37 @@ export const isMediaUploaded = (path?: string): boolean => !!path && path.starts
 export const hasMedia = (path?: string): boolean =>
   !!path && (path.startsWith('http') || path.startsWith('data:') || path.startsWith('blob:'));
 
+/**
+ * Preserve service-layer messages (including the friendly Gemini congestion
+ * copy) before displaying them in the wizard. Some browser and SDK errors are
+ * not Error instances, so extract their message defensively.
+ */
+export const getGenerationErrorMessage = (
+  error: unknown,
+  fallback: string = '오류'
+): string => {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
+  }
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  return fallback;
+};
+
+/**
+ * Keep a batch summary concise while retaining the actual reason users need
+ * before they decide whether to retry.
+ */
+export const summarizeGenerationErrors = (
+  errors: unknown[],
+  limit: number = 3
+): string[] => {
+  const messages = errors
+    .map(error => getGenerationErrorMessage(error, ''))
+    .filter(Boolean);
+  return Array.from(new Set(messages)).slice(0, limit);
+};
+
 export const tryUploadExisting = async (
   path: string,
   storagePath: string,

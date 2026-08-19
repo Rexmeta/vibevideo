@@ -5,9 +5,11 @@ import { uploadFileToCloud } from '../../../services/storageService';
 import { saveMedia } from '../../../services/mediaCache';
 import {
   CONCURRENCY,
+  getGenerationErrorMessage,
   hasMedia,
   isMediaUploaded,
   runParallel,
+  summarizeGenerationErrors,
   tryUploadExisting,
 } from './wizardHelpers';
 
@@ -149,7 +151,7 @@ export const useImageActions = (deps: ImageActionsDeps) => {
         // (Quick mode grid) can show failed scenes mid-batch.
         setFailedScenes(prev => {
           const n = new Map(prev);
-          if (error) n.set(`image-${idx}`, error?.message || '오류');
+          if (error) n.set(`image-${idx}`, getGenerationErrorMessage(error));
           else n.delete(`image-${idx}`);
           return n;
         });
@@ -161,10 +163,14 @@ export const useImageActions = (deps: ImageActionsDeps) => {
     setProcessingType(null);
     setLoadingMessage('');
     sync();
-    if (errors.length > 0)
+    if (errors.length > 0) {
+      const errorDetails = summarizeGenerationErrors(errors.map(({ error }) => error));
       alert(
-        `이미지 생성 실패 (${errors.length}/${tasks.length}개 씬)\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`
+        `이미지 생성 실패 (${errors.length}/${tasks.length}개 씬)${
+          errorDetails.length > 0 ? `\n\n오류 내용:\n${errorDetails.join('\n')}` : ''
+        }\n\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`
       );
+    }
   };
 
   const handleRefineImage = async (idx: number) => {
@@ -223,7 +229,7 @@ export const useImageActions = (deps: ImageActionsDeps) => {
       }
     } catch (e: any) {
       console.error(e);
-      setFailedScenes(prev => new Map(prev).set(fKey, e?.message || '오류'));
+      setFailedScenes(prev => new Map(prev).set(fKey, getGenerationErrorMessage(e)));
     }
     setProcessingSet(new Set());
     setProcessingType(null);
@@ -292,7 +298,7 @@ export const useImageActions = (deps: ImageActionsDeps) => {
       }
     } catch (e: any) {
       console.error(e);
-      setFailedScenes(prev => new Map(prev).set(fKey, e?.message || '오류'));
+      setFailedScenes(prev => new Map(prev).set(fKey, getGenerationErrorMessage(e)));
     }
     setProcessingSet(new Set());
     setProcessingType(null);

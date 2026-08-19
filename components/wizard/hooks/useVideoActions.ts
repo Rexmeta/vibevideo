@@ -4,7 +4,7 @@ import { generateSceneVideo } from '../../../services/geminiService';
 import { uploadFileToCloud } from '../../../services/storageService';
 import { saveMedia } from '../../../services/mediaCache';
 import { jobManager, JobState } from '../../../services/jobManager';
-import { isMediaUploaded, hasMedia } from './wizardHelpers';
+import { isMediaUploaded, hasMedia, summarizeGenerationErrors } from './wizardHelpers';
 
 interface VideoActionsDeps {
   userId: string;
@@ -217,8 +217,15 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
     setLoadingMessage('');
     sync();
     if (finalJob && finalJob.failed > 0) {
+      const errorDetails = summarizeGenerationErrors(
+        finalJob.scenes
+          .filter(scene => scene.status === 'failed')
+          .map(scene => scene.error)
+      );
       alert(
-        `비디오 생성 실패 (${finalJob.failed}/${finalJob.total}개 씬)\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`
+        `비디오 생성 실패 (${finalJob.failed}/${finalJob.total}개 씬)${
+          errorDetails.length > 0 ? `\n\n오류 내용:\n${errorDetails.join('\n')}` : ''
+        }\n\n실패한 씬 옆 '재시도' 버튼으로 개별 재생성할 수 있습니다.`
       );
     }
   };

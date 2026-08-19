@@ -365,6 +365,17 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode, expressMode }) => {
   const completedCount = sceneViews.filter(v => v.status === 'done').length;
   const inProgressCount = sceneViews.filter(v => v.status === 'in-progress').length;
   const failedCount = sceneViews.filter(v => v.status === 'failed').length;
+  const visibleFailureMessages = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          sceneViews
+            .map(view => view.errorMessage?.trim())
+            .filter((message): message is string => Boolean(message))
+        )
+      ).slice(0, 3),
+    [sceneViews]
+  );
   const remainingCount = Math.max(0, sceneViews.length - completedCount - failedCount);
 
   // Estimated time remaining: extrapolate from how long completed scenes took
@@ -946,6 +957,14 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode, expressMode }) => {
                         {view.status === 'failed' && (
                           <div className="absolute inset-0 bg-red-500/40 flex flex-col items-center justify-center gap-2">
                             <Icons.AlertCircle className="text-white" size={20} />
+                            {view.errorMessage && (
+                              <p
+                                className="max-w-[85%] text-center text-[9px] font-bold leading-snug text-white line-clamp-3"
+                                title={view.errorMessage}
+                              >
+                                {view.errorMessage}
+                              </p>
+                            )}
                             <button
                               onClick={() => retryScene(view.idx)}
                               disabled={processingType !== null}
@@ -1011,6 +1030,15 @@ export const QuickMode: React.FC<Props> = ({ onSwitchMode, expressMode }) => {
             <div className="max-w-xl mx-auto px-6 py-4 rounded-2xl bg-red-50 border-2 border-red-100 mb-6">
               <p className="text-sm font-bold text-red-700 mb-1">단계 {failure.step}에서 문제가 발생했습니다.</p>
               <p className="text-xs text-red-500">{failure.error}</p>
+              {visibleFailureMessages.length > 0 && (
+                <ul className="mt-3 space-y-1 text-left">
+                  {visibleFailureMessages.map(message => (
+                    <li key={message} className="text-xs font-medium text-red-700">
+                      {message}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
             <div className="flex gap-3 justify-center flex-wrap">
               <button
