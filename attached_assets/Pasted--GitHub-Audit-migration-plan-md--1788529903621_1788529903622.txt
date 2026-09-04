@@ -1,0 +1,485 @@
+네. **업데이트된 GitHub 기준으로 다시 보면, 이전 Audit보다 한 단계 더 중요한 문제가 드러났습니다.**
+
+특히 현재 `migration-plan.md`가 상당히 구체화되어 있고, 단순히 “Provider abstraction을 만들자” 수준이 아니라 **데이터 정합성 → 작업 정합성 → Provider → 서버 작업 → Billing** 순서로 가야 한다는 방향이 잡혀 있습니다.
+
+### 제가 보는 현재 상태
+
+핵심은 이겁니다.
+
+> **VibeVideo의 가장 큰 문제는 Provider abstraction이 아닙니다.
+> 먼저 “생성 작업과 프로젝트 상태의 신뢰성”을 확립해야 합니다.**
+
+현재 구조를 상용화 관점에서 보면:
+
+```text
+                 VibeVideo
+                    │
+        ┌───────────┴───────────┐
+        │                       │
+   Production UI           Background Work
+        │                       │
+ WizardContext             JobManager
+        │                       │
+        ├── Script             ├── Veo
+        ├── Scene              ├── Polling
+        ├── Image              ├── Upload
+        ├── Audio              └── Persistence
+        └── Video
+        │
+        ▼
+ ┌─────────────────────────────┐
+ │ Cloud / Local / IndexedDB   │
+ └─────────────────────────────┘
+```
+
+문제는 **이 세 축의 상태가 하나의 authoritative state machine으로 묶여 있지 않다는 것**입니다.
+
+---
+
+## 1. 가장 심각한 문제: 저장 정합성
+
+업데이트된 Audit에서 가장 중요한 발견입니다.
+
+현재:
+
+```text
+Full Project Blob
+       +
+saved_scenes_map patch
+       +
+JobManager scene patch
+       +
+UploadQueue completion patch
+```
+
+가 동시에 존재합니다.
+
+그런데 각각의 변경이 **revision으로 연결되어 있지 않습니다.**
+
+그래서 이런 문제가 가능합니다.
+
+```text
+T1  Project 전체 저장
+    scene A = old
+
+T2  사용자 scene A 수정
+    scene A = new
+
+T3  Video generation 완료
+    saved_scenes_map.A = video URL
+
+T4  다른 저장 경로에서 T1의 전체 blob 재저장
+
+T5  Reload
+    → old scene A가 다시 나타남
+```
+
+즉,
+
+> **정상적으로 동작한 것처럼 보이지만 최신 상태가 사라질 수 있습니다.**
+
+`migration-plan.md`에서 이걸 P0로 올린 판단은 정확합니다. 특히 `D2`, `D3`가 사실상 이후 모든 architecture 작업의 기반입니다.
+
+---
+
+# 2. 두 번째 핵심: Scene은 아직 Domain Object가 아니다
+
+현재 Scene은 사실상 여러 역할을 동시에 합니다.
+
+```text
+Scene
+ ├─ UI state
+ ├─ prompt
+ ├─ generation input
+ ├─ generated media reference
+ ├─ persistence DTO
+ ├─ upload state
+ ├─ video metadata
+ └─ legacy compatibility
+```
+
+그래서 앞으로 바로
+
+```text
+Scene Graph
+Character
+Asset
+GenerationJob
+```
+
+같은 domain model을 만들면 **기존 Scene을 복제한 또 하나의 거대한 타입 시스템**이 될 가능성이 높습니다.
+
+따라서 순서는 반드시:
+
+```text
+Legacy Project / Scene
+          ↓
+      Mapper
+          ↓
+Canonical Domain
+          ↓
+ Persistence DTO
+          ↓
+Legacy storage
+```
+
+가 되어야 합니다.
+
+현재 계획의 `D1`이 이 역할입니다. 이게 **실질적인 Architecture 2단계**입니다.
+
+---
+
+# 3. Provider보다 먼저 Generation Contract가 필요한 이유
+
+현재 `geminiService`를 보면 Gemini가 단순 provider client가 아닙니다.
+
+```text
+geminiService
+ ├─ API key
+ ├─ Google SDK
+ ├─ model alias
+ ├─ prompt construction
+ ├─ generation
+ ├─ retry
+ ├─ timeout
+ ├─ Veo polling
+ ├─ output normalization
+ └─ error handling
+```
+
+따라서 이것을 바로
+
+```text
+VeoProvider
+RunwayProvider
+KlingProvider
+LumaProvider
+```
+
+로 쪼개는 것은 위험합니다.
+
+먼저:
+
+```text
+GenerationCommand
+GenerationProgress
+GenerationResult
+GenerationError
+```
+
+를 정의해야 합니다.
+
+즉:
+
+```text
+UI
+ │
+ ▼
+GenerationCommand
+ │
+ ▼
+Application Layer
+ │
+ ▼
+Provider
+ │
+ ├── Gemini/Veo
+ ├── Runway
+ ├── Kling
+ └── Luma
+```
+
+이렇게 해야 합니다.
+
+현재 계획에서 `A2 → P1` 순서를 잡은 것이 맞습니다.
+
+---
+
+# 4. 그런데 제가 한 가지 우선순위를 수정하겠습니다
+
+현재 계획에는:
+
+```text
+D1
+D2
+D3
+
+P1 Provider
+
+O1 JobOrchestrator
+
+O2 Idempotency
+```
+
+라는 흐름이 있는데, **O2의 중요도를 더 앞쪽으로 끌어올리는 것을 권합니다.**
+
+왜냐하면 상용 서비스에서 가장 위험한 것은:
+
+> 영상 생성 실패
+
+가 아니라
+
+> **영상이 두 번 생성되어 사용자가 두 번 과금되는 것**
+
+이기 때문입니다.
+
+현재 구조에서는:
+
+```text
+User click
+   ↓
+enqueue
+   ↓
+Veo request
+   ↓
+browser crash
+   ↓
+retry
+   ↓
+Veo request again
+```
+
+이라는 위험을 완전히 제거하기 어렵습니다.
+
+그래서 최소한:
+
+```text
+generationIntentId
+idempotencyKey
+inputFingerprint
+providerOperationId
+```
+
+라는 개념이 필요합니다.
+
+---
+
+# 5. 따라서 실제 P0는 이렇게 보는 게 좋습니다
+
+제가 업데이트된 저장소를 기준으로 다시 우선순위를 잡는다면:
+
+| 순위       | 작업                           | 중요도 |
+| -------- | ---------------------------- | --- |
+| P0-1     | Characterization Test        | 🔴  |
+| P0-2     | Generation Contract          | 🔴  |
+| P0-3     | Domain Snapshot + Mapper     | 🔴  |
+| P0-4     | Scene Source-of-Truth        | 🔴  |
+| P0-5     | Revision / Conflict          | 🔴  |
+| **P0-6** | **Generation Idempotency**   | 🔴  |
+| **P0-7** | **Durable Generation State** | 🔴  |
+| P1-1     | Provider Ports               | 🟠  |
+| P1-2     | Gemini Adapter               | 🟠  |
+| P1-3     | Provider Capability Registry | 🟠  |
+| P1-4     | JobOrchestrator              | 🟠  |
+| P1-5     | Retry/Cancellation           | 🟠  |
+| P2       | Scene Graph                  | 🟡  |
+| P2       | Character Bible              | 🟡  |
+| P2       | AI Director                  | 🟡  |
+| P2       | Studio                       | 🟡  |
+| P3       | Backend Worker               | 🟢  |
+| P3       | Billing                      | 🟢  |
+
+여기서 **Backend 자체는 P0이지만 구현 시점은 늦출 수 있습니다.**
+
+즉,
+
+> **“Backend를 빨리 만든다”가 아니라 “Backend로 옮겨도 깨지지 않는 contract를 먼저 만든다.”**
+
+이게 핵심입니다.
+
+---
+
+# 6. 현재 VibeVideo의 가장 좋은 자산
+
+재분석하면서 오히려 확실해진 부분도 있습니다.
+
+현재 프로젝트에는 이미 상당히 좋은 **Production OS의 primitive**가 있습니다.
+
+### Job
+
+이미 `JobManager`가 존재합니다.
+
+### Recovery
+
+Veo operation을 저장하고 reload 후 resume하는 구조가 있습니다.
+
+### Asset durability
+
+IndexedDB + Firebase Storage + UploadQueue가 있습니다.
+
+### Critic
+
+Vision Critic이 있습니다.
+
+### Scene metadata
+
+이미 shot/camera/lighting/duration/beat 등의 production metadata가 존재합니다.
+
+### Project context
+
+Style Sheet, Character Profile, Context Pack 등이 있습니다.
+
+즉,
+
+```text
+                 현재 VibeVideo
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+    Production       Runtime        Context
+      Model           Engine         Model
+        │              │              │
+      Scene          JobManager    Character
+      Shot           Recovery      Style
+      Camera         Upload        Context
+      Lighting       Cache
+```
+
+**이것들을 새로 만드는 것이 아니라 canonical architecture 안으로 끌어들이는 작업**이 되어야 합니다.
+
+---
+
+# 7. 최종 목표 구조도 조금 수정하는 게 좋습니다
+
+기존에 생각했던:
+
+```text
+UI
+ ↓
+Application
+ ↓
+Provider
+```
+
+보다 저는 아래 구조를 추천합니다.
+
+```text
+┌────────────────────────────────────────────┐
+│                  UX Layer                  │
+│  Wizard / Quick / Express / Studio / API   │
+└─────────────────────┬──────────────────────┘
+                      │
+                      ▼
+┌────────────────────────────────────────────┐
+│             Application Layer              │
+│                                            │
+│ GenerateScene                              │
+│ GenerateImage                              │
+│ GenerateAudio                              │
+│ GenerateVideo                              │
+│ RestoreProject                             │
+│ ExportProject                              │
+└─────────────────────┬──────────────────────┘
+                      │
+                      ▼
+┌────────────────────────────────────────────┐
+│               Domain Layer                 │
+│                                            │
+│ Project                                    │
+│ Scene                                      │
+│ Asset                                     │
+│ Character                                 │
+│ ProductionPlan                            │
+│ GenerationIntent                          │
+│ GenerationJob                             │
+└──────────────┬─────────────────┬───────────┘
+               │                 │
+               ▼                 ▼
+       ┌──────────────┐   ┌───────────────┐
+       │ Orchestration│   │ Repository    │
+       │              │   │ Ports         │
+       │ Job lifecycle│   │ Project       │
+       │ Retry        │   │ Scene         │
+       │ Idempotency  │   │ Asset         │
+       └──────┬───────┘   └───────┬───────┘
+              │                   │
+              ▼                   ▼
+       ┌──────────────┐    ┌──────────────┐
+       │ Provider     │    │ Persistence  │
+       │ Ports        │    │ Adapters     │
+       │              │    │              │
+       │ Video        │    │ Firestore    │
+       │ Image        │    │ IndexedDB    │
+       │ Audio        │    │ Local        │
+       │ Critic       │    │ Storage      │
+       └──────┬───────┘    └──────────────┘
+              │
+       ┌──────┴────────┐
+       ▼       ▼       ▼
+     Veo    Runway    Luma...
+```
+
+이 구조가 되면 나중에 Backend Worker가 들어와도:
+
+```text
+Browser Application
+       │
+       ▼
+JobOrchestrator
+       │
+       ├── BrowserWorker
+       │
+       └── ServerWorker
+```
+
+로 교체할 수 있습니다.
+
+---
+
+# 8. 결론
+
+**업데이트된 GitHub를 다시 분석한 결과, #208 Audit 자체는 방향이 맞습니다.**
+
+다만 이제부터는 단순한 “Architecture Refactoring”이 아니라 다음 문제를 먼저 해결해야 합니다.
+
+### 가장 중요한 4개
+
+**① State correctness**
+
+```text
+Project / Scene / Revision
+```
+
+**② Generation correctness**
+
+```text
+Intent
+ → Idempotency
+ → Job
+ → Provider Operation
+ → Asset
+```
+
+**③ Persistence correctness**
+
+```text
+Cloud
+ ↕
+Local
+ ↕
+IndexedDB
+```
+
+의 source-of-truth를 명확하게 만들기.
+
+**④ Provider independence**
+
+그 다음에야:
+
+```text
+Gemini/Veo
+Runway
+Kling
+Luma
+...
+```
+
+를 붙이는 것입니다.
+
+그래서 지금은 **AI Director나 Studio UI를 개발할 타이밍이 아닙니다.**
+
+오히려 지금 단계에서 UI를 크게 바꾸면 기존의 복구/Job/Sync 문제를 새로운 UI 위에 그대로 옮겨놓게 됩니다.
+
+**다음 작업은 `A1 → A2 → D1 → D3 → D2 → O2` 정도까지를 먼저 완성하는 것이 가장 안전합니다.**
+
+그 이후 `P1 Provider`로 들어가면, 그때부터 VibeVideo가 실제로 **“AI Video Generator”에서 “AI Video Production OS”로 구조적으로 전환되기 시작합니다.**
