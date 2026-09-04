@@ -1,0 +1,1481 @@
+좋아. 현재 [Rexmeta/vibevideo](https://github.com/Rexmeta/vibevideo?utm_source=chatgpt.com)를 기준으로 보면, 단순히 UI를 조금 개선하는 수준보다 **“AI 영상 생성기 → AI Video Production OS”로 구조를 전환하는 프롬프트**가 필요해.
+
+현재 프로젝트는 이미 React/Vite 기반에 Gemini/Veo, Firebase, FFmpeg, 프로젝트 복원, Job Manager, 업로드 큐까지 들어가 있어서, 전부 갈아엎기보다는 **현재 기능을 보존하면서 상용 아키텍처로 진화시키는 방식**이 적절하다. README에도 로컬/Firestore 복원 및 백필 시나리오가 상당히 구체적으로 구현돼 있다.  또한 현재 `App.tsx`가 인증, 프로젝트, Wizard, JobManager, UploadQueue, API key 상태까지 상당히 많은 책임을 가지고 있다.
+
+아래 프롬프트를 **Replit Agent / Claude Code / Codex 등에 그대로 넣는 것을 추천**한다.
+
+---
+
+## 1. 최우선 — 전체 프로젝트 리팩토링 프롬프트
+
+이것부터 먼저 실행하는 게 좋다.
+
+# VibeVideo Commercial Architecture Refactoring
+
+Repository:
+[https://github.com/Rexmeta/vibevideo](https://github.com/Rexmeta/vibevideo)
+
+## Mission
+
+VibeVideo를 현재의 AI Video Generator prototype에서 상용화 가능한 **AI Video Production OS**로 발전시킨다.
+
+현재 기능을 제거하거나 단순화하지 않는다.
+
+기존의 다음 기능은 반드시 유지한다.
+
+* Project creation
+* Quick / Wizard mode
+* Sample project
+* Express mode
+* Scene generation
+* Image generation
+* Vision critic
+* Video generation
+* Gemini TTS
+* Veo generation
+* Project persistence
+* Firebase authentication
+* Firestore persistence
+* IndexedDB local backup
+* Upload queue
+* Veo job persistence / resume
+* Interrupted project recovery
+* FFmpeg based export
+* API key management
+
+단, 현재 UI / 상태관리 / 서비스 구조가 한 곳에 집중되어 있는 부분은 상용 서비스에 적합한 모듈 구조로 점진적으로 리팩토링한다.
+
+---
+
+# 1. Product Direction
+
+VibeVideo의 핵심 경쟁력은 "가장 좋은 비디오 모델"이 아니다.
+
+다음 Production Pipeline 자체를 제품의 핵심으로 만든다.
+
+User Brief
+→ Story
+→ Storyboard
+→ Character Bible
+→ World / Style
+→ Scene Graph
+→ Model Selection
+→ Image Generation
+→ Video Generation
+→ AI Critic
+→ Refinement
+→ Audio
+→ Timeline
+→ Final Render
+
+즉,
+
+> VibeVideo = AI Video Production OS
+
+가 되도록 설계한다.
+
+---
+
+# 2. Target Architecture
+
+현재 App.tsx 중심 구조에서 다음 구조로 점진적으로 이동한다.
+
+src/
+
+app/
+App.tsx
+routes/
+providers/
+
+core/
+types/
+errors/
+events/
+config/
+
+domain/
+project/
+story/
+character/
+scene/
+asset/
+generation/
+evaluation/
+render/
+
+services/
+projectService/
+storyService/
+characterService/
+sceneService/
+assetService/
+generationService/
+evaluationService/
+renderService/
+
+providers/
+image/
+ImageProvider.ts
+GeminiImageProvider.ts
+
+```
+video/
+  VideoProvider.ts
+  VeoProvider.ts
+  RunwayProvider.ts
+  KlingProvider.ts
+  SeedanceProvider.ts
+  LumaProvider.ts
+
+audio/
+  AudioProvider.ts
+  GeminiTTSProvider.ts
+  ElevenLabsProvider.ts
+```
+
+orchestration/
+ProductionEngine.ts
+SceneGenerationEngine.ts
+ModelRouter.ts
+AI Director.ts
+CriticEngine.ts
+JobOrchestrator.ts
+
+persistence/
+firebase/
+indexeddb/
+repositories/
+
+jobs/
+JobManager.ts
+JobQueue.ts
+JobRecovery.ts
+
+components/
+studio/
+wizard/
+storyboard/
+timeline/
+assets/
+characters/
+scenes/
+
+---
+
+# 3. Separate Domain Logic From UI
+
+App.tsx에 집중된 비즈니스 로직을 분리한다.
+
+App.tsx는 다음 역할만 담당하도록 한다.
+
+* routing/view state
+* authentication state
+* top-level layout
+* global providers
+
+다음 로직은 App.tsx에서 제거한다.
+
+* API key detection
+* job recovery
+* upload recovery
+* project persistence
+* generation orchestration
+* provider selection
+
+각각 독립적인 service 또는 orchestration layer로 이동한다.
+
+---
+
+# 4. Introduce Production Project Model
+
+Project를 단순 Wizard 상태가 아니라 Production Project로 정의한다.
+
+다음 구조를 도입한다.
+
+Project
+
+* id
+* ownerId
+* title
+* description
+* status
+* mode
+* brief
+* story
+* style
+* cast
+* world
+* scenes
+* assets
+* timeline
+* generationJobs
+* settings
+* usage
+* createdAt
+* updatedAt
+
+status:
+
+* draft
+* planning
+* generating
+* reviewing
+* editing
+* rendering
+* completed
+* failed
+
+---
+
+# 5. Introduce Project Brief
+
+모든 AI generation의 공통 context가 되는 Project Brief를 만든다.
+
+ProjectBrief
+
+* genre
+* audience
+* platform
+* duration
+* aspectRatio
+* visualStyle
+* tone
+* cameraStyle
+* pacing
+* language
+* qualityLevel
+* characterConsistency
+* negativeConstraints
+* creativeConstraints
+
+모든 AI 호출은 가능한 경우 ProjectBrief를 context로 사용한다.
+
+사용자가 매 scene마다 같은 정보를 반복 입력하지 않도록 한다.
+
+---
+
+# 6. Introduce Scene Graph
+
+현재 scene metadata를 단순한 generation input으로 사용하지 말고 production graph로 확장한다.
+
+Scene
+
+* id
+* projectId
+* sequence
+* title
+* beatRole
+* location
+* characters
+* props
+* dialogue
+* duration
+* shotType
+* camera
+* lighting
+* motion
+* transition
+* visualPrompt
+* negativePrompt
+* imageAssetId
+* videoAssetId
+* audioAssetId
+* selectedModel
+* generationStatus
+* criticResult
+* continuityConstraints
+* previousSceneId
+* nextSceneId
+
+Scene은 VibeVideo의 핵심 production unit이다.
+
+---
+
+# 7. Character Bible
+
+Character consistency를 핵심 기능으로 만든다.
+
+Character
+
+* id
+* name
+* age
+* gender
+* appearance
+* faceDescription
+* hair
+* body
+* outfit
+* personality
+* emotion
+* voice
+* referenceImages
+* identityReferences
+* motionStyle
+* consistencyRules
+
+Scene에서 캐릭터를 사용할 때 Character ID를 참조한다.
+
+가능하면 매 scene마다 character description을 새로 생성하지 말고 Character Bible에서 자동으로 context를 생성한다.
+
+---
+
+# 8. Asset Library
+
+이미지 / 비디오 / 오디오를 Project 내부 asset으로 관리한다.
+
+Asset
+
+* id
+* projectId
+* type
+* url
+* storagePath
+* mimeType
+* width
+* height
+* duration
+* source
+* provider
+* model
+* prompt
+* metadata
+* createdAt
+
+Asset source:
+
+* generated
+* uploaded
+* imported
+* derived
+
+사용자가 같은 asset을 여러 scene에서 재사용할 수 있도록 한다.
+
+---
+
+# 9. Provider Abstraction
+
+현재 Google Veo에 강하게 결합된 generation architecture를 provider-independent 구조로 변경한다.
+
+다음 interface를 정의한다.
+
+```ts
+interface VideoProvider {
+  id: string;
+
+  getCapabilities(): VideoCapabilities;
+
+  generate(
+    request: VideoGenerationRequest
+  ): Promise<VideoGenerationResult>;
+
+  getJobStatus(
+    jobId: string
+  ): Promise<GenerationJobStatus>;
+
+  cancel?(
+    jobId: string
+  ): Promise<void>;
+}
+```
+
+VideoGenerationRequest는 provider-specific parameter가 아니라 VibeVideo의 canonical format을 사용한다.
+
+예:
+
+```ts
+interface VideoGenerationRequest {
+  prompt: string;
+  negativePrompt?: string;
+
+  aspectRatio: AspectRatio;
+
+  durationSec: number;
+
+  resolution: Resolution;
+
+  seedImage?: AssetReference;
+
+  referenceImages?: AssetReference[];
+
+  firstFrame?: AssetReference;
+
+  lastFrame?: AssetReference;
+
+  characterReferences?: AssetReference[];
+
+  camera?: CameraSpec;
+
+  motion?: MotionSpec;
+
+  audio?: AudioGenerationSpec;
+
+  quality?: GenerationQuality;
+}
+```
+
+---
+
+# 10. Provider Adapter
+
+현재 Veo 코드를 직접 호출하지 말고 adapter로 감싼다.
+
+우선 구현:
+
+* Gemini / Veo
+
+향후:
+
+* Runway
+* Kling
+* Seedance
+* Luma
+
+provider 추가가 기존 scene generation 코드를 수정하지 않아도 가능해야 한다.
+
+---
+
+# 11. Model Router
+
+VibeVideo의 핵심 차별화 기능으로 Model Router를 만든다.
+
+Scene을 분석해서 적합한 모델을 선택한다.
+
+예:
+
+```text
+Talking Avatar
+→ Avatar / LipSync optimized model
+
+Cinematic Shot
+→ highest quality video model
+
+Fast Preview
+→ fast generation model
+
+Character Consistency
+→ reference capable model
+
+Camera Motion
+→ camera-control capable model
+
+Image-to-Video
+→ image-to-video optimized model
+```
+
+ModelRouter interface:
+
+```ts
+interface ModelRouter {
+  selectModel(
+    scene: Scene,
+    requirements: GenerationRequirements
+  ): ModelSelection;
+}
+```
+
+Selection 기준:
+
+* quality
+* cost
+* latency
+* duration
+* aspect ratio
+* reference support
+* character consistency
+* camera control
+* audio support
+
+---
+
+# 12. AI Director
+
+VibeVideo의 핵심 기능으로 AI Director를 구현한다.
+
+사용자가:
+
+"30초짜리 감성적인 서울 배경의 단편 영상을 만들어줘"
+
+라고 입력하면 AI Director가 자동으로:
+
+1. Project Brief 생성
+2. Story 생성
+3. Scene 분할
+4. Character 생성
+5. Location 생성
+6. Style 정의
+7. Shot 설계
+8. Model 선택
+9. Generation 실행
+10. Critic 평가
+11. 필요한 scene 재생성
+
+까지 orchestration한다.
+
+AI Director는 단순 chatbot이 아니다.
+
+Production state를 직접 변경하는 orchestration engine이어야 한다.
+
+---
+
+# 13. AI Critic
+
+Image critic을 Video Critic으로 확장한다.
+
+각 결과를 다음 기준으로 평가한다.
+
+Score 0~100:
+
+* prompt adherence
+* character consistency
+* visual quality
+* motion quality
+* camera quality
+* composition
+* temporal consistency
+* scene continuity
+* audio quality
+* artifact detection
+
+결과:
+
+```ts
+interface CriticResult {
+  score: number;
+
+  dimensions: {
+    characterConsistency: number;
+    visualQuality: number;
+    motionQuality: number;
+    promptAdherence: number;
+    continuity: number;
+    audioQuality?: number;
+  };
+
+  problems: string[];
+
+  recommendations: string[];
+
+  shouldRegenerate: boolean;
+}
+```
+
+---
+
+# 14. Automatic Refinement
+
+Generation 결과가 threshold 이하이면 자동으로 refinement한다.
+
+예:
+
+```text
+Generate
+ ↓
+Critic
+ ↓
+score < 75
+ ↓
+Analyze failure
+ ↓
+Modify prompt / model / seed
+ ↓
+Generate again
+ ↓
+Critic
+```
+
+최대 retry 횟수를 설정한다.
+
+무한 generation이 발생하지 않도록 한다.
+
+---
+
+# 15. Generation Job System
+
+현재 Veo polling / recovery 기능은 유지하되 production-grade Job abstraction으로 통합한다.
+
+Job:
+
+* id
+* projectId
+* sceneId
+* provider
+* model
+* type
+* status
+* progress
+* providerJobId
+* input
+* output
+* error
+* retryCount
+* startedAt
+* completedAt
+
+status:
+
+* queued
+* submitted
+* processing
+* completed
+* failed
+* cancelled
+
+JobManager는 UI와 분리한다.
+
+---
+
+# 16. Persistence Strategy
+
+Firebase / IndexedDB의 역할을 명확히 분리한다.
+
+Cloud:
+
+* users
+* projects
+* project metadata
+* scenes
+* characters
+* assets metadata
+* generation jobs
+* usage
+
+IndexedDB:
+
+* temporary generation state
+* local recovery snapshot
+* local media cache
+* offline state
+
+Cloud와 local snapshot 간 reconciliation layer를 만든다.
+
+기존 프로젝트 복원 / backfill 동작을 깨뜨리지 않는다.
+
+---
+
+# 17. Storage
+
+생성된 media를 local browser storage에만 의존하지 않는다.
+
+Asset Storage abstraction을 만든다.
+
+```ts
+interface AssetStorage {
+  upload(asset: UploadAsset): Promise<StoredAsset>;
+  getUrl(assetId: string): Promise<string>;
+  delete(assetId: string): Promise<void>;
+}
+```
+
+Firebase Storage를 첫 구현으로 사용한다.
+
+---
+
+# 18. Commercial Security
+
+현재 browser에서 직접 provider API key를 사용하는 구조를 production mode에서는 제거한다.
+
+Production architecture:
+
+Browser
+→ VibeVideo API
+→ Generation Orchestrator
+→ Provider API
+
+Provider secret은 server-side에만 존재해야 한다.
+
+개발 / AI Studio mode에서는 현재 API-key workflow를 유지할 수 있다.
+
+두 모드를 명확히 분리한다.
+
+---
+
+# 19. Studio UX
+
+현재 Wizard 중심 UX를 완전히 제거하지 않는다.
+
+Wizard는 Quick Start용으로 유지한다.
+
+대신 최종 Studio는 다음 구조를 갖는다.
+
+PROJECT
+
+├── Brief
+├── Story
+├── Cast
+├── World
+├── Style
+├── Storyboard
+├── Scenes
+├── Timeline
+└── Export
+
+우측에는 항상 AI Director panel을 둔다.
+
+AI Director:
+
+* Ask
+* Generate
+* Regenerate
+* Improve
+* Explain
+* Fix consistency
+* Optimize cost
+
+등의 작업을 지원한다.
+
+---
+
+# 20. Generation UX
+
+한 번의 Generate에서 가능하면 여러 variant를 지원한다.
+
+예:
+
+Generate 4 Variations
+
+→ A
+→ B
+→ C
+→ D
+
+사용자가 선택하거나 AI Critic이 추천한다.
+
+각 variant에:
+
+* Quality score
+* Cost
+* Generation time
+* Model
+* Critic result
+
+를 표시한다.
+
+---
+
+# 21. Timeline
+
+최종적으로 다음을 지원하는 Timeline Editor를 추가한다.
+
+Tracks:
+
+* Video
+* Dialogue
+* Voice
+* Music
+* SFX
+* Subtitle
+* Transition
+
+Scene 단위 editing이 가능해야 한다.
+
+FFmpeg 기반 현재 export capability를 유지하고 확장한다.
+
+---
+
+# 22. API-first Architecture
+
+향후 B2B / Enterprise를 고려하여 내부 generation 기능을 API로 노출할 수 있는 구조로 만든다.
+
+예:
+
+POST /api/projects
+
+POST /api/projects/:id/scenes
+
+POST /api/scenes/:id/generate
+
+GET /api/jobs/:id
+
+POST /api/jobs/:id/cancel
+
+POST /api/projects/:id/render
+
+GET /api/projects/:id/export
+
+POST /api/director/execute
+
+POST /api/critic/evaluate
+
+실제 backend 구현은 현재 repository 구조와 deployment 환경을 먼저 분석한 후 결정한다.
+
+---
+
+# 23. Usage / Billing Foundation
+
+모든 generation에는 usage record를 남긴다.
+
+Usage:
+
+* userId
+* projectId
+* sceneId
+* provider
+* model
+* generationType
+* inputCost
+* outputCost
+* credits
+* duration
+* timestamp
+
+향후 credit-based billing을 쉽게 추가할 수 있어야 한다.
+
+---
+
+# 24. Observability
+
+모든 generation에 correlation ID를 부여한다.
+
+로그:
+
+* projectId
+* sceneId
+* jobId
+* provider
+* model
+* latency
+* retry
+* cost
+* result
+* critic score
+
+Generation failure를 UI와 서버 로그에서 추적할 수 있어야 한다.
+
+---
+
+# 25. Testing
+
+리팩토링 과정에서 기존 기능을 깨뜨리지 않는다.
+
+반드시 테스트한다.
+
+### Unit
+
+* Project model
+* Scene model
+* Character model
+* ModelRouter
+* CriticEngine
+* JobManager
+* persistence
+* provider adapter
+
+### Integration
+
+* project creation
+* scene generation
+* job persistence
+* job resume
+* local/cloud recovery
+* asset upload
+* generation failure/retry
+
+### E2E
+
+1. Create project
+2. Generate story
+3. Generate scenes
+4. Generate images
+5. Generate video
+6. Generate audio
+7. Review
+8. Export
+
+---
+
+# 26. Refactoring Rules
+
+중요:
+
+* 기존 기능을 한 번에 삭제하지 않는다.
+* Big Bang rewrite를 하지 않는다.
+* 현재 working code를 먼저 보호한다.
+* 작은 단계로 migration한다.
+* 각 단계마다 build/test를 실행한다.
+* TypeScript type safety를 유지한다.
+* `any` 사용을 새 코드에서 최소화한다.
+* provider-specific code가 domain model에 침투하지 않도록 한다.
+* UI component에서 API 호출을 직접 하지 않도록 한다.
+* business logic을 React component에서 제거한다.
+
+---
+
+# 27. Implementation Order
+
+다음 순서대로 진행한다.
+
+### Phase 1
+
+Architecture audit
+
+* 현재 파일 구조 분석
+* dependency graph 작성
+* generation flow 분석
+* persistence flow 분석
+* state flow 분석
+* API/provider coupling 분석
+
+문서:
+
+`docs/architecture/current-state.md`
+
+---
+
+### Phase 2
+
+Canonical domain model
+
+추가:
+
+* Project
+* Scene
+* Character
+* Asset
+* GenerationJob
+* ProjectBrief
+
+문서:
+
+`docs/architecture/domain-model.md`
+
+---
+
+### Phase 3
+
+Provider abstraction
+
+추가:
+
+* VideoProvider
+* ImageProvider
+* AudioProvider
+* ModelRouter
+
+기존 Veo/Gemini 구현을 adapter로 migration한다.
+
+---
+
+### Phase 4
+
+Generation orchestration
+
+추가:
+
+* ProductionEngine
+* SceneGenerationEngine
+* JobOrchestrator
+* CriticEngine
+* AI Director
+
+---
+
+### Phase 5
+
+Asset / Character Library
+
+Character consistency와 asset reuse를 구현한다.
+
+---
+
+### Phase 6
+
+Studio UX
+
+Wizard를 유지하면서 Production Studio를 추가한다.
+
+---
+
+### Phase 7
+
+Timeline / Render
+
+FFmpeg pipeline을 Production Render Engine으로 확장한다.
+
+---
+
+### Phase 8
+
+Backend separation
+
+Provider API 호출을 server-side로 이동한다.
+
+---
+
+### Phase 9
+
+Commercial infrastructure
+
+* usage
+* credits
+* billing foundation
+* API
+* webhook
+* rate limit
+* workspace
+* team
+* analytics
+
+---
+
+# 28. Acceptance Criteria
+
+최종적으로 다음이 가능해야 한다.
+
+사용자가:
+
+"30초짜리 광고 영상을 만들어줘."
+
+라고 입력하면,
+
+VibeVideo가:
+
+1. Brief 생성
+2. Story 생성
+3. Scene 생성
+4. Character 생성
+5. Style 생성
+6. Storyboard 생성
+7. Scene별 적절한 model 선택
+8. Image generation
+9. Video generation
+10. Critic
+11. 실패 scene 자동 refinement
+12. Audio
+13. Timeline 구성
+14. Final render
+15. Export
+
+까지 하나의 production workflow로 처리할 수 있어야 한다.
+
+---
+
+# Important
+
+지금 바로 모든 것을 구현하지 말고 먼저 repository를 충분히 분석한다.
+
+특히 다음 파일과 모듈을 먼저 찾아서 현재 구조를 정확히 파악한다.
+
+* App.tsx
+* types
+* ProjectWizard
+* generation services
+* model services
+* Gemini services
+* Veo implementation
+* jobManager
+* uploadQueue
+* Firebase services
+* IndexedDB/local persistence
+* FFmpeg
+* project management
+* all API key handling
+
+그 후:
+
+1. 현재 architecture를 문서화하고
+2. target architecture를 설계하고
+3. migration plan을 작성한 다음
+4. Phase 1부터 실제 코드 변경을 시작한다.
+
+각 Phase는 독립적으로 build/test 가능한 상태로 종료한다.
+
+Do not rewrite the whole application from scratch.
+
+Preserve all existing working functionality while progressively transforming VibeVideo into a production-grade AI Video Production OS.
+
+### 이 프롬프트의 핵심
+
+이걸 한 번에 실행시키는 것보다 **Phase별로 쪼개서 실행하는 게 훨씬 좋다.**
+
+특히 Vibe Coding에서는 다음 순서가 안전하다.
+
+**① Architecture → ② Domain → ③ Provider → ④ Orchestrator → ⑤ AI Director → ⑥ Studio UX → ⑦ Backend → ⑧ Billing**
+
+---
+
+## 2. 가장 먼저 실행할 "Architecture Audit" 프롬프트
+
+첫 번째 프롬프트보다 오히려 **이걸 먼저 Agent에 넣는 것**을 추천한다.
+
+# VibeVideo Architecture Audit & Commercialization Plan
+
+Repository:
+[https://github.com/Rexmeta/vibevideo](https://github.com/Rexmeta/vibevideo)
+
+Do NOT modify application code yet.
+
+First perform a deep architecture audit of the current repository.
+
+## Analyze
+
+### 1. Repository structure
+
+Identify:
+
+* pages
+* components
+* hooks
+* services
+* utilities
+* types
+* persistence
+* Firebase
+* IndexedDB
+* FFmpeg
+* generation APIs
+* job management
+* upload queue
+* authentication
+* API key management
+
+### 2. Runtime flow
+
+Trace the actual runtime flow for:
+
+```text
+Create Project
+→ Wizard
+→ Story
+→ Scene
+→ Image
+→ Critic
+→ Video
+→ Audio
+→ Export
+```
+
+Show the actual files/functions involved.
+
+### 3. State management
+
+Identify:
+
+* React state
+* context
+* localStorage
+* IndexedDB
+* Firebase
+* server state
+* job state
+
+Create a state ownership map.
+
+### 4. Generation architecture
+
+Trace:
+
+Gemini
+Veo
+TTS
+Image generation
+Vision critic
+Video polling
+Retry
+Resume
+
+Identify all provider-specific coupling.
+
+### 5. Persistence
+
+Document:
+
+Cloud persistence
+Local persistence
+Recovery
+Backfill
+Interrupted jobs
+
+Identify duplicated or conflicting state.
+
+### 6. Security
+
+Identify:
+
+* browser-exposed API keys
+* provider secrets
+* Firebase configuration
+* production security risks
+
+Do not fix yet.
+
+### 7. Commercialization gaps
+
+Rank each issue:
+
+P0 = blocks commercialization
+
+P1 = important
+
+P2 = optimization
+
+P3 = future
+
+Evaluate:
+
+* architecture
+* scalability
+* reliability
+* provider abstraction
+* cost control
+* UX
+* observability
+* billing
+* API
+* multi-user
+* asset management
+* generation orchestration
+
+### 8. Target architecture
+
+Design a target architecture that preserves the current implementation but allows gradual migration.
+
+Use:
+
+```text
+UI
+ ↓
+Application Layer
+ ↓
+Domain Layer
+ ↓
+Orchestration
+ ↓
+Provider Adapters
+ ↓
+External AI Providers
+```
+
+### 9. Migration plan
+
+Create a sequence of small refactoring tickets.
+
+Each ticket must contain:
+
+* objective
+* affected files
+* new files
+* dependencies
+* implementation steps
+* acceptance criteria
+* regression risks
+
+Do NOT make code changes yet.
+
+## Deliverables
+
+Create:
+
+`docs/architecture/current-state.md`
+
+`docs/architecture/target-state.md`
+
+`docs/architecture/migration-plan.md`
+
+`docs/architecture/dependency-map.md`
+
+Also provide a prioritized list:
+
+P0
+P1
+P2
+P3
+
+The goal is not to redesign VibeVideo from scratch.
+
+The goal is to understand the existing implementation precisely and create the safest path from the current prototype to a commercial AI Video Production OS.
+
+---
+
+## 3. 그 다음 실행할 P0 프롬프트
+
+Audit가 끝나면 바로 이걸 실행한다.
+
+# VibeVideo P0 — Production Foundation
+
+Use the architecture audit already completed for VibeVideo.
+
+Implement only the P0 foundation.
+
+Do not redesign the UI yet.
+
+Do not add new AI providers yet.
+
+Do not implement billing yet.
+
+## Objectives
+
+### 1. Canonical domain models
+
+Create strongly typed models for:
+
+* Project
+* ProjectBrief
+* Scene
+* Character
+* Asset
+* GenerationJob
+* CriticResult
+
+Remove duplicated incompatible representations where practical.
+
+### 2. Provider interfaces
+
+Create:
+
+```ts
+VideoProvider
+ImageProvider
+AudioProvider
+```
+
+Create canonical request/result types.
+
+### 3. Veo adapter
+
+Move the existing Veo implementation behind:
+
+```ts
+VideoProvider
+```
+
+The existing Veo functionality must continue to work.
+
+Preserve:
+
+* polling
+* retry
+* resume
+* progress
+* existing operation recovery
+* error handling
+
+### 4. Generation Job abstraction
+
+Unify current job management into:
+
+```ts
+GenerationJob
+JobManager
+JobOrchestrator
+```
+
+UI components must not directly manage provider-specific job state.
+
+### 5. Persistence abstraction
+
+Create repository interfaces for:
+
+```ts
+ProjectRepository
+SceneRepository
+AssetRepository
+GenerationJobRepository
+```
+
+Keep Firebase as the current implementation.
+
+Keep IndexedDB recovery functionality.
+
+### 6. App.tsx reduction
+
+Move business logic out of App.tsx.
+
+App.tsx should primarily handle:
+
+* application routing
+* authentication
+* top-level layout
+
+Move:
+
+* API key logic
+* job recovery
+* upload recovery
+* generation orchestration
+
+into dedicated services.
+
+### 7. Regression protection
+
+Before and after the refactor run:
+
+```bash
+npm test
+npm run build
+```
+
+Add tests for:
+
+* project persistence
+* job recovery
+* provider adapter
+* Veo operation resume
+* local/cloud restoration
+
+## Acceptance criteria
+
+Existing workflows must still work:
+
+* Sample project
+* Express mode
+* Quick mode
+* Wizard mode
+* Image generation
+* Vision critic
+* Veo video generation
+* TTS
+* Firebase persistence
+* IndexedDB recovery
+* interrupted job recovery
+* FFmpeg export
+
+Do not implement speculative features.
+
+Focus entirely on creating a clean production foundation without breaking current functionality.
+
+---
+
+### 내가 보는 VibeVideo의 우선순위
+
+현재 코드 상태를 보면 **UI를 먼저 뜯어고치는 것은 추천하지 않아.** 이미 Wizard, 프로젝트 복원, Job recovery 같은 기능이 들어가 있기 때문에 먼저 내부 구조를 안정화하는 게 맞다. 현재 `package.json`도 React/Vite + Firebase + Google GenAI + FFmpeg + Vitest 기반으로 비교적 단순한 스택이라, 지금이 구조를 정리하기 좋은 시점이다.
+
+내가 우선순위를 매기면:
+
+| 우선     | 작업                                   |       중요도 |
+| ------ | ------------------------------------ | --------: |
+| **P0** | Domain Model 정리                      |     ★★★★★ |
+| **P0** | Provider Abstraction                 |     ★★★★★ |
+| **P0** | Job/Generation Engine 분리             |     ★★★★★ |
+| **P0** | App.tsx 책임 분리                        |     ★★★★★ |
+| **P0** | Firebase/IDB Persistence abstraction |     ★★★★★ |
+| **P1** | Scene Graph                          |     ★★★★★ |
+| **P1** | Character Bible                      |     ★★★★★ |
+| **P1** | Asset Library                        |     ★★★★☆ |
+| **P1** | Model Router                         |     ★★★★★ |
+| **P1** | AI Director                          | **★★★★★** |
+| **P1** | Video Critic                         |     ★★★★★ |
+| **P2** | Production Studio UX                 |     ★★★★★ |
+| **P2** | Timeline                             |     ★★★★☆ |
+| **P2** | Multi-model generation               |     ★★★★★ |
+| **P3** | Backend/API                          |     ★★★★★ |
+| **P3** | Usage/Credit/Billing                 |     ★★★★☆ |
+| **P3** | Enterprise/Team                      |     ★★★★☆ |
+
+특히 **AI Director + Model Router + Critic**이 VibeVideo의 장기적인 핵심이다.
+
+단순히
+
+> "프롬프트 → 영상"
+
+을 잘 만드는 서비스는 모델 회사들과 경쟁해야 한다.
+
+반면
+
+> **"아이디어 → 기획 → 스토리 → 캐릭터 → 씬 → 모델 선택 → 생성 → 평가 → 수정 → 편집 → 완성본"**
+
+을 자동화하면 VibeVideo가 **모델 위에 올라가는 Production Orchestration Layer**가 된다.
+
+그리고 이것은 우리가 전에 이야기했던 **ContentX → VibeVideo → RoleplayX → MatrAIx** 구조와도 상당히 잘 맞는다. ContentX가 *무슨 이야기를 만들 것인가*, MatrAIx가 *누가 등장하는가*, VibeVideo가 *그것을 어떻게 시각화하는가*, RoleplayX가 *그 캐릭터와 어떻게 상호작용하는가*를 담당하는 구조로 확장할 수 있다.
+
+**다음 단계에서는 이 프롬프트를 실제 GitHub의 현재 파일 구조에 맞춰 `P0 → P1 → P2` 각각을 바로 복사해서 Replit/Claude Code에 넣을 수 있는 **10~15개의 세부 구현 프롬프트**로 쪼개는 것이 가장 효율적이다.**
