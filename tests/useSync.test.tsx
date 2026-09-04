@@ -101,7 +101,13 @@ describe('useSync immediate local backup', () => {
     // Non-http media paths must be replaced by sentinels in the local copy.
     expect(stored.saved_scenes[0].image_path).toBe('[local-image]');
     expect(stored.saved_scenes[1].image_path).toBe('https://cdn/img2');
-    // visual_prompt is stripped from localStorage to keep size small.
+    // OBSERVED LEGACY CONTRACT: localStorage is a compact emergency index,
+    // not the complete semantic recovery source. This assertion documents the
+    // current format without approving it as the desired durability policy.
     expect(stored.saved_scenes[0].visual_prompt).toBeUndefined();
   });
+
+  it.todo(
+    'DESIRED POLICY: at least one durable local recovery source preserves prompts, scripts, metadata and ordering while binary media stays in IndexedDB',
+  );
 });
