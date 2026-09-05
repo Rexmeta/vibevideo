@@ -18,6 +18,7 @@ import {
   type UploadEvent,
 } from './uploadQueue';
 import {
+  createAssetGenerationIntent,
   createGenerationIntent,
   type GenerationIntent,
 } from './generationIntent';
@@ -26,6 +27,7 @@ import {
   syncGenerationJobFromRuntime,
   type GenerationJob,
 } from './generationJob';
+import { normalizeGenerationError } from './generationContract';
 
 export type { JobSceneState, JobState } from './jobManager';
 export type { UploadEntry, UploadEvent } from './uploadQueue';
@@ -97,6 +99,24 @@ export interface VideoGenerationSubmitOptions {
   explicitRegeneration?: boolean;
 }
 
+export interface AssetGenerationCommand<T> {
+  id: GenerationCommandId;
+  projectId: string;
+  sceneId?: string;
+  sceneIndex: number;
+  capability: 'image' | 'audio';
+  provider: string;
+  model: string;
+  input: unknown;
+  execute: () => Promise<T>;
+}
+
+export interface AssetGenerationSubmission<T> {
+  generationJob: GenerationJob;
+  value?: T;
+  reused: boolean;
+}
+
 /**
  * Runtime-neutral application port for long-running generation work.
  * Browser polling, upload replay and operation persistence stay behind this
@@ -109,6 +129,18 @@ export interface JobOrchestrator {
     command: VideoJobCommand,
     options?: VideoGenerationSubmitOptions,
   ): Promise<VideoGenerationSubmission>;
+  submitAssetGeneration<T>(
+    command: AssetGenerationCommand<T>,
+    options?: VideoGenerationSubmitOptions,
+  ): Promise<AssetGenerationSubmission<T>>;
+  acknowledgeAssetPersistence(jobId: string): void;
+  isLatestAssetGeneration(jobId: string): boolean;
+  canPersistAssetGeneration(input: {
+    jobId: string;
+    projectId: string;
+    sceneIndex: number;
+    capability: 'image' | 'audio';
+  }): boolean;
   generationSnapshot(): GenerationJob[];
   getGenerationJob(jobId: string): GenerationJob | undefined;
   findGenerationJob(projectId: string, sceneIndex: number): GenerationJob | undefined;
@@ -154,6 +186,9 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
   private generationJobsByKey = new Map<string, GenerationJob>();
   private generationJobsById = new Map<string, GenerationJob>();
   private inFlightByKey = new Map<string, Promise<VideoGenerationSubmission>>();
+  private assetInFlightByKey = new Map<string, Promise<AssetGenerationSubmission<unknown>>>();
+  private assetResultByJobId = new Map<string, unknown>();
+  private latestAssetJobByScope = new Map<string, string>();
   private recoveredJobsByScene = new Map<string, GenerationJob>();
   private runtimeSnapshotsById = new Map<GenerationCommandId, JobState>();
   private domainSyncUnsubscribe: (() => void) | null = null;
@@ -245,6 +280,135 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
       }
     });
     return promise;
+  }
+
+  submitAssetGeneration<T>(
+    command: AssetGenerationCommand<T>,
+    options: VideoGenerationSubmitOptions = {},
+  ): Promise<AssetGenerationSubmission<T>> {
+    const intent = createAssetGenerationIntent({
+      projectId: command.projectId,
+      sceneId: command.sceneId,
+      sceneIndex: command.sceneIndex,
+      capability: command.capability,
+      provider: command.provider,
+      model: command.model,
+      input: command.input,
+      explicitRegeneration: options.explicitRegeneration,
+    });
+    const inFlight = this.assetInFlightByKey.get(intent.idempotencyKey);
+    if (inFlight) {
+      return (inFlight as Promise<AssetGenerationSubmission<T>>)
+        .then(submission => ({ ...submission, reused: true }));
+    }
+
+    const existing = this.generationJobsByKey.get(intent.idempotencyKey);
+    if (existing?.status === 'completed') {
+      return Promise.resolve({
+        generationJob: existing,
+        value: this.assetResultByJobId.get(existing.jobId) as T,
+        reused: true,
+      });
+    }
+    if (existing && !(existing.status === 'failed' && existing.error?.retryable === true)) {
+      const error = existing.error || {
+        code: 'UNKNOWN',
+        message: '이미 처리된 생성 요청입니다.',
+        retryable: false,
+      };
+      return Promise.reject(Object.assign(new Error(error.message), error));
+    }
+
+    const generationJob = existing
+      ? {
+          ...existing,
+          commandId: command.id,
+          status: 'queued' as const,
+          attempts: existing.attempts + 1,
+          error: undefined,
+          failedAt: undefined,
+        }
+      : createGenerationJob(intent, command.id, command.sceneIndex);
+    this.generationJobsByKey.set(intent.idempotencyKey, generationJob);
+    this.generationJobsById.set(generationJob.jobId, generationJob);
+    this.latestAssetJobByScope.set(
+      this.assetScopeKey(command.projectId, command.sceneIndex, command.capability),
+      generationJob.jobId,
+    );
+
+    const promise = (async (): Promise<AssetGenerationSubmission<T>> => {
+      const running = { ...generationJob, status: 'running' as const, startedAt: Date.now() };
+      this.generationJobsByKey.set(intent.idempotencyKey, running);
+      this.generationJobsById.set(running.jobId, running);
+      try {
+        const value = await command.execute();
+        const completed = { ...running, status: 'completed' as const, completedAt: Date.now() };
+        this.generationJobsByKey.set(intent.idempotencyKey, completed);
+        this.generationJobsById.set(completed.jobId, completed);
+        this.assetResultByJobId.set(completed.jobId, value);
+        this.pruneRetainedState();
+        return { generationJob: completed, value, reused: false };
+      } catch (cause) {
+        const error = normalizeGenerationError(cause, {
+          provider: command.provider,
+          operation: command.id,
+        });
+        const failed = {
+          ...running,
+          status: 'failed' as const,
+          error,
+          failedAt: Date.now(),
+        };
+        this.generationJobsByKey.set(intent.idempotencyKey, failed);
+        this.generationJobsById.set(failed.jobId, failed);
+        throw cause;
+      } finally {
+        if (this.assetInFlightByKey.get(intent.idempotencyKey) === promise) {
+          this.assetInFlightByKey.delete(intent.idempotencyKey);
+        }
+      }
+    })();
+    this.assetInFlightByKey.set(
+      intent.idempotencyKey,
+      promise as Promise<AssetGenerationSubmission<unknown>>,
+    );
+    return promise;
+  }
+
+  acknowledgeAssetPersistence(jobId: string): void {
+    this.assetResultByJobId.delete(jobId);
+  }
+
+  isLatestAssetGeneration(jobId: string): boolean {
+    const job = this.generationJobsById.get(jobId);
+    if (!job) return false;
+    if (job.capability === 'video') return false;
+    return this.canPersistAssetGeneration({
+      jobId,
+      projectId: job.projectId,
+      sceneIndex: job.sceneIndex,
+      capability: job.capability,
+    });
+  }
+
+  canPersistAssetGeneration(input: {
+    jobId: string;
+    projectId: string;
+    sceneIndex: number;
+    capability: 'image' | 'audio';
+  }): boolean {
+    const latestJobId = this.latestAssetJobByScope.get(
+      this.assetScopeKey(input.projectId, input.sceneIndex, input.capability),
+    );
+    return !latestJobId || latestJobId === input.jobId;
+  }
+
+  private assetScopeKey(
+    projectId: string,
+    sceneIndex: number,
+    capability: 'image' | 'audio',
+  ): string {
+    return `${projectId}:${sceneIndex}:${capability}`;
   }
 
   generationSnapshot(): GenerationJob[] {
@@ -438,6 +602,13 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
         BrowserJobOrchestrator.MAX_RETAINED_GENERATION_JOBS;
       for (const job of removable.slice(0, removeCount)) {
         this.generationJobsById.delete(job.jobId);
+        this.assetResultByJobId.delete(job.jobId);
+        if (job.capability !== 'video') {
+          const scopeKey = this.assetScopeKey(job.projectId, job.sceneIndex, job.capability);
+          if (this.latestAssetJobByScope.get(scopeKey) === job.jobId) {
+            this.latestAssetJobByScope.delete(scopeKey);
+          }
+        }
         if (this.generationJobsByKey.get(job.idempotencyKey)?.jobId === job.jobId) {
           this.generationJobsByKey.delete(job.idempotencyKey);
         }

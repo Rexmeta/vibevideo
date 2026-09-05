@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createAssetGenerationFingerprint,
+  createAssetGenerationIntent,
   createGenerationIntent,
   createVideoGenerationFingerprint,
   stableSerialize,
@@ -118,6 +120,79 @@ describe('video generation intent identity', () => {
   it('serializes object keys deterministically', () => {
     expect(stableSerialize({ b: 2, a: { d: 4, c: 3 } })).toBe(
       stableSerialize({ a: { c: 3, d: 4 }, b: 2 }),
+    );
+  });
+});
+
+describe('image and audio generation intent identity', () => {
+  it('creates stable fingerprints for equivalent image and audio inputs', () => {
+    const image = {
+      projectId: 'project-1',
+      sceneId: 'scene-1',
+      sceneIndex: 0,
+      capability: 'image' as const,
+      provider: 'Google',
+      model: 'imagen',
+      input: { prompt: 'cat', options: { referenceImage: 'https://cdn.test/ref?token=a' } },
+    };
+    expect(createAssetGenerationFingerprint(image)).toBe(
+      createAssetGenerationFingerprint({
+        ...image,
+        input: { options: { referenceImage: 'https://cdn.test/ref?token=b' }, prompt: 'cat' },
+      }),
+    );
+
+    const audio = {
+      ...image,
+      capability: 'audio' as const,
+      model: 'default-audio',
+      input: { text: 'hello', style: 'warm' },
+    };
+    expect(createAssetGenerationIntent(audio).idempotencyKey).toBe(
+      createAssetGenerationIntent({ ...audio, input: { style: 'warm', text: 'hello' } }).idempotencyKey,
+    );
+  });
+
+  it('gives explicit image regeneration a new intent and key', () => {
+    const input = {
+      projectId: 'project-1',
+      sceneIndex: 0,
+      capability: 'image' as const,
+      provider: 'Google',
+      model: 'imagen',
+      input: { prompt: 'cat' },
+    };
+    const original = createAssetGenerationIntent(input);
+    const regenerated = createAssetGenerationIntent({ ...input, explicitRegeneration: true });
+    expect(regenerated.intentId).not.toBe(original.intentId);
+    expect(regenerated.idempotencyKey).not.toBe(original.idempotencyKey);
+  });
+
+  it('ignores generated image output when identifying an image request', () => {
+    const input = {
+      projectId: 'project-1',
+      sceneIndex: 0,
+      capability: 'image' as const,
+      provider: 'Google',
+      model: 'imagen',
+      input: {
+        prompt: 'cat',
+        options: { scene: { visual_prompt: 'cat', image_path: undefined } },
+      },
+    };
+    expect(createAssetGenerationFingerprint(input)).toBe(
+      createAssetGenerationFingerprint({
+        ...input,
+        input: {
+          prompt: 'cat',
+          options: {
+            scene: {
+              visual_prompt: 'cat',
+              image_path: 'https://cdn.test/generated.jpg?token=temporary',
+            },
+          },
+        },
+      }),
     );
   });
 });

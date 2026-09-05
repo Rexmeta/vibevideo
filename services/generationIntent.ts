@@ -16,11 +16,24 @@ export interface VideoGenerationIntentInput {
   explicitRegeneration?: boolean;
 }
 
+export type GenerationIntentCapability = 'video' | 'image' | 'audio';
+
+export interface AssetGenerationIntentInput {
+  projectId: string;
+  sceneId?: string;
+  sceneIndex: number;
+  capability: 'image' | 'audio';
+  provider: string;
+  model: string;
+  input: unknown;
+  explicitRegeneration?: boolean;
+}
+
 export interface GenerationIntent {
   intentId: string;
   projectId: string;
   sceneId?: string;
-  capability: 'video';
+  capability: GenerationIntentCapability;
   provider: string;
   model: string;
   inputHash: string;
@@ -34,8 +47,10 @@ let regenerationSequence = 0;
 
 const transientKeys = new Set([
   'audio_path',
+  'audioGenerationJobId',
   'captionWords',
   'generationError',
+  'imageGenerationJobId',
   'pollAttempts',
   'progress',
   'qualityNotes',
@@ -63,21 +78,29 @@ const normalizeUrl = (value: string): string => {
   }
 };
 
-const canonicalize = (value: unknown, key?: string): unknown => {
-  if (value === undefined || typeof value === 'function' || transientKeys.has(key || '')) {
+const canonicalize = (
+  value: unknown,
+  key?: string,
+  excludedKeys: ReadonlySet<string> = transientKeys,
+): unknown => {
+  if (value === undefined || typeof value === 'function' || excludedKeys.has(key || '')) {
     return undefined;
   }
   if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value === 'string') return normalizeUrl(value);
   if (Array.isArray(value)) {
     return value
-      .map(item => canonicalize(item))
+      .map(item => canonicalize(item, undefined, excludedKeys))
       .filter(item => item !== undefined);
   }
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const entryKey of Object.keys(value as Record<string, unknown>).sort()) {
-      const normalized = canonicalize((value as Record<string, unknown>)[entryKey], entryKey);
+      const normalized = canonicalize(
+        (value as Record<string, unknown>)[entryKey],
+        entryKey,
+        excludedKeys,
+      );
       if (normalized !== undefined) out[entryKey] = normalized;
     }
     return out;
@@ -157,6 +180,53 @@ export const createGenerationIntent = (
     projectId: input.projectId,
     sceneId: input.sceneId,
     capability: 'video',
+    provider: input.provider,
+    model: input.model,
+    inputHash,
+    idempotencyKey,
+    explicitRegeneration: input.explicitRegeneration === true,
+    createdAt: Date.now(),
+  };
+};
+
+export const createAssetGenerationFingerprint = (
+  input: AssetGenerationIntentInput,
+): string => {
+  const outputKeys = new Set(transientKeys);
+  outputKeys.add('image_path');
+  return stableHash(JSON.stringify(canonicalize({
+    projectId: input.projectId,
+    sceneId: input.sceneId,
+    sceneIndex: input.sceneIndex,
+    capability: input.capability,
+    provider: input.provider,
+    model: input.model,
+    input: input.input,
+  }, undefined, outputKeys)));
+};
+
+export const createAssetGenerationIntent = (
+  input: AssetGenerationIntentInput,
+): GenerationIntent => {
+  const inputHash = createAssetGenerationFingerprint(input);
+  const regenerationRevision = input.explicitRegeneration
+    ? `regenerate-${++regenerationSequence}`
+    : 'initial';
+  const idempotencyKey = stableHash(stableSerialize({
+    projectId: input.projectId,
+    sceneId: input.sceneId,
+    sceneIndex: input.sceneIndex,
+    capability: input.capability,
+    provider: input.provider,
+    model: input.model,
+    inputHash,
+    regenerationRevision,
+  }));
+  return {
+    intentId: `intent-${input.capability}-${++intentSequence}`,
+    projectId: input.projectId,
+    sceneId: input.sceneId,
+    capability: input.capability,
     provider: input.provider,
     model: input.model,
     inputHash,

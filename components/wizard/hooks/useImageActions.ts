@@ -4,6 +4,8 @@ import { runImageGeneration } from '../../../services/generationCommands';
 import { throwGenerationFailure } from '../../../services/generationContract';
 import { uploadFileToCloud } from '../../../services/storageService';
 import { saveMedia } from '../../../services/mediaCache';
+import { jobOrchestrator } from '../../../services/jobOrchestrator';
+import { createGenerationCommand } from '../../../services/generationContract';
 import {
   CONCURRENCY,
   getGenerationErrorMessage,
@@ -74,6 +76,85 @@ export const useImageActions = (deps: ImageActionsDeps) => {
     sync,
   } = deps;
 
+  const generateImage = async (
+    idx: number,
+    scene: Partial<Scene>,
+    extraHint?: string,
+    explicitRegeneration = false,
+  ) => {
+    const imgModel = allModels.find(m => m.id === selectedImageModel);
+    const input = {
+      prompt: scene.visual_prompt!,
+      style: videoStyle,
+      aspectRatio,
+      model: imgModel,
+      characterProfile: characterProfile || undefined,
+      options: {
+        scene,
+        styleSheet,
+        negativePrompt: negativePrompt || scene.negativePrompt,
+        visionCritic: visionCriticEnabled,
+        qualityThreshold,
+        extraHint,
+        referenceImage: characterReferenceImage,
+        referenceImages: referenceImagesForScene(scene),
+      },
+    };
+    const command = createGenerationCommand('image', input, {
+      provider: imgModel?.provider || 'Google',
+      modelId: imgModel?.modelId,
+    });
+    const submission = await jobOrchestrator.submitAssetGeneration({
+      id: command.id,
+      projectId,
+      sceneId: scene.id,
+      sceneIndex: idx,
+      capability: 'image',
+      provider: command.provider || 'Google',
+      model: command.modelId || selectedImageModel || 'default-image',
+      input,
+      execute: () => runImageGeneration(input).then(throwGenerationFailure),
+    }, { explicitRegeneration });
+    const result = submission.value;
+    if (!submission.reused && result) {
+      try {
+        if (!jobOrchestrator.canPersistAssetGeneration({
+          jobId: submission.generationJob.jobId,
+          projectId,
+          sceneIndex: idx,
+          capability: 'image',
+        })) return;
+        addStats(result.stats);
+        const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
+        updateSceneAt(idx, {
+          image_path: previewUrl,
+          imageGenerationJobId: submission.generationJob.jobId,
+          qualityScore: result.qualityScore,
+        });
+        const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
+        const url = await uploadFileToCloud(
+          `users/${userId}/projects/${projectId}/images/s${idx}-${submission.generationJob.jobId}.${ext}`,
+          result.base64,
+          'base64',
+        );
+        if (!jobOrchestrator.canPersistAssetGeneration({
+          jobId: submission.generationJob.jobId,
+          projectId,
+          sceneIndex: idx,
+          capability: 'image',
+        })) return;
+        saveMedia(projectId, idx, 'image', previewUrl);
+        updateSceneAt(idx, {
+          image_path: url,
+          imageGenerationJobId: submission.generationJob.jobId,
+        });
+        if (idx === 0) setThumbnail(url);
+      } finally {
+        jobOrchestrator.acknowledgeAssetPersistence(submission.generationJob.jobId);
+      }
+    }
+  };
+
   const handleBatchImages = async () => {
     setProcessingType('image');
     const sceneSnapshot = [...scenes];
@@ -85,46 +166,25 @@ export const useImageActions = (deps: ImageActionsDeps) => {
         idx,
         fn: async () => {
           if (hasMedia(s.image_path)) {
+            const generationJobId = s.imageGenerationJobId;
             const url = await tryUploadExisting(
               s.image_path!,
-              `users/${userId}/projects/${projectId}/images/s${idx}.jpg`,
+              `users/${userId}/projects/${projectId}/images/s${idx}${
+                generationJobId ? `-${generationJobId}` : ''
+              }.jpg`,
               'base64'
             );
-            updateSceneAt(idx, { image_path: url });
+            if (generationJobId && !jobOrchestrator.canPersistAssetGeneration({
+              jobId: generationJobId,
+              projectId,
+              sceneIndex: idx,
+              capability: 'image',
+            })) return;
+            updateSceneAt(idx, { image_path: url, imageGenerationJobId: generationJobId });
             if (idx === 0 && url.startsWith('http')) setThumbnail(url);
             return;
           }
-          const imgModel = allModels.find(m => m.id === selectedImageModel);
-          const result = throwGenerationFailure(await runImageGeneration({
-            prompt: s.visual_prompt!,
-            style: videoStyle,
-            aspectRatio,
-            model: imgModel,
-            characterProfile: characterProfile || undefined,
-            options: {
-              scene: s,
-              styleSheet,
-              negativePrompt: negativePrompt || s.negativePrompt,
-              visionCritic: visionCriticEnabled,
-              qualityThreshold,
-              referenceImage: characterReferenceImage,
-              referenceImages: referenceImagesForScene(s),
-            },
-          }));
-          if (result) {
-            addStats(result.stats);
-            const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
-            updateSceneAt(idx, { image_path: previewUrl, qualityScore: result.qualityScore });
-            saveMedia(projectId, idx, 'image', previewUrl);
-            const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
-            const url = await uploadFileToCloud(
-              `users/${userId}/projects/${projectId}/images/s${idx}.${ext}`,
-              result.base64,
-              'base64'
-            );
-            updateSceneAt(idx, { image_path: url });
-            if (idx === 0) setThumbnail(url);
-          }
+          await generateImage(idx, s);
         },
       }));
 
@@ -188,44 +248,13 @@ export const useImageActions = (deps: ImageActionsDeps) => {
     setProcessingSet(new Set([idx]));
     const fKey = `image-${idx}`;
     try {
-      const imgModel = allModels.find(m => m.id === selectedImageModel);
-      const result = throwGenerationFailure(await runImageGeneration({
-        prompt: currentScene.visual_prompt!,
-        style: videoStyle,
-        aspectRatio,
-        model: imgModel,
-        characterProfile: characterProfile || undefined,
-        options: {
-          scene: currentScene,
-          styleSheet,
-          negativePrompt: negativePrompt || currentScene.negativePrompt,
-          visionCritic: visionCriticEnabled,
-          qualityThreshold,
-          extraHint: hint,
-          referenceImage: characterReferenceImage,
-          referenceImages: referenceImagesForScene(currentScene),
-        },
-      }));
-      if (result) {
-        addStats(result.stats);
-        const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
-        updateSceneAt(idx, { image_path: previewUrl, qualityScore: result.qualityScore });
-        saveMedia(projectId, idx, 'image', previewUrl);
-        const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
-        const url = await uploadFileToCloud(
-          `users/${userId}/projects/${projectId}/images/s${idx}.${ext}`,
-          result.base64,
-          'base64'
-        );
-        updateSceneAt(idx, { image_path: url });
-        if (idx === 0) setThumbnail(url);
-        setFailedScenes(prev => {
-          const n = new Map(prev);
-          n.delete(fKey);
-          return n;
-        });
-        sync();
-      }
+      await generateImage(idx, currentScene, hint, true);
+      setFailedScenes(prev => {
+        const n = new Map(prev);
+        n.delete(fKey);
+        return n;
+      });
+      sync();
     } catch (e: any) {
       console.error(e);
       setFailedScenes(prev => new Map(prev).set(fKey, getGenerationErrorMessage(e)));
@@ -241,12 +270,21 @@ export const useImageActions = (deps: ImageActionsDeps) => {
     const fKey = `image-${idx}`;
     try {
       if (hasMedia(currentScene.image_path) && !isMediaUploaded(currentScene.image_path)) {
+        const generationJobId = currentScene.imageGenerationJobId;
         const url = await tryUploadExisting(
           currentScene.image_path!,
-          `users/${userId}/projects/${projectId}/images/s${idx}.jpg`,
+          `users/${userId}/projects/${projectId}/images/s${idx}${
+            generationJobId ? `-${generationJobId}` : ''
+          }.jpg`,
           'base64'
         );
-        updateSceneAt(idx, { image_path: url });
+        if (generationJobId && !jobOrchestrator.canPersistAssetGeneration({
+          jobId: generationJobId,
+          projectId,
+          sceneIndex: idx,
+          capability: 'image',
+        })) return;
+        updateSceneAt(idx, { image_path: url, imageGenerationJobId: generationJobId });
         if (idx === 0) setThumbnail(url);
         setFailedScenes(prev => {
           const n = new Map(prev);
@@ -257,43 +295,18 @@ export const useImageActions = (deps: ImageActionsDeps) => {
         setProcessingType(null);
         return;
       }
-      const imgModel = allModels.find(m => m.id === selectedImageModel);
-      const result = throwGenerationFailure(await runImageGeneration({
-        prompt: currentScene.visual_prompt!,
-        style: videoStyle,
-        aspectRatio,
-        model: imgModel,
-        characterProfile: characterProfile || undefined,
-        options: {
-          scene: currentScene,
-          styleSheet,
-          negativePrompt: negativePrompt || currentScene.negativePrompt,
-          visionCritic: visionCriticEnabled,
-          qualityThreshold,
-          referenceImage: characterReferenceImage,
-          referenceImages: referenceImagesForScene(currentScene),
-        },
-      }));
-      if (result) {
-        addStats(result.stats);
-        const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
-        updateSceneAt(idx, { image_path: previewUrl, qualityScore: result.qualityScore });
-        saveMedia(projectId, idx, 'image', previewUrl);
-        const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
-        const url = await uploadFileToCloud(
-          `users/${userId}/projects/${projectId}/images/s${idx}.${ext}`,
-          result.base64,
-          'base64'
-        );
-        updateSceneAt(idx, { image_path: url });
-        if (idx === 0) setThumbnail(url);
-        setFailedScenes(prev => {
-          const n = new Map(prev);
-          n.delete(fKey);
-          return n;
-        });
-        sync();
-      }
+      await generateImage(
+        idx,
+        currentScene,
+        undefined,
+        isMediaUploaded(currentScene.image_path),
+      );
+      setFailedScenes(prev => {
+        const n = new Map(prev);
+        n.delete(fKey);
+        return n;
+      });
+      sync();
     } catch (e: any) {
       console.error(e);
       setFailedScenes(prev => new Map(prev).set(fKey, getGenerationErrorMessage(e)));

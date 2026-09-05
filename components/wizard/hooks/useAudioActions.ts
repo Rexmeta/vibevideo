@@ -4,6 +4,8 @@ import { runAudioGeneration } from '../../../services/generationCommands';
 import { throwGenerationFailure } from '../../../services/generationContract';
 import { uploadFileToCloud } from '../../../services/storageService';
 import { saveMedia } from '../../../services/mediaCache';
+import { jobOrchestrator } from '../../../services/jobOrchestrator';
+import { createGenerationCommand } from '../../../services/generationContract';
 import {
   CONCURRENCY,
   hasMedia,
@@ -54,6 +56,60 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
     sync,
   } = deps;
 
+  const generateAudio = async (
+    idx: number,
+    scene: Partial<Scene>,
+    explicitRegeneration = false,
+  ) => {
+    const input = { text: scene.script_segment!, style: videoStyle };
+    const command = createGenerationCommand('audio', input, { provider: 'Google' });
+    const submission = await jobOrchestrator.submitAssetGeneration({
+      id: command.id,
+      projectId,
+      sceneId: scene.id,
+      sceneIndex: idx,
+      capability: 'audio',
+      provider: command.provider || 'Google',
+      model: command.modelId || 'default-audio',
+      input,
+      execute: () => runAudioGeneration(input).then(throwGenerationFailure),
+    }, { explicitRegeneration });
+    const res = submission.value;
+    if (!submission.reused && res) {
+      try {
+        if (!jobOrchestrator.canPersistAssetGeneration({
+          jobId: submission.generationJob.jobId,
+          projectId,
+          sceneIndex: idx,
+          capability: 'audio',
+        })) return;
+        saveMedia(projectId, idx, 'audio', res.audio_path);
+        updateSceneAt(idx, {
+          audio_path: res.audio_path,
+          audio_duration: res.duration,
+          audioGenerationJobId: submission.generationJob.jobId,
+        });
+        const url = await uploadFileToCloud(
+          `users/${userId}/projects/${projectId}/audio/s${idx}-${submission.generationJob.jobId}.wav`,
+          res.audio_path,
+          'base64',
+        );
+        if (!jobOrchestrator.canPersistAssetGeneration({
+          jobId: submission.generationJob.jobId,
+          projectId,
+          sceneIndex: idx,
+          capability: 'audio',
+        })) return;
+        updateSceneAt(idx, {
+          audio_path: url,
+          audioGenerationJobId: submission.generationJob.jobId,
+        });
+      } finally {
+        jobOrchestrator.acknowledgeAssetPersistence(submission.generationJob.jobId);
+      }
+    }
+  };
+
   const handlePlayAudio = (url: string, idx: number) => {
     if (playingAudioIdx === idx) {
       audioRef.current?.pause();
@@ -74,12 +130,21 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
     try {
       const currentScene = scenes[idx];
       if (hasMedia(currentScene.audio_path) && !isMediaUploaded(currentScene.audio_path)) {
+        const generationJobId = currentScene.audioGenerationJobId;
         const url = await tryUploadExisting(
           currentScene.audio_path!,
-          `users/${userId}/projects/${projectId}/audio/s${idx}.wav`,
+          `users/${userId}/projects/${projectId}/audio/s${idx}${
+            generationJobId ? `-${generationJobId}` : ''
+          }.wav`,
           'base64'
         );
-        updateSceneAt(idx, { audio_path: url });
+        if (generationJobId && !jobOrchestrator.canPersistAssetGeneration({
+          jobId: generationJobId,
+          projectId,
+          sceneIndex: idx,
+          capability: 'audio',
+        })) return;
+        updateSceneAt(idx, { audio_path: url, audioGenerationJobId: generationJobId });
         setFailedScenes(prev => {
           const n = new Map(prev);
           n.delete(fKey);
@@ -89,23 +154,17 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
         setProcessingType(null);
         return;
       }
-      const res = throwGenerationFailure(await runAudioGeneration({ text: currentScene.script_segment!, style: videoStyle }));
-      if (res) {
-        updateSceneAt(idx, { audio_path: res.audio_path, audio_duration: res.duration });
-        saveMedia(projectId, idx, 'audio', res.audio_path);
-        const url = await uploadFileToCloud(
-          `users/${userId}/projects/${projectId}/audio/s${idx}.wav`,
-          res.audio_path,
-          'base64'
-        );
-        updateSceneAt(idx, { audio_path: url });
-        setFailedScenes(prev => {
-          const n = new Map(prev);
-          n.delete(fKey);
-          return n;
-        });
-        sync();
-      }
+      await generateAudio(
+        idx,
+        currentScene,
+        isMediaUploaded(currentScene.audio_path),
+      );
+      setFailedScenes(prev => {
+        const n = new Map(prev);
+        n.delete(fKey);
+        return n;
+      });
+      sync();
     } catch (e: any) {
       console.error(`Scene ${idx} audio retry error:`, e);
       setFailedScenes(prev => new Map(prev).set(fKey, getGenerationErrorMessage(e)));
@@ -125,25 +184,24 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
         idx,
         fn: async () => {
           if (hasMedia(s.audio_path)) {
+            const generationJobId = s.audioGenerationJobId;
             const url = await tryUploadExisting(
               s.audio_path!,
-              `users/${userId}/projects/${projectId}/audio/s${idx}.wav`,
+              `users/${userId}/projects/${projectId}/audio/s${idx}${
+                generationJobId ? `-${generationJobId}` : ''
+              }.wav`,
               'base64'
             );
-            updateSceneAt(idx, { audio_path: url });
+            if (generationJobId && !jobOrchestrator.canPersistAssetGeneration({
+              jobId: generationJobId,
+              projectId,
+              sceneIndex: idx,
+              capability: 'audio',
+            })) return;
+            updateSceneAt(idx, { audio_path: url, audioGenerationJobId: generationJobId });
             return;
           }
-          const res = throwGenerationFailure(await runAudioGeneration({ text: s.script_segment!, style: videoStyle }));
-          if (res) {
-            updateSceneAt(idx, { audio_path: res.audio_path, audio_duration: res.duration });
-            saveMedia(projectId, idx, 'audio', res.audio_path);
-            const url = await uploadFileToCloud(
-              `users/${userId}/projects/${projectId}/audio/s${idx}.wav`,
-              res.audio_path,
-              'base64'
-            );
-            updateSceneAt(idx, { audio_path: url });
-          }
+          await generateAudio(idx, s);
         },
       }));
 

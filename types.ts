@@ -334,7 +334,9 @@ export interface Scene {
   start_time?: number;
   end_time?: number;
   image_path?: string;
+  imageGenerationJobId?: string;
   audio_path?: string;
+  audioGenerationJobId?: string;
   audio_duration?: number;
   video_path?: string;
   audio_script?: string;

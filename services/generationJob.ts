@@ -20,7 +20,7 @@ export interface GenerationJob {
   projectId: string;
   sceneId?: string;
   sceneIndex: number;
-  capability: 'video';
+  capability: GenerationIntent['capability'];
   provider: string;
   model: string;
   status: GenerationJobStatus;
@@ -43,21 +43,19 @@ export interface GenerationJob {
   runtimeJobId?: string;
 }
 
-let jobSequence = 0;
-
 export const createGenerationJob = (
   intent: GenerationIntent,
   commandId: string,
   sceneIndex: number,
 ): GenerationJob => ({
-  jobId: `generation-job-${++jobSequence}`,
+  jobId: `generation-job-${crypto.randomUUID()}`,
   intentId: intent.intentId,
   idempotencyKey: intent.idempotencyKey,
   commandId,
   projectId: intent.projectId,
   sceneId: intent.sceneId,
   sceneIndex,
-  capability: 'video',
+  capability: intent.capability,
   provider: intent.provider,
   model: intent.model,
   status: 'queued',

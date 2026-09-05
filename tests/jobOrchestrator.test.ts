@@ -73,6 +73,127 @@ describe('browser job orchestrator lifecycle', () => {
     mocks.loadInterruptedFromProjects.mockResolvedValue(undefined);
   });
 
+  it.each(['image', 'audio'] as const)(
+    'deduplicates concurrent and completed %s submissions',
+    async capability => {
+      const orchestrator = new BrowserJobOrchestrator();
+      let resolve!: (value: string) => void;
+      const provider = vi.fn(() => new Promise<string>(done => { resolve = done; }));
+      const command = {
+        id: `${capability}-1`,
+        projectId: 'project-1',
+        sceneId: 'scene-1',
+        sceneIndex: 0,
+        capability,
+        provider: 'Google',
+        model: `default-${capability}`,
+        input: { prompt: 'same input' },
+        execute: provider,
+      };
+      const firstPromise = orchestrator.submitAssetGeneration(command);
+      const duplicatePromise = orchestrator.submitAssetGeneration({ ...command, id: `${capability}-2` });
+      expect(provider).toHaveBeenCalledOnce();
+      resolve('asset');
+      const [first, duplicate] = await Promise.all([firstPromise, duplicatePromise]);
+      expect(duplicate.reused).toBe(true);
+      orchestrator.acknowledgeAssetPersistence(first.generationJob.jobId);
+      const completed = await orchestrator.submitAssetGeneration({ ...command, id: `${capability}-3` });
+
+      expect(duplicate.generationJob.jobId).toBe(first.generationJob.jobId);
+      expect(completed.generationJob.jobId).toBe(first.generationJob.jobId);
+      expect(completed).toMatchObject({ reused: true });
+      expect(completed.value).toBeUndefined();
+      expect(provider).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('retries a transient image failure in the same job and regenerates into a new job', async () => {
+    const orchestrator = new BrowserJobOrchestrator();
+    const transient = Object.assign(new Error('503 unavailable'), {
+      code: 'PROVIDER_TRANSIENT',
+      retryable: true,
+    });
+    const provider = vi.fn()
+      .mockRejectedValueOnce(transient)
+      .mockResolvedValueOnce('retry-result')
+      .mockResolvedValueOnce('regenerated-result');
+    const command = {
+      id: 'image-attempt-1',
+      projectId: 'project-1',
+      sceneIndex: 0,
+      capability: 'image' as const,
+      provider: 'Google',
+      model: 'imagen',
+      input: { prompt: 'cat' },
+      execute: provider,
+    };
+
+    await expect(orchestrator.submitAssetGeneration(command)).rejects.toThrow();
+    const retried = await orchestrator.submitAssetGeneration({ ...command, id: 'image-attempt-2' });
+    const regenerated = await orchestrator.submitAssetGeneration(
+      { ...command, id: 'image-regenerate' },
+      { explicitRegeneration: true },
+    );
+
+    expect(retried.generationJob.attempts).toBe(2);
+    expect(regenerated.generationJob.jobId).not.toBe(retried.generationJob.jobId);
+    expect(provider).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps explicit regeneration authoritative when the original finishes later', async () => {
+    const orchestrator = new BrowserJobOrchestrator();
+    let finishOriginal!: (value: string) => void;
+    let finishRegeneration!: (value: string) => void;
+    const command = {
+      id: 'image-original',
+      projectId: 'project-1',
+      sceneIndex: 0,
+      capability: 'image' as const,
+      provider: 'Google',
+      model: 'imagen',
+      input: { prompt: 'cat' },
+      execute: () => new Promise<string>(resolve => { finishOriginal = resolve; }),
+    };
+    const originalPromise = orchestrator.submitAssetGeneration(command);
+    const regeneratedPromise = orchestrator.submitAssetGeneration({
+      ...command,
+      id: 'image-regenerated',
+      execute: () => new Promise<string>(resolve => { finishRegeneration = resolve; }),
+    }, { explicitRegeneration: true });
+
+    finishRegeneration('new');
+    const regenerated = await regeneratedPromise;
+    finishOriginal('old');
+    const original = await originalPromise;
+
+    expect(orchestrator.isLatestAssetGeneration(regenerated.generationJob.jobId)).toBe(true);
+    expect(orchestrator.isLatestAssetGeneration(original.generationJob.jobId)).toBe(false);
+  });
+
+  it('rejects an unknown persisted upload job after a newer scoped generation starts', async () => {
+    const orchestrator = new BrowserJobOrchestrator();
+    const persisted = {
+      jobId: 'generation-job-from-prior-session',
+      projectId: 'project-1',
+      sceneIndex: 0,
+      capability: 'audio' as const,
+    };
+    expect(orchestrator.canPersistAssetGeneration(persisted)).toBe(true);
+
+    await orchestrator.submitAssetGeneration({
+      id: 'new-audio-generation',
+      projectId: persisted.projectId,
+      sceneIndex: persisted.sceneIndex,
+      capability: persisted.capability,
+      provider: 'Google',
+      model: 'default-audio',
+      input: { text: 'new audio' },
+      execute: async () => 'new',
+    }, { explicitRegeneration: true });
+
+    expect(orchestrator.canPersistAssetGeneration(persisted)).toBe(false);
+  });
+
   it('routes equivalent single and batch commands through one browser lifecycle', () => {
     const orchestrator = new BrowserJobOrchestrator();
     const singleInput = { ...input, onlyIndices: [0] };
