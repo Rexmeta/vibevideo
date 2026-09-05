@@ -24,6 +24,7 @@ import { isCloudSyncEnabled } from '../../../services/cloudSyncSettings';
 import { deleteField } from 'firebase/firestore';
 import { saveProjectMeta } from '../../../services/mediaCache';
 import type { WizardMode } from '../ModeGate';
+import { normalizeLegacyProject } from '../../../services/projectSnapshotMapper';
 
 export type SyncFn = (
   targetStep?: number,
@@ -290,7 +291,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
     const currentStep = targetStep || stepRef.current;
     const currentScenes = (scenesOverride || scenesRef.current) as Scene[];
     const currentMaxStep = overrides.maxStep ?? Math.max(maxStepRef.current, currentStep);
-    return {
+    return normalizeLegacyProject({
       id: projectId,
       user_id: userId,
       title: overrides.topic || topicRef.current || '새 비디오 프로젝트',
@@ -344,7 +345,7 @@ export const useSync = (deps: SyncDeps): SyncFn => {
           ? backgroundReplacementsRef.current
           : undefined,
       ...extraData,
-    } as Project;
+    } as Project);
   };
 
   // Strip in-memory media payloads from a project so it fits in

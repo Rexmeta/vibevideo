@@ -27,6 +27,7 @@ import {
 import { migrateSceneFields } from '../../../services/geminiService';
 import { DEFAULT_CAPTION_STYLE } from '../../../services/captionService';
 import { isSampleProjectId } from '../../../services/sampleProject';
+import { normalizeLegacyProject } from '../../../services/projectSnapshotMapper';
 
 export type RestoreSourceStatus = 'pending' | 'ok' | 'empty' | 'timeout' | 'error';
 
@@ -224,7 +225,7 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
           const localData = localStorage.getItem(`vibe_video_backup_${idToLoad}`);
           if (localData) {
             try {
-              localProject = JSON.parse(localData);
+              localProject = normalizeLegacyProject(JSON.parse(localData));
               localStatus = 'ok';
             } catch {
               localStatus = 'error';
@@ -239,7 +240,7 @@ export const useRestore = (deps: RestoreDeps): UseRestoreReturn => {
         try {
           const idbData = await getProjectMeta(idToLoad);
           if (idbData) {
-            idbProject = idbData;
+            idbProject = normalizeLegacyProject(idbData);
             idbStatus = 'ok';
           } else {
             idbStatus = 'empty';

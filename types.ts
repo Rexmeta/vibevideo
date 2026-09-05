@@ -130,6 +130,26 @@ export interface Project {
   chapters?: Chapter[];
 }
 
+/**
+ * Canonical in-memory boundary for persisted projects.
+ *
+ * Persistence still uses the legacy `Project` DTO.  The mapper owns the
+ * translation so domain code can rely on an ordered scene array with stable
+ * identity without changing the Firestore representation.
+ */
+export interface ProjectSnapshot {
+  schemaVersion: 1;
+  project: Omit<Project, 'saved_scenes'>;
+  scenes: SceneSnapshot[];
+  /** Preserves merge semantics of legacy omitted/null/array scene fields. */
+  sceneCollectionState: 'omitted' | 'null' | 'array';
+}
+
+export interface SceneSnapshot extends Scene {
+  /** Stable zero-based position in the project snapshot. */
+  order: number;
+}
+
 // Auto-derived grouping of consecutive scenes into ~60-90s "parts".
 // Persisted on the project so Step 7 can show "Part 3/8 렌더 중" without
 // re-deriving on every render. Source of truth is scene durations; the

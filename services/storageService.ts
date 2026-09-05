@@ -31,6 +31,7 @@ import {
   QueryDocumentSnapshot
 } from "firebase/firestore";
 import { GenerationRun, Project, ProjectStatus, Scene } from "../types";
+import { normalizeLegacyProject, snapshotToLegacyProject, legacyProjectToSnapshot } from "./projectSnapshotMapper";
 
 const PROJECTS_COLLECTION = 'projects';
 const PAGE_SIZE = 20;
@@ -522,6 +523,7 @@ const fetchScenesBlob = async (url: string): Promise<Partial<Scene>[] | null> =>
 
 export const saveProjectToCloud = async (project: Project, skipLocalSave: boolean = false): Promise<void> => {
   if (!project.id) return;
+  project = snapshotToLegacyProject(legacyProjectToSnapshot(project));
   
   if (!skipLocalSave) {
     try {
@@ -837,7 +839,7 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
           }
           localStorage.setItem(`vibe_video_backup_${id}`, JSON.stringify(lightProject)); 
         } catch(e) {}
-        return project;
+        return normalizeLegacyProject(project);
       }
     } catch (error: any) {
       console.warn("[Database] 클라우드 조회 실패, 로컬 데이터 사용:", error?.message);
@@ -847,7 +849,7 @@ export const getProjectFromCloud = async (id: string): Promise<Project | undefin
   const local = localStorage.getItem(`vibe_video_backup_${id}`) || localStorage.getItem(`vibe_video_backup_emergency_${id}`);
   if (local) {
     console.log("[Database] 로컬 백업에서 프로젝트 복원:", id);
-    try { return JSON.parse(local); } catch {}
+    try { return normalizeLegacyProject(JSON.parse(local)); } catch {}
   }
   
   return undefined;
