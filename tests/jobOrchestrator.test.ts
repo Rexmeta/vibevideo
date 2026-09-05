@@ -151,6 +151,47 @@ describe('browser job orchestrator lifecycle', () => {
     expect(mocks.loadInterruptedFromProjects).toHaveBeenCalledOnce();
   });
 
+  it('reports safe per-stage failures and retries only the failed stage', async () => {
+    mocks.autoResumePendingOperations.mockRejectedValueOnce(new Error('private backend detail'));
+    const orchestrator = new BrowserJobOrchestrator();
+    const states: any[] = [];
+    orchestrator.subscribeRecovery('user-1', state => states.push(state));
+
+    await orchestrator.recover('user-1', true);
+    expect(states.at(-1)?.failures).toEqual([expect.objectContaining({
+      stage: 'operations',
+      message: '진행 중이던 생성 작업을 다시 연결하지 못했습니다.',
+      retrying: false,
+    })]);
+
+    await orchestrator.retryRecovery('user-1', 'operations');
+    expect(mocks.resumeAll).toHaveBeenCalledOnce();
+    expect(mocks.autoResumePendingOperations).toHaveBeenCalledTimes(2);
+    expect(mocks.loadInterruptedFromProjects).toHaveBeenCalledOnce();
+    expect(states.at(-1)).toBeNull();
+  });
+
+  it('deduplicates retry clicks and clears stale failures when recovery is reset', async () => {
+    mocks.resumeAll.mockRejectedValueOnce(new Error('offline'));
+    const orchestrator = new BrowserJobOrchestrator();
+    const observed = vi.fn();
+    orchestrator.subscribeRecovery('user-1', observed);
+    await orchestrator.recover('user-1', true);
+
+    let release!: () => void;
+    mocks.resumeAll.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const first = orchestrator.retryRecovery('user-1', 'uploads');
+    const repeated = orchestrator.retryRecovery('user-1', 'uploads');
+    expect(repeated).toBe(first);
+    expect(mocks.resumeAll).toHaveBeenCalledTimes(2);
+
+    orchestrator.resetRecovery('user-1');
+    expect(observed).toHaveBeenLastCalledWith(null);
+    release();
+    await first;
+    expect(observed).toHaveBeenLastCalledWith(null);
+  });
+
   it('removes its terminal listener exactly once and does not deliver stale progress', async () => {
     const orchestrator = new BrowserJobOrchestrator();
     const observed = vi.fn();

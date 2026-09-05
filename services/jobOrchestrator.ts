@@ -66,6 +66,17 @@ export interface LongWaitCommand {
 }
 
 export type JobTerminalStatus = 'completed' | 'failed' | 'cancelled' | 'long-wait';
+export type RecoveryStage = 'uploads' | 'operations' | 'interrupted';
+export interface RecoveryFailure {
+  stage: RecoveryStage;
+  message: string;
+  retrying: boolean;
+}
+export interface RecoveryState {
+  userId: string;
+  failures: RecoveryFailure[];
+}
+export type RecoveryListener = (state: RecoveryState | null) => void;
 
 /**
  * Runtime-neutral application port for long-running generation work.
@@ -88,6 +99,8 @@ export interface JobOrchestrator {
   cancel(commandId: GenerationCommandId): void;
   pause(commandId: GenerationCommandId): void;
   recover(userId: string, cloudSyncEnabled: boolean): Promise<void>;
+  subscribeRecovery(userId: string, listener: RecoveryListener): () => void;
+  retryRecovery(userId: string, stage: RecoveryStage): Promise<void>;
   resetRecovery(userId?: string): void;
   continueLongWait(command: LongWaitCommand): Promise<GenerationCommandId | null>;
   abandonLongWait(projectId: string, sceneIdx: number): Promise<void>;
@@ -107,6 +120,9 @@ const terminalStatuses = new Set<JobState['status']>([
 export class BrowserJobOrchestrator implements JobOrchestrator {
   private recoveryByUser = new Map<string, { epoch: number; promise: Promise<void> }>();
   private recoveryEpochByUser = new Map<string, number>();
+  private recoveryFailures = new Map<string, Map<RecoveryStage, RecoveryFailure>>();
+  private recoveryListeners = new Map<string, Set<RecoveryListener>>();
+  private retryByUserStage = new Map<string, Promise<void>>();
 
   submit(command: VideoJobCommand): GenerationCommandId {
     const onlyIndices = command.input.onlyIndices;
@@ -211,15 +227,49 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
     return recovery;
   }
 
+  subscribeRecovery(userId: string, listener: RecoveryListener): () => void {
+    const listeners = this.recoveryListeners.get(userId) || new Set<RecoveryListener>();
+    listeners.add(listener);
+    this.recoveryListeners.set(userId, listeners);
+    listener(this.getRecoveryState(userId));
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.recoveryListeners.delete(userId);
+    };
+  }
+
+  retryRecovery(userId: string, stage: RecoveryStage): Promise<void> {
+    const failure = this.recoveryFailures.get(userId)?.get(stage);
+    if (!failure) return Promise.resolve();
+    const key = `${userId}:${stage}`;
+    const existing = this.retryByUserStage.get(key);
+    if (existing) return existing;
+    const epoch = this.recoveryEpochByUser.get(userId) || 0;
+    this.setRecoveryFailure(userId, stage, { ...failure, retrying: true }, epoch);
+    const retry = this.runRecoveryStage(userId, stage, epoch)
+      .finally(() => this.retryByUserStage.delete(key));
+    this.retryByUserStage.set(key, retry);
+    return retry;
+  }
+
   resetRecovery(userId?: string): void {
     const invalidate = (id: string) => {
       this.recoveryEpochByUser.set(id, (this.recoveryEpochByUser.get(id) || 0) + 1);
     };
     if (userId) {
       invalidate(userId);
+      this.clearRecoveryState(userId);
       return;
     }
-    for (const id of this.recoveryByUser.keys()) invalidate(id);
+    const ids = new Set([
+      ...this.recoveryByUser.keys(),
+      ...this.recoveryFailures.keys(),
+      ...this.recoveryListeners.keys(),
+    ]);
+    for (const id of ids) {
+      invalidate(id);
+      this.clearRecoveryState(id);
+    }
   }
 
   private isRecoveryCurrent(userId: string, epoch: number): boolean {
@@ -231,25 +281,67 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
     cloudSyncEnabled: boolean,
     epoch: number,
   ): Promise<void> {
-    try {
-      await uploadQueue.resumeAll();
-    } catch (error) {
-      console.warn('[JobOrchestrator] upload replay failed:', error);
-    }
+    this.recoveryFailures.delete(userId);
+    this.emitRecovery(userId);
+    await this.runRecoveryStage(userId, 'uploads', epoch);
     if (!this.isRecoveryCurrent(userId, epoch)) return;
     if (cloudSyncEnabled) {
-      try {
-        await jobManager.autoResumePendingOperations(userId);
-      } catch (error) {
-        console.warn('[JobOrchestrator] operation resume failed:', error);
-      }
+      await this.runRecoveryStage(userId, 'operations', epoch);
     }
     if (!this.isRecoveryCurrent(userId, epoch)) return;
+    await this.runRecoveryStage(userId, 'interrupted', epoch);
+  }
+
+  private async runRecoveryStage(userId: string, stage: RecoveryStage, epoch: number): Promise<void> {
     try {
-      await jobManager.loadInterruptedFromProjects(userId);
+      if (stage === 'uploads') await uploadQueue.resumeAll();
+      else if (stage === 'operations') await jobManager.autoResumePendingOperations(userId);
+      else await jobManager.loadInterruptedFromProjects(userId);
+      this.setRecoveryFailure(userId, stage, null, epoch);
     } catch (error) {
-      console.warn('[JobOrchestrator] interrupted-state recovery failed:', error);
+      console.warn(`[JobOrchestrator] ${stage} recovery failed:`, error);
+      this.setRecoveryFailure(userId, stage, {
+        stage,
+        retrying: false,
+        message: this.recoveryMessage(stage),
+      }, epoch);
     }
+  }
+
+  private recoveryMessage(stage: RecoveryStage): string {
+    if (stage === 'uploads') return '중단된 파일 업로드를 복구하지 못했습니다.';
+    if (stage === 'operations') return '진행 중이던 생성 작업을 다시 연결하지 못했습니다.';
+    return '중단된 작업 목록을 불러오지 못했습니다.';
+  }
+
+  private setRecoveryFailure(
+    userId: string,
+    stage: RecoveryStage,
+    failure: RecoveryFailure | null,
+    epoch: number,
+  ): void {
+    if (!this.isRecoveryCurrent(userId, epoch)) return;
+    const failures = this.recoveryFailures.get(userId) || new Map<RecoveryStage, RecoveryFailure>();
+    if (failure) failures.set(stage, failure);
+    else failures.delete(stage);
+    if (failures.size > 0) this.recoveryFailures.set(userId, failures);
+    else this.recoveryFailures.delete(userId);
+    this.emitRecovery(userId);
+  }
+
+  private getRecoveryState(userId: string): RecoveryState | null {
+    const failures = this.recoveryFailures.get(userId);
+    return failures?.size ? { userId, failures: Array.from(failures.values()) } : null;
+  }
+
+  private emitRecovery(userId: string): void {
+    const state = this.getRecoveryState(userId);
+    this.recoveryListeners.get(userId)?.forEach(listener => listener(state));
+  }
+
+  private clearRecoveryState(userId: string): void {
+    this.recoveryFailures.delete(userId);
+    this.emitRecovery(userId);
   }
 
   continueLongWait(command: LongWaitCommand): Promise<GenerationCommandId | null> {

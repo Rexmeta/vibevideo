@@ -399,7 +399,7 @@ const App: React.FC = () => {
       </main>
 
       {currentUser && (
-        <StudioDock onOpenProject={handleEditProject} />
+        <StudioDock userId={currentUser.uid} onOpenProject={handleEditProject} />
       )}
 
       {currentUser && showNewProjectModal && (

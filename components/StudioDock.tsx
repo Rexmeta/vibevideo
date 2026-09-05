@@ -2,11 +2,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   jobOrchestrator,
   type JobState,
+  type RecoveryState,
+  type RecoveryStage,
   type UploadEntry,
 } from '../services/jobOrchestrator';
 import { Icons } from './Icons';
 
 interface Props {
+  userId: string;
   onOpenProject?: (projectId: string) => void;
 }
 
@@ -56,7 +59,7 @@ const statusBadge = (status: JobState['status']) => {
   }
 };
 
-export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
+export const StudioDock: React.FC<Props> = ({ userId, onOpenProject }) => {
   const [jobs, setJobs] = useState<JobState[]>(jobOrchestrator.snapshot());
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
@@ -71,11 +74,17 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [resumingId, setResumingId] = useState<string | null>(null);
   const [pendingUploads, setPendingUploads] = useState<UploadEntry[]>(jobOrchestrator.pendingUploads());
+  const [recoveryState, setRecoveryState] = useState<RecoveryState | null>(null);
   // Tick once a second so elapsed timers refresh while a job is running.
   const [, setNow] = useState<number>(Date.now());
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Last-seen status per job, used to detect transitions and show toasts.
   const lastStatusRef = useRef<Map<string, JobState['status']>>(new Map());
+
+  useEffect(() => {
+    setRecoveryState(null);
+    return jobOrchestrator.subscribeRecovery(userId, setRecoveryState);
+  }, [userId]);
 
   useEffect(() => {
     const unsub = jobOrchestrator.subscribe(next => {
@@ -206,6 +215,9 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
   };
 
   const visibleJobs = jobs;
+  const retryRecovery = (stage: RecoveryStage) => {
+    void jobOrchestrator.retryRecovery(userId, stage);
+  };
   const activeCount = jobs.filter(
     j => j.status === 'running' || j.status === 'queued'
   ).length;
@@ -216,7 +228,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
 
   // Hide entirely when there are no jobs and the dock is collapsed —
   // there's nothing useful to show.
-  if (visibleJobs.length === 0 && collapsed) return null;
+  if (visibleJobs.length === 0 && !recoveryState && collapsed) return null;
 
   if (collapsed) {
     return (
@@ -230,6 +242,11 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
           {activeCount > 0 && (
             <span className="bg-brand-cyan text-black text-[10px] font-black px-2 py-0.5 rounded-full">
               {activeCount} 작업 중
+            </span>
+          )}
+          {recoveryState && (
+            <span className="bg-red-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full">
+              복구 필요
             </span>
           )}
         </button>
@@ -297,6 +314,20 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+        {recoveryState?.failures.map(failure => (
+          <div key={failure.stage} role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-3">
+            <p className="text-xs font-black text-red-800">{failure.message}</p>
+            <p className="mt-1 text-[10px] text-red-600">기존 작업은 다시 제출되지 않습니다. 이 복구 단계만 다시 시도할 수 있습니다.</p>
+            <button
+              onClick={() => retryRecovery(failure.stage)}
+              disabled={failure.retrying}
+              className="mt-2 w-full px-3 py-1.5 rounded-xl text-[11px] font-black bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
+            >
+              {failure.retrying ? <Icons.Loader2 size={11} className="animate-spin" /> : <Icons.RotateCcw size={11} />}
+              {failure.retrying ? '복구 중...' : '이 단계 다시 시도'}
+            </button>
+          </div>
+        ))}
         {visibleJobs.length === 0 && (
           <div className="text-center py-10 text-gray-400 text-xs font-medium">
             진행 중인 작업이 없습니다.
