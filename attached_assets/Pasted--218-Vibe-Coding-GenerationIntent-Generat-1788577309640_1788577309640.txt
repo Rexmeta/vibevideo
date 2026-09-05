@@ -1,0 +1,850 @@
+이 #218 내용이면 **방향이 정확하다.** 다만 실제 Vibe Coding에 넣기 전에 한 가지를 보강하는 게 좋다.
+
+핵심은 `GenerationIntent → GenerationJob → 기존 JobManager`의 **관계와 원자적 중복 방지 지점**을 명확하게 만드는 것이다. 특히 “조회 후 생성” 방식만 구현하면 동시 더블 클릭에서 둘 다 조회 결과가 없어서 두 번 생성될 수 있다.
+
+추천 구현 구조는:
+
+```text
+useVideoActions
+      ↓
+GenerationIntent 생성
+      ↓
+idempotencyKey 계산
+      ↓
+JobOrchestrator.submitVideo()
+      ↓
+┌──────────────────────────────┐
+│ idempotency lock / registry  │
+│                              │
+│ 기존 Job 있음 → 기존 Job 반환 │
+│ 기존 Job 없음 → Job 생성      │
+└──────────────────────────────┘
+      ↓
+기존 JobManager
+      ↓
+Generation Contract
+      ↓
+Provider
+```
+
+그리고 **#218에서는 영구 DB 수준의 distributed lock까지 만들 필요는 없다.** Out of scope와 맞게 현재 브라우저 세션에서의 중복 방지를 먼저 확실하게 만드는 것이 좋다.
+
+### 내가 수정해서 사용할 최종 Vibe Coding 프롬프트
+
+# #218 — 중복 없는 생성 작업 기반 구현
+
+## 목표
+
+VibeVideo의 기존 생성·복구 구조를 유지하면서 동일한 영상 생성 요청이 더블 클릭, 재시도, 네트워크 재전송 등으로 중복 실행되지 않도록 `GenerationIntent`와 `GenerationJob`을 도입한다.
+
+핵심 목표는 다음과 같다.
+
+> 동일한 생성 의도는 한 번만 실제 Provider 생성으로 연결하고, 명시적인 "다시 생성"은 새로운 의도로 처리한다.
+
+이번 작업에서는 기존 `GenerationContract`, `JobOrchestrator`, `JobManager`, `GenerationRun`, `ProjectSnapshot`의 공개 동작과 저장 형식을 깨뜨리지 않는다.
+
+---
+
+## 절대 지켜야 할 제약
+
+1. 기존 비디오 생성 동작을 삭제하거나 재작성하지 않는다.
+2. `geminiService.ts`를 Provider Adapter 구조로 리팩터링하지 않는다.
+3. 신규 Provider를 추가하지 않는다.
+4. `GenerationRun` 스키마를 교체하지 않는다.
+5. `ProjectSnapshot` 스키마를 교체하지 않는다.
+6. Firestore 기반의 영구적인 distributed idempotency는 구현하지 않는다.
+7. 서버 Gateway / Worker / Queue를 구현하지 않는다.
+8. 기존 `JobManager`의 상태·복구·진행률 API를 최대한 그대로 유지한다.
+9. 기존 단일 씬 생성과 배치 생성 모두 동일한 중복 방지 원칙을 사용한다.
+10. 기존 테스트가 모두 통과해야 한다.
+
+---
+
+# 1. Generation Intent 정의
+
+새 파일:
+
+`services/generationIntent.ts`
+
+또는 현재 프로젝트 구조에 더 적합한 위치가 있다면 그 위치를 선택한다.
+
+다음 개념을 정의한다.
+
+```ts
+GenerationIntent {
+  intentId: string
+
+  projectId: string
+  sceneId?: string
+
+  capability: "video"
+
+  provider: string
+  model: string
+
+  inputHash: string
+  idempotencyKey: string
+
+  explicitRegeneration: boolean
+
+  createdAt: number
+}
+```
+
+필요하면 `GenerationIntentInput`과 `GenerationIntent`를 분리한다.
+
+### 중요한 원칙
+
+`commandId`, `intentId`, `idempotencyKey`, `jobId`를 서로 같은 값으로 사용하지 않는다.
+
+각자의 책임을 명확하게 유지한다.
+
+```text
+commandId
+= 한 번의 application command 실행 ID
+
+intentId
+= 하나의 생성 의도를 식별
+
+idempotencyKey
+= 동일한 생성 요청인지 판단
+
+jobId
+= 실제 생성 작업을 식별
+```
+
+---
+
+# 2. 안정적인 입력 fingerprint 생성
+
+새로운 deterministic fingerprint 함수를 만든다.
+
+예:
+
+```ts
+createVideoGenerationFingerprint(input)
+```
+
+fingerprint에는 실제 생성 결과에 영향을 주는 값만 포함한다.
+
+포함 후보:
+
+* projectId
+* sceneId
+* capability
+* provider
+* model
+* prompt
+* scene generation input
+* reference image identity
+* seed 관련 값
+* aspect ratio
+* duration
+* resolution
+* 기타 실제 Provider 요청에 영향을 주는 generation parameter
+
+다만 현재 실제 생성 함수가 사용하는 입력을 기준으로 판단한다.
+
+## 절대 포함하지 않을 값
+
+* 현재 timestamp
+* random UUID
+* callback URL
+* temporary URL
+* polling timestamp
+* UI state
+* progress
+* transient error
+* provider operation ID
+* upload URL
+* command ID
+
+동일한 실제 입력이면 동일한 fingerprint가 나와야 한다.
+
+가능하면:
+
+```text
+canonicalize(input)
+    ↓
+stable JSON serialization
+    ↓
+SHA-256 또는 프로젝트에서 이미 사용하는 안정적인 hash
+    ↓
+inputHash
+```
+
+구조로 구현한다.
+
+---
+
+# 3. Idempotency Key 정의
+
+최종 key는 최소한 다음 관계를 만족해야 한다.
+
+```text
+idempotencyKey =
+hash(
+  project
+  + scene
+  + capability
+  + provider
+  + model
+  + normalized generation input
+  + generation revision
+)
+```
+
+단, 실제 구현에서는 위 문자열 연결보다 canonical object를 사용한다.
+
+핵심은:
+
+```text
+같은 생성 요청
+→ 같은 key
+
+명시적인 재생성
+→ 새로운 key
+```
+
+이다.
+
+---
+
+# 4. 명시적 Regenerate 처리
+
+사용자가 UI에서 명시적으로 "다시 생성"을 선택하면 동일 input이어도 기존 Job으로 취급하지 않는다.
+
+예:
+
+```ts
+createGenerationIntent({
+  ...
+  explicitRegeneration: true
+})
+```
+
+이 경우 새로운 regeneration revision/nonce를 사용한다.
+
+중요:
+
+`Date.now()`를 일반적인 idempotency key의 구성 요소로 사용하지 않는다.
+
+timestamp/random 값은 **명시적 재생성 시에만 새로운 intent를 만들기 위한 값**으로 사용한다.
+
+---
+
+# 5. GenerationJob 정의
+
+새 파일:
+
+`services/generationJob.ts`
+
+다음 개념을 정의한다.
+
+```ts
+GenerationJob {
+  jobId: string
+
+  intentId: string
+  idempotencyKey: string
+
+  commandId: string
+
+  projectId: string
+  sceneId?: string
+
+  capability: "video"
+
+  provider: string
+  model: string
+
+  status:
+    | "queued"
+    | "running"
+    | "provider_pending"
+    | "uploading"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "interrupted"
+
+  attempts: number
+
+  providerOperationId?: string
+
+  result?: {
+    assetUrl?: string
+    storagePath?: string
+  }
+
+  error?: {
+    code: string
+    message: string
+  }
+
+  createdAt: number
+  startedAt?: number
+  completedAt?: number
+  failedAt?: number
+}
+```
+
+현재 `GenerationRun`, `OperationRecord`, `JobManager`가 이미 가지고 있는 정보와 중복될 수 있다.
+
+이번 작업에서는 기존 정보를 제거하지 않는다.
+
+**GenerationJob은 새로운 domain-level view/record로 도입하고 기존 runtime 상태와 연결한다.**
+
+---
+
+# 6. 가장 중요한 부분 — 중복 제출 방지
+
+`jobOrchestrator.ts`에 video generation 제출 경계를 추가한다.
+
+예:
+
+```ts
+submitVideoGeneration(...)
+```
+
+또는 현재 구조에 가장 자연스러운 이름을 사용한다.
+
+흐름은 반드시 다음과 같아야 한다.
+
+```text
+create intent
+      ↓
+calculate idempotencyKey
+      ↓
+check existing job
+      ↓
+existing active/completed job?
+      ├─ YES → existing job 반환
+      │
+      └─ NO
+          ↓
+      create GenerationJob
+          ↓
+      submit existing JobManager job
+```
+
+### 중요한 동시성 조건
+
+단순히:
+
+```ts
+if (!existingJob) {
+  createJob()
+  generate()
+}
+```
+
+만 구현하지 않는다.
+
+다음 상황을 반드시 고려한다.
+
+```text
+Click A ── check ── no job
+Click B ─────── check ── no job
+
+Click A ── create
+Click B ── create
+
+→ 중복 생성
+```
+
+따라서 현재 브라우저 runtime에서라도 `idempotencyKey` 기준으로 원자적으로 등록되는 registry/lock을 둔다.
+
+예:
+
+```ts
+Map<idempotencyKey, GenerationJob>
+```
+
+또는 Promise-based in-flight registry.
+
+핵심 invariant:
+
+> 하나의 브라우저 실행 환경에서는 하나의 idempotencyKey가 동시에 두 개의 Provider generation을 시작할 수 없다.
+
+---
+
+# 7. 기존 JobManager와 연결
+
+새 GenerationJob을 만들었다고 해서 기존 JobManager를 제거하지 않는다.
+
+관계:
+
+```text
+GenerationJob
+      ↓
+JobManager job
+      ↓
+Generation Contract
+      ↓
+Provider operation
+```
+
+GenerationJob에는 기존 JobManager job을 연결할 수 있는 내부 reference가 필요하다.
+
+예:
+
+```ts
+runtimeJobId?: string
+```
+
+단, 이것을 public domain contract에 불필요하게 노출하지 않는다.
+
+---
+
+# 8. 상태 매핑
+
+기존 JobManager 상태를 GenerationJob 상태로 변환하는 mapper를 만든다.
+
+예:
+
+```text
+JobManager queued
+→ GenerationJob queued
+
+running
+→ running
+
+provider polling
+→ provider_pending
+
+uploading
+→ uploading
+
+completed
+→ completed
+
+failed
+→ failed
+
+cancelled
+→ cancelled
+
+interrupted
+→ interrupted
+```
+
+기존 상태 모델을 변경하지 말고 **adapter/mapper 방식**으로 연결한다.
+
+---
+
+# 9. Provider Operation 연결
+
+기존 `OperationRecord`와 Provider operation ID를 GenerationJob에 연결한다.
+
+예:
+
+```text
+GenerationJob
+   └─ providerOperationId
+             ↓
+      existing OperationRecord
+```
+
+새로운 Provider operation lifecycle을 만들지 않는다.
+
+현재 Veo operation/resume 구조를 그대로 사용한다.
+
+---
+
+# 10. 단일 씬 생성
+
+`components/wizard/hooks/useVideoActions.ts`에서 기존 단일 씬 영상 생성 진입점을 확인한다.
+
+변경 목표:
+
+```text
+UI
+ ↓
+submitVideoGeneration()
+ ↓
+idempotency check
+ ↓
+existing Job?
+ ├─ yes → existing job 반환
+ └─ no → 기존 generation 실행
+```
+
+기존 UI의 진행률 표시, 완료 callback, 오류 처리, 취소 동작은 유지한다.
+
+---
+
+# 11. Batch 생성
+
+배치 생성도 동일한 원칙을 적용한다.
+
+각 Scene은 독립적인 generation intent/job을 가진다.
+
+```text
+Batch
+ ├─ Scene 1 → Intent 1 → Job 1
+ ├─ Scene 2 → Intent 2 → Job 2
+ ├─ Scene 3 → Intent 3 → Job 3
+ └─ Scene 4 → Intent 4 → Job 4
+```
+
+따라서 Scene 2만 재전송되어도 Scene 1/3/4를 다시 생성하지 않는다.
+
+기존 batch progress aggregation은 그대로 유지한다.
+
+---
+
+# 12. 기존 복구 동작 유지
+
+다음 기존 동작을 반드시 보존한다.
+
+* Veo operation resume
+* interrupted job recovery
+* upload retry
+* progress subscription
+* cancellation
+* batch recovery
+* existing JobManager persistence
+* existing ProjectSnapshot persistence
+
+GenerationJob은 현재 복구 시스템을 대체하지 않는다.
+
+이번 작업에서는:
+
+```text
+기존 recovery
++
+GenerationJob state mapping
+```
+
+구조로 구현한다.
+
+---
+
+# 13. Retry semantics
+
+실패 후 사용자가 일반적인 retry를 누르는 경우를 명확하게 구분한다.
+
+### Provider transient retry
+
+동일 GenerationJob 내부에서 retry:
+
+```text
+Job A
+attempt 1
+   ↓ failure
+attempt 2
+   ↓
+same Job A
+```
+
+### 사용자가 "다시 생성"을 선택
+
+새 intent/job:
+
+```text
+Job A
+   ↓
+explicit regenerate
+   ↓
+Intent B
+   ↓
+Job B
+```
+
+즉,
+
+> 기술적 retry와 사용자 의도에 의한 regenerate를 서로 다른 개념으로 취급한다.
+
+---
+
+# 14. 테스트
+
+다음 테스트를 반드시 추가한다.
+
+## A. 동일 요청
+
+```text
+submit(input)
+submit(input)
+
+expected:
+Provider generation = 1
+Job = 1
+```
+
+두 번째 호출은 기존 Job을 반환해야 한다.
+
+---
+
+## B. 동시 double submit
+
+Promise를 동시에 실행한다.
+
+```ts
+await Promise.all([
+  submit(input),
+  submit(input)
+])
+```
+
+expected:
+
+```text
+Provider generation = 1
+GenerationJob = 1
+```
+
+이 테스트가 매우 중요하다.
+
+---
+
+## C. 명시적 regenerate
+
+```text
+submit(input)
+regenerate(input)
+```
+
+expected:
+
+```text
+Provider generation = 2
+GenerationJob = 2
+Intent = 2
+```
+
+---
+
+## D. 다른 model
+
+```text
+model=A
+model=B
+```
+
+expected:
+
+```text
+Job = 2
+```
+
+---
+
+## E. 다른 provider
+
+```text
+provider=A
+provider=B
+```
+
+expected:
+
+```text
+Job = 2
+```
+
+---
+
+## F. 다른 prompt/input
+
+expected:
+
+```text
+Job = 2
+```
+
+---
+
+## G. retry
+
+```text
+Job A
+attempt 1 failed
+retry
+```
+
+expected:
+
+```text
+Job A
+attempts = 2
+```
+
+새로운 GenerationJob을 만들지 않는다.
+
+---
+
+## H. cancel
+
+cancel된 Job의 상태가:
+
+```text
+cancelled
+```
+
+로 유지되는지 검증한다.
+
+---
+
+## I. interrupted / resume
+
+기존 interrupted recovery 후 동일 intent가 중복 Provider generation을 시작하지 않는지 검증한다.
+
+---
+
+## J. 기존 regression
+
+반드시 기존 전체 테스트를 실행한다.
+
+특히:
+
+```text
+tests/generationContract.test.ts
+tests/jobOrchestrator.test.ts
+```
+
+및 video action 관련 기존 테스트를 모두 확인한다.
+
+---
+
+# 15. 구현 순서
+
+한 번에 모든 것을 수정하지 말고 다음 순서로 구현한다.
+
+### Commit 1
+
+`GenerationIntent` + deterministic fingerprint/idempotency key
+
+테스트:
+
+* same input → same key
+* different input → different key
+* regenerate → different key
+
+### Commit 2
+
+`GenerationJob` domain model + state mapper
+
+테스트:
+
+* 모든 state mapping
+* command/job/intent ID 분리
+
+### Commit 3
+
+`JobOrchestrator` idempotency registry
+
+테스트:
+
+* sequential duplicate
+* concurrent duplicate
+* existing completed job
+* existing active job
+
+### Commit 4
+
+`useVideoActions` 단일 씬 연결
+
+테스트:
+
+* single generation
+* regenerate
+* retry
+* cancel
+
+### Commit 5
+
+Batch generation 연결
+
+테스트:
+
+* duplicate batch submission
+* partial existing jobs
+* independent scene jobs
+* progress compatibility
+
+### Commit 6
+
+Recovery compatibility
+
+테스트:
+
+* interrupted
+* resume
+* provider operation mapping
+* upload retry
+
+---
+
+# 완료 조건
+
+최종적으로 다음 invariant를 만족해야 한다.
+
+```text
+같은 project
++ 같은 scene
++ 같은 capability
++ 같은 normalized input
++ 같은 model
++ 같은 provider
++ 같은 generation revision
+=
+같은 idempotencyKey
+```
+
+그리고:
+
+```text
+same idempotencyKey
+        ↓
+one GenerationJob
+        ↓
+one Provider generation
+```
+
+반대로:
+
+```text
+explicit regenerate
+        ↓
+new intent
+        ↓
+new idempotencyKey
+        ↓
+new GenerationJob
+        ↓
+new Provider generation
+```
+
+이 구조를 만족해야 한다.
+
+## 최종 검증
+
+구현 완료 후 다음을 보고한다.
+
+1. 변경 파일 목록
+2. 새로운 domain 모델
+3. idempotency key 생성 규칙
+4. 중복 방지 지점
+5. 기존 JobManager와의 연결 방식
+6. 단일 씬 처리 결과
+7. 배치 처리 결과
+8. retry/recovery 처리 결과
+9. 추가된 테스트
+10. 전체 테스트 결과
+11. 기존 기능 regression 여부
+12. #218 이후 다음 작업에서 Provider Adapter로 이동할 수 있는 경계가 확보되었는지
+
+**이 티켓의 핵심 성공 기준은 테스트 하나로 압축할 수 있다.**
+
+```text
+Promise.all([
+  같은 영상 생성 요청,
+  같은 영상 생성 요청
+])
+```
+
+을 실행했을 때 **Provider 호출이 정확히 1회**여야 한다.
+
+그리고 이게 통과하면 다음 #219는 바로 `Provider Adapter / Capability Interface`로 넘어가기보다, 구현 결과를 한 번 분석해서 **실제 `geminiService → JobManager → uploadQueue → storageService` 연결에서 idempotency 경계가 제대로 잡혔는지** 확인하는 게 좋다. 그 다음 Provider 추상화를 넣는 순서가 안전하다.
