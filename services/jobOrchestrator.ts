@@ -27,7 +27,11 @@ import {
   syncGenerationJobFromRuntime,
   type GenerationJob,
 } from './generationJob';
-import { normalizeGenerationError } from './generationContract';
+import {
+  normalizeGenerationError,
+  type GenerationExecutionContext,
+  type ProviderGenerationResult,
+} from './generationContract';
 import {
   claimGenerationJob,
   getGenerationJobRecord,
@@ -115,7 +119,13 @@ export interface AssetGenerationCommand<T> {
   provider: string;
   model: string;
   input: unknown;
-  execute: () => Promise<T>;
+  /**
+   * The context contains the durable key for provider idempotency and a
+   * callback that must be awaited as soon as a provider returns an operation
+   * handle. Existing zero-argument executors remain source-compatible.
+   */
+  execute: (context: GenerationExecutionContext) =>
+    Promise<T | ProviderGenerationResult<T>>;
 }
 
 const createPersistenceOwnerId = (): string => {
@@ -153,6 +163,13 @@ const valueFromDurableJob = <T,>(job: GenerationJob): T | undefined => {
   if (job.result?.assetUrl) return job.result.assetUrl as T;
   return undefined;
 };
+
+const isProviderGenerationResult = <T>(
+  value: T | ProviderGenerationResult<T>,
+): value is ProviderGenerationResult<T> =>
+  !!value &&
+  typeof value === 'object' &&
+  'value' in (value as Record<string, unknown>);
 
 const localJobFromDurable = (record: DurableGenerationJob): GenerationJob => {
   const { ownerId: _ownerId, leaseUntil: _leaseUntil, updatedAt: _updatedAt, ...job } = record;
@@ -473,10 +490,42 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
           { leaseUntil: Date.now() + 15_000 },
         );
       }, 5_000);
+      const persistProviderOperation = async (providerOperationId: string): Promise<void> => {
+        if (!providerOperationId) return;
+        const persisted = await updateGenerationJobRecord(
+          command.projectId,
+          intent.idempotencyKey,
+          this.persistenceOwnerId,
+          {
+            status: 'provider_pending',
+            providerOperationId,
+            leaseUntil: Date.now() + 15_000,
+          },
+        );
+        const current = persisted || await getGenerationJobRecord(
+          command.projectId,
+          intent.idempotencyKey,
+        );
+        if (!current) return;
+        const next = localJobFromDurable(current);
+        this.generationJobsByKey.set(intent.idempotencyKey, next);
+        this.generationJobsById.set(next.jobId, next);
+      };
       try {
-        const value = await command.execute();
+        const executionContext: GenerationExecutionContext = {
+          idempotencyKey: intent.idempotencyKey,
+          providerOperationId: running.providerOperationId,
+          onProviderOperation: persistProviderOperation,
+        };
+        const executionResult = await command.execute(executionContext);
+        const value = isProviderGenerationResult(executionResult)
+          ? executionResult.value
+          : executionResult;
+        if (isProviderGenerationResult(executionResult) && executionResult.providerOperationId) {
+          await persistProviderOperation(executionResult.providerOperationId);
+        }
         const completed = {
-          ...running,
+          ...(this.generationJobsByKey.get(intent.idempotencyKey) || running),
           status: 'completed' as const,
           completedAt: Date.now(),
           result: durableResultFor(value),

@@ -72,7 +72,11 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
       provider: command.provider || 'Google',
       model: command.modelId || 'default-audio',
       input,
-      execute: () => runAudioGeneration(input).then(throwGenerationFailure),
+      execute: executionContext => runAudioGeneration(
+        input,
+        undefined,
+        executionContext,
+      ).then(throwGenerationFailure),
     }, { explicitRegeneration });
     const res = submission.value;
     if (!submission.reused && res) {

@@ -15,6 +15,9 @@ import {
   createGenerationCommand,
   executeGenerationCommand,
 } from './generationContract';
+import type {
+  GenerationProviderOptions,
+} from './generationContract';
 import type { GenerationProgressEvent, GenerationResult } from '../types';
 
 export interface TextGenerationInput {
@@ -97,9 +100,14 @@ export const runTextGeneration = (
 export const runAudioGeneration = (
   input: AudioGenerationInput,
   onProgress?: Progress,
+  providerOptions?: GenerationProviderOptions,
 ): Promise<GenerationResult<{ audio_path: string; duration: number } | null>> => {
   const command = createGenerationCommand('audio', input, { provider: 'Google' });
-  return executeGenerationCommand(command, value => generateSceneAudio(value.text, value.style), onProgress);
+  return executeGenerationCommand(
+    command,
+    value => generateSceneAudio(value.text, value.style, providerOptions),
+    onProgress,
+  );
 };
 
 export const runSceneSegmentation = (
@@ -144,6 +152,7 @@ export const runStyleSheetGeneration = (
 export const runImageGeneration = (
   input: ImageGenerationInput,
   onProgress?: Progress,
+  providerOptions?: GenerationProviderOptions,
 ): Promise<GenerationResult<GenerateImageResult | null>> => {
   const command = createGenerationCommand('image', input, {
     provider: input.model?.provider || 'Google',
@@ -158,6 +167,7 @@ export const runImageGeneration = (
       value.model?.provider,
       value.characterProfile,
       value.options,
+      providerOptions,
     ), onProgress);
 };
 

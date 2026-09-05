@@ -6,7 +6,10 @@ import { getGenre, getPlatform, type PlatformPreset } from "./presets";
 import { buildPrompt as buildModelPrompt } from "./promptAdapter";
 import { critiqueImage, buildRefineHint } from "./visionCritic";
 import type { QualityScore, PlatformId } from "../types";
-import { normalizeGenerationError } from './generationContract';
+import {
+  normalizeGenerationError,
+  type GenerationProviderOptions,
+} from './generationContract';
 
 const MISSING_API_KEY_MESSAGE = 'API 키가 설정되지 않았습니다. 관리 페이지에서 API 키를 설정해주세요.';
 
@@ -661,7 +664,17 @@ export function migrateSceneFields(scenes: Partial<Scene>[]): Partial<Scene>[] {
   }));
 }
 
-export const generateSceneAudio = async (text: string, style: string): Promise<{ audio_path: string, duration: number } | null> => {
+/**
+ * Gemini's synchronous generateContent endpoints do not currently expose a
+ * resumable operation or documented idempotency-key contract. The options
+ * stay on this adapter boundary so a provider that supports them can consume
+ * the same durable context; Gemini continues with lease-based recovery.
+ */
+export const generateSceneAudio = async (
+  text: string,
+  style: string,
+  _providerOptions?: GenerationProviderOptions,
+): Promise<{ audio_path: string, duration: number } | null> => {
   const voiceMap: Record<string, string> = { 'Cute Stickman': 'Puck', 'Japanese Anime': 'Kore' };
   const selectedVoice = voiceMap[style] || 'Kore';
   const cleanText = sanitizeTextForTTS(text);
@@ -841,6 +854,7 @@ export const generateSceneImage = async (
   provider?: string,
   characterProfile?: string,
   options: GenerateImageOptions = {},
+  _providerOptions?: GenerationProviderOptions,
 ): Promise<GenerateImageResult | null> => {
   const isGeminiCompatible = !provider || GOOGLE_IMAGE_PROVIDERS.includes(provider);
   let actualModel = (modelId && isGeminiCompatible) ? modelId : GEMINI_IMAGE_MODEL;

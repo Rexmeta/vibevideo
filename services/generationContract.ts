@@ -8,6 +8,30 @@ import type {
 
 let sequence = 0;
 
+/**
+ * Durable context passed to billable provider adapters.
+ *
+ * Providers that support idempotency should send idempotencyKey on the
+ * submission and use providerOperationId to resume an accepted operation.
+ * Providers without either capability can ignore these fields and continue
+ * using the orchestrator's lease recovery.
+ */
+export interface GenerationExecutionContext {
+  idempotencyKey: string;
+  providerOperationId?: string;
+  onProviderOperation?: (operationId: string) => void | Promise<void>;
+}
+
+export type GenerationProviderOptions = Pick<
+  GenerationExecutionContext,
+  'idempotencyKey' | 'providerOperationId' | 'onProviderOperation'
+>;
+
+export interface ProviderGenerationResult<T> {
+  value: T;
+  providerOperationId?: string;
+}
+
 export const createGenerationCommand = <TInput>(
   capability: GenerationCapability,
   input: TInput,

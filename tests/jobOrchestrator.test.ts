@@ -324,6 +324,65 @@ describe('browser job orchestrator lifecycle', () => {
     expect(older.generationJob.jobId).toBe(newer.generationJob.jobId);
   });
 
+  it('passes the durable key to providers and resumes a persisted provider operation', async () => {
+    const firstTab = new BrowserJobOrchestrator();
+    const secondTab = new BrowserJobOrchestrator();
+    let resolveOriginal!: (value: string) => void;
+    const originalProvider = vi.fn(async (context: {
+      idempotencyKey: string;
+      onProviderOperation?: (operationId: string) => void | Promise<void>;
+    }) => {
+      await context.onProviderOperation?.('image-operation-1');
+      return new Promise<string>(resolve => { resolveOriginal = resolve; });
+    });
+    const resumedProvider = vi.fn(async (context: {
+      idempotencyKey: string;
+      providerOperationId?: string;
+    }) => {
+      expect(context.idempotencyKey).toBe(
+        Array.from(mocks.durableJobs.values())[0].idempotencyKey,
+      );
+      expect(context.providerOperationId).toBe('image-operation-1');
+      return 'resumed-image';
+    });
+    const command = {
+      id: 'image-operation-1',
+      projectId: 'project-operation',
+      sceneId: 'scene-1',
+      sceneIndex: 0,
+      capability: 'image' as const,
+      provider: 'Google',
+      model: 'imagen',
+      input: { prompt: 'same prompt' },
+      execute: originalProvider,
+    };
+
+    const originalPromise = firstTab.submitAssetGeneration(command);
+    await vi.waitFor(() => {
+      expect(originalProvider).toHaveBeenCalledOnce();
+      expect(Array.from(mocks.durableJobs.values())[0].providerOperationId)
+        .toBe('image-operation-1');
+    });
+
+    const record = Array.from(mocks.durableJobs.values())[0];
+    record.leaseUntil = Date.now() - 1;
+    const resumedPromise = secondTab.submitAssetGeneration({
+      ...command,
+      id: 'image-operation-reconnect',
+      execute: resumedProvider,
+    });
+
+    const resumed = await resumedPromise;
+    resolveOriginal('stale-image');
+    const original = await originalPromise;
+
+    expect(originalProvider).toHaveBeenCalledOnce();
+    expect(resumedProvider).toHaveBeenCalledOnce();
+    expect(resumed.value).toBe('resumed-image');
+    expect(original.reused).toBe(true);
+    expect(original.value).toBe('resumed-image');
+  });
+
   it('rejects an unknown persisted upload job after a newer scoped generation starts', async () => {
     const orchestrator = new BrowserJobOrchestrator();
     const persisted = {

@@ -113,7 +113,11 @@ export const useImageActions = (deps: ImageActionsDeps) => {
       provider: command.provider || 'Google',
       model: command.modelId || selectedImageModel || 'default-image',
       input,
-      execute: () => runImageGeneration(input).then(throwGenerationFailure),
+      execute: executionContext => runImageGeneration(
+        input,
+        undefined,
+        executionContext,
+      ).then(throwGenerationFailure),
     }, { explicitRegeneration });
     const result = submission.value;
     if (!submission.reused && result) {
