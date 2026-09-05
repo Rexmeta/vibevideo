@@ -31,10 +31,287 @@ import {
   QueryDocumentSnapshot
 } from "firebase/firestore";
 import { GenerationRun, Project, ProjectStatus, Scene } from "../types";
+import type { GenerationJob, GenerationJobStatus } from "./generationJob";
 import { normalizeLegacyProject, snapshotToLegacyProject, legacyProjectToSnapshot } from "./projectSnapshotMapper";
 
 const PROJECTS_COLLECTION = 'projects';
 const PAGE_SIZE = 20;
+
+export interface DurableGenerationJob extends GenerationJob {
+  ownerId: string;
+  leaseUntil: number;
+  updatedAt: number;
+}
+
+export interface GenerationJobClaim {
+  record: DurableGenerationJob;
+  acquired: boolean;
+}
+
+type GenerationJobPatch = Partial<
+  Pick<DurableGenerationJob, 'status' | 'attempts' | 'commandId' | 'providerOperationId' |
+    'result' | 'error' | 'startedAt' | 'completedAt' | 'failedAt' | 'leaseUntil'>
+>;
+
+const GENERATION_JOBS_COLLECTION = 'generation_jobs';
+const GENERATION_JOB_LEASE_MS = 15_000;
+const GENERATION_JOBS_DB = 'vibe_generation_jobs';
+const GENERATION_JOBS_DB_VERSION = 1;
+const GENERATION_JOBS_STORE = 'jobs';
+
+const generationJobKey = (projectId: string, idempotencyKey: string): string =>
+  `${projectId}:${idempotencyKey}`;
+
+const asDurableGenerationJob = (value: Record<string, any>): DurableGenerationJob => ({
+  ...value,
+  result: value.result && typeof value.result === 'object' ? value.result : undefined,
+  error: value.error && typeof value.error === 'object' ? value.error : undefined,
+}) as DurableGenerationJob;
+
+const isActiveGenerationStatus = (status: GenerationJobStatus): boolean =>
+  status === 'queued' ||
+  status === 'running' ||
+  status === 'provider_pending' ||
+  status === 'uploading' ||
+  status === 'interrupted';
+
+const canTakeOverGenerationJob = (record: DurableGenerationJob, now: number): boolean =>
+  record.leaseUntil <= now &&
+  (isActiveGenerationStatus(record.status) ||
+    (record.status === 'failed' && record.error?.retryable === true));
+
+const openGenerationJobsDb = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
+  if (typeof indexedDB === 'undefined') {
+    reject(new Error('IndexedDB is unavailable'));
+    return;
+  }
+  const request = indexedDB.open(GENERATION_JOBS_DB, GENERATION_JOBS_DB_VERSION);
+  request.onupgradeneeded = () => {
+    if (!request.result.objectStoreNames.contains(GENERATION_JOBS_STORE)) {
+      request.result.createObjectStore(GENERATION_JOBS_STORE);
+    }
+  };
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error || new Error('Generation job database failed to open'));
+});
+
+const generationJobDbPromise = typeof indexedDB === 'undefined'
+  ? null
+  : openGenerationJobsDb().catch(error => {
+      console.warn('[Generation] IndexedDB persistence unavailable:', error);
+      throw error;
+    });
+
+const readLocalGenerationJob = async (
+  projectId: string,
+  idempotencyKey: string,
+): Promise<DurableGenerationJob | undefined> => {
+  if (!generationJobDbPromise) return undefined;
+  const db = await generationJobDbPromise;
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(GENERATION_JOBS_STORE, 'readonly')
+      .objectStore(GENERATION_JOBS_STORE)
+      .get(generationJobKey(projectId, idempotencyKey));
+    request.onsuccess = () => resolve(request.result ? asDurableGenerationJob(request.result) : undefined);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const writeLocalGenerationJob = async (record: DurableGenerationJob): Promise<void> => {
+  if (!generationJobDbPromise) return;
+  const db = await generationJobDbPromise;
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(GENERATION_JOBS_STORE, 'readwrite');
+    transaction.objectStore(GENERATION_JOBS_STORE)
+      .put(record, generationJobKey(record.projectId, record.idempotencyKey));
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error || new Error('Generation job transaction aborted'));
+  });
+};
+
+const claimLocalGenerationJob = async (
+  proposed: GenerationJob,
+  ownerId: string,
+): Promise<GenerationJobClaim> => {
+  if (!generationJobDbPromise) return {
+    acquired: true,
+    record: {
+      ...proposed,
+      ownerId,
+      leaseUntil: Date.now() + GENERATION_JOB_LEASE_MS,
+      updatedAt: Date.now(),
+    },
+  };
+  const db = await generationJobDbPromise;
+  return new Promise((resolve, reject) => {
+    const now = Date.now();
+    const recordKey = generationJobKey(proposed.projectId, proposed.idempotencyKey);
+    const transaction = db.transaction(GENERATION_JOBS_STORE, 'readwrite');
+    const store = transaction.objectStore(GENERATION_JOBS_STORE);
+    const request = store.get(recordKey);
+    let outcome: GenerationJobClaim | undefined;
+    request.onsuccess = () => {
+      const current = request.result ? asDurableGenerationJob(request.result) : undefined;
+      if (current && current.status === 'completed') {
+        outcome = { record: current, acquired: false };
+        return;
+      }
+      if (
+        current &&
+        current.status !== 'failed' &&
+        !canTakeOverGenerationJob(current, now)
+      ) {
+        outcome = { record: current, acquired: false };
+        return;
+      }
+      if (
+        current &&
+        current.status === 'failed' &&
+        current.error?.retryable !== true &&
+        !canTakeOverGenerationJob(current, now)
+      ) {
+        outcome = { record: current, acquired: false };
+        return;
+      }
+      const next: DurableGenerationJob = {
+        ...(current || proposed),
+        commandId: proposed.commandId,
+        status: current ? 'queued' : proposed.status,
+        attempts: current ? current.attempts + 1 : proposed.attempts,
+        error: undefined,
+        failedAt: undefined,
+        ownerId,
+        leaseUntil: now + GENERATION_JOB_LEASE_MS,
+        updatedAt: now,
+      };
+      store.put(next, recordKey);
+      outcome = { record: next, acquired: true };
+    };
+    transaction.oncomplete = () => resolve(outcome!);
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error || new Error('Generation job claim aborted'));
+  });
+};
+
+const updateLocalGenerationJob = async (
+  projectId: string,
+  idempotencyKey: string,
+  ownerId: string,
+  patch: GenerationJobPatch,
+): Promise<DurableGenerationJob | undefined> => {
+  if (!generationJobDbPromise) return undefined;
+  const db = await generationJobDbPromise;
+  return new Promise((resolve, reject) => {
+    const now = Date.now();
+    const recordKey = generationJobKey(projectId, idempotencyKey);
+    const transaction = db.transaction(GENERATION_JOBS_STORE, 'readwrite');
+    const store = transaction.objectStore(GENERATION_JOBS_STORE);
+    const request = store.get(recordKey);
+    let next: DurableGenerationJob | undefined;
+    request.onsuccess = () => {
+      const current = request.result ? asDurableGenerationJob(request.result) : undefined;
+      if (!current || current.ownerId !== ownerId) return;
+      next = { ...current, ...patch, updatedAt: now };
+      store.put(next, recordKey);
+    };
+    transaction.oncomplete = () => resolve(next);
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error || new Error('Generation job update aborted'));
+  });
+};
+
+export const claimGenerationJob = async (
+  proposed: GenerationJob,
+  ownerId: string,
+): Promise<GenerationJobClaim> => {
+  if (isCloudSyncEnabled() && db) {
+    const jobRef = doc(db, PROJECTS_COLLECTION, proposed.projectId, GENERATION_JOBS_COLLECTION, proposed.idempotencyKey);
+    const result = await runTransaction(db, async transaction => {
+      const snapshot = await transaction.get(jobRef);
+      const now = Date.now();
+      const current = snapshot.exists() ? asDurableGenerationJob(snapshot.data() as Record<string, any>) : undefined;
+      if (current && current.status === 'completed') return { record: current, acquired: false };
+      if (
+        current &&
+        !canTakeOverGenerationJob(current, now)
+      ) {
+        return { record: current, acquired: false };
+      }
+      const next: DurableGenerationJob = {
+        ...(current || proposed),
+        commandId: proposed.commandId,
+        status: current ? 'queued' : proposed.status,
+        attempts: current ? current.attempts + 1 : proposed.attempts,
+        error: undefined,
+        failedAt: undefined,
+        ownerId,
+        leaseUntil: now + GENERATION_JOB_LEASE_MS,
+        updatedAt: now,
+      };
+      transaction.set(jobRef, removeUndefined(next));
+      return { record: next, acquired: true };
+    });
+    return result as GenerationJobClaim;
+  }
+  return claimLocalGenerationJob(proposed, ownerId);
+};
+
+export const getGenerationJobRecord = async (
+  projectId: string,
+  idempotencyKey: string,
+): Promise<DurableGenerationJob | undefined> => {
+  if (isCloudSyncEnabled() && db) {
+    const snapshot = await getDoc(doc(
+      db,
+      PROJECTS_COLLECTION,
+      projectId,
+      GENERATION_JOBS_COLLECTION,
+      idempotencyKey,
+    ));
+    return snapshot.exists() ? asDurableGenerationJob(snapshot.data() as Record<string, any>) : undefined;
+  }
+  return readLocalGenerationJob(projectId, idempotencyKey);
+};
+
+export const updateGenerationJobRecord = async (
+  projectId: string,
+  idempotencyKey: string,
+  ownerId: string,
+  patch: GenerationJobPatch,
+): Promise<DurableGenerationJob | undefined> => {
+  if (isCloudSyncEnabled() && db) {
+    const jobRef = doc(db, PROJECTS_COLLECTION, projectId, GENERATION_JOBS_COLLECTION, idempotencyKey);
+    return runTransaction(db, async transaction => {
+      const snapshot = await transaction.get(jobRef);
+      if (!snapshot.exists()) return undefined;
+      const current = asDurableGenerationJob(snapshot.data() as Record<string, any>);
+      if (current.ownerId !== ownerId) return undefined;
+      const next = { ...current, ...patch, updatedAt: Date.now() };
+      transaction.set(jobRef, removeUndefined(next));
+      return next;
+    }) as Promise<DurableGenerationJob | undefined>;
+  }
+  return updateLocalGenerationJob(projectId, idempotencyKey, ownerId, patch);
+};
+
+export const waitForGenerationJobRecord = async (
+  projectId: string,
+  idempotencyKey: string,
+  timeoutMs: number,
+): Promise<DurableGenerationJob | undefined> => {
+  const deadline = Date.now() + timeoutMs;
+  let record = await getGenerationJobRecord(projectId, idempotencyKey);
+  while (
+    record &&
+    isActiveGenerationStatus(record.status) &&
+    Date.now() < deadline
+  ) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    record = await getGenerationJobRecord(projectId, idempotencyKey);
+  }
+  return record;
+};
 
 const CARD_KEY = (id: string) => `vibe_video_card_${id}`;
 

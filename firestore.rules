@@ -24,6 +24,14 @@ service cloud.firestore {
       allow delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
     }
 
+    // Cross-tab generation leases and completed asset references. The parent
+    // project remains the ownership boundary; a client cannot claim another
+    // user's generation job.
+    match /projects/{projectId}/generation_jobs/{jobId} {
+      allow read, write: if isSignedIn()
+        && get(/databases/$(database)/documents/projects/$(projectId)).data.user_id == request.auth.uid;
+    }
+
     // Per-user subcollections (e.g. context_packs) live under /users/{uid}/...
     match /users/{userId}/{document=**} {
       allow read, write: if isOwner(userId);

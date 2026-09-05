@@ -28,6 +28,13 @@ import {
   type GenerationJob,
 } from './generationJob';
 import { normalizeGenerationError } from './generationContract';
+import {
+  claimGenerationJob,
+  getGenerationJobRecord,
+  updateGenerationJobRecord,
+  waitForGenerationJobRecord,
+  type DurableGenerationJob,
+} from './storageService';
 
 export type { JobSceneState, JobState } from './jobManager';
 export type { UploadEntry, UploadEvent } from './uploadQueue';
@@ -111,6 +118,47 @@ export interface AssetGenerationCommand<T> {
   execute: () => Promise<T>;
 }
 
+const createPersistenceOwnerId = (): string => {
+  try {
+    return `tab-${crypto.randomUUID()}`;
+  } catch {
+    return `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+};
+
+const durableResultFor = (value: unknown): GenerationJob['result'] | undefined => {
+  try {
+    const encoded = JSON.stringify(value);
+    // Keep Firestore records small. IndexedDB can retain larger local values,
+    // while cloud consumers can still rely on the project media URL.
+    if (encoded && encoded.length <= 700_000) {
+      return { value: JSON.parse(encoded) };
+    }
+  } catch {}
+  if (typeof value === 'string' && /^https?:\/\//.test(value)) {
+    return { assetUrl: value };
+  }
+  if (value && typeof value === 'object') {
+    const candidate = value as Record<string, unknown>;
+    const path = candidate.image_path || candidate.audio_path;
+    if (typeof path === 'string' && /^https?:\/\//.test(path)) {
+      return { assetUrl: path };
+    }
+  }
+  return undefined;
+};
+
+const valueFromDurableJob = <T,>(job: GenerationJob): T | undefined => {
+  if (job.result && 'value' in job.result) return job.result.value as T;
+  if (job.result?.assetUrl) return job.result.assetUrl as T;
+  return undefined;
+};
+
+const localJobFromDurable = (record: DurableGenerationJob): GenerationJob => {
+  const { ownerId: _ownerId, leaseUntil: _leaseUntil, updatedAt: _updatedAt, ...job } = record;
+  return job;
+};
+
 export interface AssetGenerationSubmission<T> {
   generationJob: GenerationJob;
   value?: T;
@@ -192,6 +240,8 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
   private recoveredJobsByScene = new Map<string, GenerationJob>();
   private runtimeSnapshotsById = new Map<GenerationCommandId, JobState>();
   private domainSyncUnsubscribe: (() => void) | null = null;
+  /** Stable for this tab/runtime; never persisted as user data. */
+  private readonly persistenceOwnerId = createPersistenceOwnerId();
 
   private ensureDomainSync(): void {
     if (this.domainSyncUnsubscribe) return;
@@ -301,22 +351,56 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
       return (inFlight as Promise<AssetGenerationSubmission<T>>)
         .then(submission => ({ ...submission, reused: true }));
     }
+    const promise = this.submitAssetGenerationDurably(command, options);
+    this.assetInFlightByKey.set(
+      intent.idempotencyKey,
+      promise as Promise<AssetGenerationSubmission<unknown>>,
+    );
+    void promise.then(() => {
+      if (this.assetInFlightByKey.get(intent.idempotencyKey) === promise) {
+        this.assetInFlightByKey.delete(intent.idempotencyKey);
+      }
+    }, () => {
+      if (this.assetInFlightByKey.get(intent.idempotencyKey) === promise) {
+        this.assetInFlightByKey.delete(intent.idempotencyKey);
+      }
+    });
+    return promise;
+  }
 
+  private async submitAssetGenerationDurably<T>(
+    command: AssetGenerationCommand<T>,
+    options: VideoGenerationSubmitOptions,
+  ): Promise<AssetGenerationSubmission<T>> {
+    const intent = createAssetGenerationIntent({
+      projectId: command.projectId,
+      sceneId: command.sceneId,
+      sceneIndex: command.sceneIndex,
+      capability: command.capability,
+      provider: command.provider,
+      model: command.model,
+      input: command.input,
+      explicitRegeneration: options.explicitRegeneration,
+    });
     const existing = this.generationJobsByKey.get(intent.idempotencyKey);
     if (existing?.status === 'completed') {
-      return Promise.resolve({
+      return {
         generationJob: existing,
         value: this.assetResultByJobId.get(existing.jobId) as T,
         reused: true,
-      });
+      };
     }
     if (existing && !(existing.status === 'failed' && existing.error?.retryable === true)) {
-      const error = existing.error || {
-        code: 'UNKNOWN',
-        message: '이미 처리된 생성 요청입니다.',
-        retryable: false,
-      };
-      return Promise.reject(Object.assign(new Error(error.message), error));
+      if (existing.status !== 'queued' && existing.status !== 'running' &&
+        existing.status !== 'provider_pending' && existing.status !== 'uploading' &&
+        existing.status !== 'interrupted') {
+        const error = existing.error || {
+          code: 'UNKNOWN',
+          message: '이미 처리된 생성 요청입니다.',
+          retryable: false,
+        };
+        throw Object.assign(new Error(error.message), error);
+      }
     }
 
     const generationJob = existing
@@ -329,25 +413,101 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
           failedAt: undefined,
         }
       : createGenerationJob(intent, command.id, command.sceneIndex);
-    this.generationJobsByKey.set(intent.idempotencyKey, generationJob);
-    this.generationJobsById.set(generationJob.jobId, generationJob);
+
+    let claimed: DurableGenerationJob;
+    for (;;) {
+      const claim = await claimGenerationJob(generationJob, this.persistenceOwnerId);
+      if (claim.acquired) {
+        claimed = claim.record;
+        break;
+      }
+      const observed = claim.record;
+      const observedJob = localJobFromDurable(observed);
+      this.generationJobsByKey.set(intent.idempotencyKey, observedJob);
+      this.generationJobsById.set(observedJob.jobId, observedJob);
+      if (observed.status === 'completed') {
+        return {
+          generationJob: observedJob,
+          value: valueFromDurableJob<T>(observedJob),
+          reused: true,
+        };
+      }
+      if (observed.status === 'failed' && observed.error?.retryable !== true) {
+        const error = observed.error || {
+          code: 'UNKNOWN',
+          message: '이미 처리된 생성 요청입니다.',
+          retryable: false,
+        };
+        throw Object.assign(new Error(error.message), error);
+      }
+      await waitForGenerationJobRecord(
+        command.projectId,
+        intent.idempotencyKey,
+        Math.max(100, observed.leaseUntil - Date.now() + 100),
+      );
+    }
+
+    const canonicalJob = localJobFromDurable(claimed);
+    this.generationJobsByKey.set(intent.idempotencyKey, canonicalJob);
+    this.generationJobsById.set(canonicalJob.jobId, canonicalJob);
     this.latestAssetJobByScope.set(
       this.assetScopeKey(command.projectId, command.sceneIndex, command.capability),
-      generationJob.jobId,
+      canonicalJob.jobId,
     );
 
-    const promise = (async (): Promise<AssetGenerationSubmission<T>> => {
-      const running = { ...generationJob, status: 'running' as const, startedAt: Date.now() };
+    let promise!: Promise<AssetGenerationSubmission<T>>;
+    promise = (async (): Promise<AssetGenerationSubmission<T>> => {
+      const running = { ...canonicalJob, status: 'running' as const, startedAt: Date.now() };
       this.generationJobsByKey.set(intent.idempotencyKey, running);
       this.generationJobsById.set(running.jobId, running);
+      await updateGenerationJobRecord(command.projectId, intent.idempotencyKey, this.persistenceOwnerId, {
+        status: 'running',
+        startedAt: running.startedAt,
+        leaseUntil: Date.now() + 15_000,
+      });
+      const heartbeat = setInterval(() => {
+        void updateGenerationJobRecord(
+          command.projectId,
+          intent.idempotencyKey,
+          this.persistenceOwnerId,
+          { leaseUntil: Date.now() + 15_000 },
+        );
+      }, 5_000);
       try {
         const value = await command.execute();
-        const completed = { ...running, status: 'completed' as const, completedAt: Date.now() };
-        this.generationJobsByKey.set(intent.idempotencyKey, completed);
-        this.generationJobsById.set(completed.jobId, completed);
+        const completed = {
+          ...running,
+          status: 'completed' as const,
+          completedAt: Date.now(),
+          result: durableResultFor(value),
+        };
+        const persisted = await updateGenerationJobRecord(
+          command.projectId,
+          intent.idempotencyKey,
+          this.persistenceOwnerId,
+          {
+            status: 'completed',
+            completedAt: completed.completedAt,
+            result: completed.result,
+            leaseUntil: 0,
+          },
+        );
+        // If the lease expired and another tab took over, this result is
+        // intentionally not allowed to replace the newer owner's job.
+        const current = persisted || await getGenerationJobRecord(
+          command.projectId,
+          intent.idempotencyKey,
+        );
+        const winner = current ? localJobFromDurable(current) : completed;
+        this.generationJobsByKey.set(intent.idempotencyKey, winner);
+        this.generationJobsById.set(winner.jobId, winner);
         this.assetResultByJobId.set(completed.jobId, value);
         this.pruneRetainedState();
-        return { generationJob: completed, value, reused: false };
+        return {
+          generationJob: winner,
+          value: persisted ? value : valueFromDurableJob<T>(winner),
+          reused: !persisted,
+        };
       } catch (cause) {
         const error = normalizeGenerationError(cause, {
           provider: command.provider,
@@ -361,17 +521,17 @@ export class BrowserJobOrchestrator implements JobOrchestrator {
         };
         this.generationJobsByKey.set(intent.idempotencyKey, failed);
         this.generationJobsById.set(failed.jobId, failed);
+        await updateGenerationJobRecord(command.projectId, intent.idempotencyKey, this.persistenceOwnerId, {
+          status: 'failed',
+          error,
+          failedAt: failed.failedAt,
+          leaseUntil: Date.now(),
+        });
         throw cause;
       } finally {
-        if (this.assetInFlightByKey.get(intent.idempotencyKey) === promise) {
-          this.assetInFlightByKey.delete(intent.idempotencyKey);
-        }
+        clearInterval(heartbeat);
       }
     })();
-    this.assetInFlightByKey.set(
-      intent.idempotencyKey,
-      promise as Promise<AssetGenerationSubmission<unknown>>,
-    );
     return promise;
   }
 

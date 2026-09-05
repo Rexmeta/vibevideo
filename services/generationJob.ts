@@ -29,6 +29,8 @@ export interface GenerationJob {
   result?: {
     assetUrl?: string;
     storagePath?: string;
+    /** JSON-safe result payload used when a reconnecting tab can reuse it. */
+    value?: unknown;
   };
   error?: {
     code: string;

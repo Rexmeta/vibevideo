@@ -2,8 +2,72 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   const listeners = new Set<(jobs: any[]) => void>();
+  const durableJobs = new Map<string, any>();
+  const durableKey = (job: any) => `${job.projectId}:${job.idempotencyKey}`;
+  const claimGenerationJob = vi.fn(async (proposed: any, ownerId: string) => {
+    const key = durableKey(proposed);
+    const current = durableJobs.get(key);
+    if (current?.status === 'completed') return { record: current, acquired: false };
+    if (
+      current &&
+      current.status !== 'failed' &&
+      current.leaseUntil > Date.now()
+    ) {
+      return { record: current, acquired: false };
+    }
+    if (
+      current &&
+      current.status === 'failed' &&
+      current.error?.retryable !== true &&
+      current.leaseUntil > Date.now()
+    ) {
+      return { record: current, acquired: false };
+    }
+    const record = {
+      ...(current || proposed),
+      ownerId,
+      leaseUntil: Date.now() + 15_000,
+      updatedAt: Date.now(),
+      status: current ? 'queued' : proposed.status,
+      attempts: current ? current.attempts + 1 : proposed.attempts,
+      error: undefined,
+      failedAt: undefined,
+    };
+    durableJobs.set(key, record);
+    return { record, acquired: true };
+  });
+  const updateGenerationJobRecord = vi.fn(async (
+    projectId: string,
+    idempotencyKey: string,
+    ownerId: string,
+    patch: any,
+  ) => {
+    const key = `${projectId}:${idempotencyKey}`;
+    const current = durableJobs.get(key);
+    if (!current || current.ownerId !== ownerId) return undefined;
+    const next = { ...current, ...patch, updatedAt: Date.now() };
+    durableJobs.set(key, next);
+    return next;
+  });
+  const getGenerationJobRecord = vi.fn(async (projectId: string, idempotencyKey: string) =>
+    durableJobs.get(`${projectId}:${idempotencyKey}`));
+  const waitForGenerationJobRecord = vi.fn(async (projectId: string, idempotencyKey: string) => {
+    const key = `${projectId}:${idempotencyKey}`;
+    for (;;) {
+      const current = durableJobs.get(key);
+      if (!current || current.status === 'completed' ||
+        (current.status === 'failed' && current.error?.retryable !== true) ||
+        current.leaseUntil <= Date.now()) return current;
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+  });
   return {
     listeners,
+    durableJobs,
+    claimGenerationJob,
+    getGenerationJobRecord,
+    updateGenerationJobRecord,
+    waitForGenerationJobRecord,
     enqueueVideoBatch: vi.fn(() => 'job-1'),
     subscribe: vi.fn((listener: (jobs: any[]) => void) => {
       listeners.add(listener);
@@ -20,6 +84,13 @@ const mocks = vi.hoisted(() => {
     loadInterruptedFromProjects: vi.fn(),
   };
 });
+
+vi.mock('../services/storageService', () => ({
+  claimGenerationJob: mocks.claimGenerationJob,
+  getGenerationJobRecord: mocks.getGenerationJobRecord,
+  updateGenerationJobRecord: mocks.updateGenerationJobRecord,
+  waitForGenerationJobRecord: mocks.waitForGenerationJobRecord,
+}));
 
 vi.mock('../services/jobManager', () => ({
   jobManager: {
@@ -66,6 +137,7 @@ describe('browser job orchestrator lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listeners.clear();
+    mocks.durableJobs.clear();
     mocks.getJob.mockReturnValue(undefined);
     mocks.resumeAll.mockResolvedValue(undefined);
     mocks.resumeInterrupted.mockResolvedValue(null);
@@ -92,7 +164,7 @@ describe('browser job orchestrator lifecycle', () => {
       };
       const firstPromise = orchestrator.submitAssetGeneration(command);
       const duplicatePromise = orchestrator.submitAssetGeneration({ ...command, id: `${capability}-2` });
-      expect(provider).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(provider).toHaveBeenCalledOnce());
       resolve('asset');
       const [first, duplicate] = await Promise.all([firstPromise, duplicatePromise]);
       expect(duplicate.reused).toBe(true);
@@ -161,6 +233,7 @@ describe('browser job orchestrator lifecycle', () => {
       execute: () => new Promise<string>(resolve => { finishRegeneration = resolve; }),
     }, { explicitRegeneration: true });
 
+    await vi.waitFor(() => expect(finishRegeneration).toBeTypeOf('function'));
     finishRegeneration('new');
     const regenerated = await regeneratedPromise;
     finishOriginal('old');
@@ -168,6 +241,87 @@ describe('browser job orchestrator lifecycle', () => {
 
     expect(orchestrator.isLatestAssetGeneration(regenerated.generationJob.jobId)).toBe(true);
     expect(orchestrator.isLatestAssetGeneration(original.generationJob.jobId)).toBe(false);
+  });
+
+  it('shares one provider call between separate tab orchestrators and reconnects to its result', async () => {
+    const firstTab = new BrowserJobOrchestrator();
+    const secondTab = new BrowserJobOrchestrator();
+    let resolve!: (value: { assetUrl: string }) => void;
+    const provider = vi.fn(() => new Promise<{ assetUrl: string }>(done => { resolve = done; }));
+    const command = {
+      id: 'image-tab-1',
+      projectId: 'project-shared',
+      sceneId: 'scene-1',
+      sceneIndex: 0,
+      capability: 'image' as const,
+      provider: 'Google',
+      model: 'imagen',
+      input: { prompt: 'shared prompt' },
+      execute: provider,
+    };
+
+    const firstPromise = firstTab.submitAssetGeneration(command);
+    await vi.waitFor(() => expect(provider).toHaveBeenCalledOnce());
+    const secondPromise = secondTab.submitAssetGeneration({
+      ...command,
+      id: 'image-tab-2',
+      execute: vi.fn(() => Promise.reject(new Error('the second tab must not call the provider'))),
+    });
+    resolve({ assetUrl: 'https://cdn.example.com/shared-image.png' });
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    expect(provider).toHaveBeenCalledOnce();
+    expect(second.reused).toBe(true);
+    expect(second.generationJob.jobId).toBe(first.generationJob.jobId);
+    expect(second.value).toEqual({ assetUrl: 'https://cdn.example.com/shared-image.png' });
+
+    const reconnected = await new BrowserJobOrchestrator().submitAssetGeneration({
+      ...command,
+      id: 'image-after-reload',
+      execute: vi.fn(() => Promise.reject(new Error('a completed job must be reused'))),
+    });
+    expect(reconnected.reused).toBe(true);
+    expect(reconnected.value).toEqual({ assetUrl: 'https://cdn.example.com/shared-image.png' });
+    expect(provider).toHaveBeenCalledOnce();
+  });
+
+  it('hands an expired lease to another tab and fences the old completion', async () => {
+    const firstTab = new BrowserJobOrchestrator();
+    const secondTab = new BrowserJobOrchestrator();
+    let resolveOld!: (value: string) => void;
+    const oldProvider = vi.fn(() => new Promise<string>(done => { resolveOld = done; }));
+    const newProvider = vi.fn().mockResolvedValue('new-result');
+    const command = {
+      id: 'audio-lease-1',
+      projectId: 'project-lease',
+      sceneId: 'scene-1',
+      sceneIndex: 0,
+      capability: 'audio' as const,
+      provider: 'Google',
+      model: 'tts',
+      input: { text: 'same text' },
+      execute: oldProvider,
+    };
+
+    const oldPromise = firstTab.submitAssetGeneration(command);
+    await vi.waitFor(() => expect(oldProvider).toHaveBeenCalledOnce());
+    const record = Array.from(mocks.durableJobs.values())[0];
+    record.leaseUntil = Date.now() - 1;
+
+    const newPromise = secondTab.submitAssetGeneration({
+      ...command,
+      id: 'audio-lease-2',
+      execute: newProvider,
+    });
+    const newer = await newPromise;
+    resolveOld('old-result');
+    const older = await oldPromise;
+
+    expect(newProvider).toHaveBeenCalledOnce();
+    expect(newer.value).toBe('new-result');
+    expect(older.reused).toBe(true);
+    expect(older.value).toBe('new-result');
+    expect(older.generationJob.jobId).toBe(newer.generationJob.jobId);
   });
 
   it('rejects an unknown persisted upload job after a newer scoped generation starts', async () => {
