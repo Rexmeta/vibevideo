@@ -10,7 +10,9 @@ import {
   Project,
   VideoMeta,
 } from '../types';
-import { generateSceneVideo } from './geminiService';
+import { runVideoGeneration } from './generationCommands';
+import { normalizeGenerationError, throwGenerationFailure } from './generationContract';
+import type { GenerationError } from '../types';
 import {
   getProjectFromCloud,
   getAllProjectsFromCloud,
@@ -54,6 +56,7 @@ export interface JobSceneState {
     | 'long-wait'
     | 'uploading';
   error?: string;
+  generationError?: GenerationError;
   durationMs?: number;
   // Veo long-running operation handle, persisted as soon as submit
   // returns. Surfaced in the dock so a tab close + reopen keeps polling.
@@ -179,17 +182,33 @@ class JobManager {
       this.persistSceneUpdate(job, sceneIdx, updates).catch(() => {});
       this.recomputeJobStatus(jobId);
     } else if (e.status === 'failed') {
-      // Stay in 'uploading' state; UI shows retry count and lastError.
-      sState.error = e.error;
+      const generationError = e.generationError || normalizeGenerationError(e.error, {
+        provider: 'Firebase',
+        operation: e.id,
+        kind: 'upload',
+      });
+      sState.error = generationError.message;
+      sState.generationError = generationError;
+      if (!generationError.retryable) {
+        sState.status = 'failed';
+        job.completed = Math.max(0, job.completed - 1);
+        job.failed += 1;
+        this.uploadEntryIndex.delete(e.id);
+      }
       const updates: Partial<Scene> = {
         video_meta: {
           ...(spec.scenes[sceneIdx]?.video_meta || {}),
-          uploadStatus: 'pending-upload',
+          uploadStatus: generationError.retryable ? 'pending-upload' : 'upload-failed',
           uploadAttempts: e.attempts,
+          uploadLastError: generationError.message,
         },
       };
       spec.scenes[sceneIdx] = { ...(spec.scenes[sceneIdx] || {}), ...updates };
       try { spec.onSceneUpdate?.(sceneIdx, updates); } catch {}
+      if (!generationError.retryable) {
+        this.persistSceneUpdate(job, sceneIdx, updates).catch(() => {});
+        this.recomputeJobStatus(jobId);
+      }
     }
     job.updatedAt = Date.now();
     this.emit();
@@ -950,17 +969,16 @@ class JobManager {
         const prevContext =
           sState.idx > 0 ? spec.scenes[sState.idx - 1]?.visual_prompt : undefined;
 
-        const result = await generateSceneVideo(
-          s.visual_prompt!,
-          seedImage,
-          spec.aspectRatio,
-          spec.model?.modelId,
-          spec.model?.provider,
-          s.script_segment || s.audio_script,
-          spec.characterProfile || undefined,
-          prevContext,
-          sState.idx,
-          {
+        const result = throwGenerationFailure(await runVideoGeneration({
+          prompt: s.visual_prompt!,
+          imageSource: seedImage,
+          aspectRatio: spec.aspectRatio,
+          model: spec.model,
+          audioScript: s.script_segment || s.audio_script,
+          characterProfile: spec.characterProfile || undefined,
+          previousSceneContext: prevContext,
+          sceneIndex: sState.idx,
+          options: {
             scene: s,
             styleSheet: spec.styleSheet,
             negativePrompt: spec.negativePrompt || s.negativePrompt,
@@ -986,8 +1004,8 @@ class JobManager {
               sState.pollAttempts = info.attempts;
               if (info.attempts % 5 === 0) this.emit();
             },
-          }
-        );
+          },
+        }));
         if (signal.aborted) {
           sState.status = 'failed';
           sState.error = '취소됨';
@@ -1135,13 +1153,17 @@ class JobManager {
           this.emit();
           continue;
         }
-        const msg = err?.message || String(err);
-        console.error(`[JobManager] scene ${sState.idx} failed:`, msg);
+        const normalized = normalizeGenerationError(err, {
+          provider: spec.model?.provider || 'Google',
+          operation: job.id,
+        });
+        console.error(`[JobManager] scene ${sState.idx} failed:`, normalized.code, normalized.message);
         sState.status = 'failed';
-        sState.error = msg;
+        sState.error = normalized.message;
+        sState.generationError = normalized;
         sState.durationMs = Date.now() - sceneStart;
         job.failed++;
-        job.lastError = msg;
+        job.lastError = normalized.message;
       }
       job.updatedAt = Date.now();
       this.persistRun(job, 'running').catch(() => {});

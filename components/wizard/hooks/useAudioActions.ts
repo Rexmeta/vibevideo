@@ -1,6 +1,7 @@
 import React from 'react';
 import { Scene } from '../../../types';
-import { generateSceneAudio } from '../../../services/geminiService';
+import { runAudioGeneration } from '../../../services/generationCommands';
+import { throwGenerationFailure } from '../../../services/generationContract';
 import { uploadFileToCloud } from '../../../services/storageService';
 import { saveMedia } from '../../../services/mediaCache';
 import {
@@ -88,7 +89,7 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
         setProcessingType(null);
         return;
       }
-      const res = await generateSceneAudio(currentScene.script_segment!, videoStyle);
+      const res = throwGenerationFailure(await runAudioGeneration({ text: currentScene.script_segment!, style: videoStyle }));
       if (res) {
         updateSceneAt(idx, { audio_path: res.audio_path, audio_duration: res.duration });
         saveMedia(projectId, idx, 'audio', res.audio_path);
@@ -132,7 +133,7 @@ export const useAudioActions = (deps: AudioActionsDeps) => {
             updateSceneAt(idx, { audio_path: url });
             return;
           }
-          const res = await generateSceneAudio(s.script_segment!, videoStyle);
+          const res = throwGenerationFailure(await runAudioGeneration({ text: s.script_segment!, style: videoStyle }));
           if (res) {
             updateSceneAt(idx, { audio_path: res.audio_path, audio_duration: res.duration });
             saveMedia(projectId, idx, 'audio', res.audio_path);

@@ -1,6 +1,12 @@
 import React, { useState } from 'react';
 import { Icons } from '../Icons';
-import { generateScript, segmentScriptIntoScenes, generateStyleSheet, refineAllScenesWithInstruction } from '../../services/geminiService';
+import { refineAllScenesWithInstruction } from '../../services/geminiService';
+import {
+  runSceneSegmentation,
+  runStyleSheetGeneration,
+  runTextGeneration,
+} from '../../services/generationCommands';
+import { normalizeGenerationError, throwGenerationFailure } from '../../services/generationContract';
 import { generateRemixedScenes, regenerateSingleRemixScene } from '../../services/youtubeAnalysisService';
 import { useWizard } from './WizardContext';
 import type { AIModel, CreativeBrief, Scene } from '../../types';
@@ -8,7 +14,7 @@ import { StoryboardCard } from './StoryboardCard';
 import { useInstructionPresets } from '../../hooks/useInstructionPresets';
 
 function alertGeminiError(prefix: string, e: any) {
-  const msg = String(e?.message || '');
+  const msg = normalizeGenerationError(e, { provider: 'Google' }).message;
   if (msg.includes('API key') || msg.includes('API 키가 설정되지 않았습니다')) {
     alert('API 키가 설정되지 않았습니다. 관리 페이지에서 Gemini API 키를 설정해주세요.');
   } else if (msg.startsWith('Gemini ')) {
@@ -266,7 +272,7 @@ export const Step2Script: React.FC = () => {
       addInstructionPreset(bulkInstruction.trim());
       setBulkInstruction('');
     } catch (e: any) {
-      setBulkError(e?.message || '알 수 없는 오류');
+      setBulkError(normalizeGenerationError(e, { provider: 'Google' }).message);
     } finally {
       setBulkLoading(false);
       setBulkProgress(null);
@@ -346,7 +352,16 @@ export const Step2Script: React.FC = () => {
             setLoading(true);
             setLoadingMessage('AI가 창의적인 스크립트를 빌드 중입니다...');
             try {
-              const result = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform, creativeBrief, textModel: selectedTextModel || undefined });
+              const result = throwGenerationFailure(await runTextGeneration({
+                topic,
+                style: videoStyle,
+                lengthSeconds: duration,
+                sceneCount: targetSceneCount,
+                genre,
+                platform,
+                creativeBrief,
+                textModel: selectedTextModel || undefined,
+              }));
               setScript(result);
             } catch (e: any) {
               console.error('Script generation failed:', e);
@@ -611,20 +626,30 @@ export const Step2Script: React.FC = () => {
                   textModel: selectedTextModel || undefined,
                 });
               } else {
-                s = await segmentScriptIntoScenes(
+                s = throwGenerationFailure(await runSceneSegmentation({
                   script,
-                  videoStyle,
-                  aspectRatio,
-                  characterProfile || undefined,
-                  targetSceneCount,
-                  { genre, platform, characterReferences, creativeBrief, textModel: selectedTextModel || undefined },
-                );
+                  style: videoStyle,
+                  ratio: aspectRatio,
+                  characterProfile: characterProfile || undefined,
+                  sceneCount: targetSceneCount,
+                  genre,
+                  platform,
+                  characterReferences,
+                  creativeBrief,
+                  textModel: selectedTextModel || undefined,
+                }));
               }
               setScenes(s);
               if (!styleSheet) {
                 try {
                   setLoadingMessage('비주얼 스타일 시트를 추출하는 중...');
-                  const sheet = await generateStyleSheet(topic, script, videoStyle, { genre });
+                  const sheet = throwGenerationFailure(await runStyleSheetGeneration({
+                    topic,
+                    script,
+                    visualStyle: videoStyle,
+                    genre,
+                    textModel: selectedTextModel || undefined,
+                  }));
                   setStyleSheet(sheet);
                 } catch (sheetErr) {
                   console.warn('[StyleSheet] auto-generation failed, continuing:', sheetErr);

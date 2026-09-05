@@ -3,6 +3,7 @@ import { Icons } from '../Icons';
 import { refineSceneWithInstruction, type SceneRefineResult, type SceneRefineContext } from '../../services/geminiService';
 import type { Scene } from '../../types';
 import { useInstructionPresets } from '../../hooks/useInstructionPresets';
+import { normalizeGenerationError } from '../../services/generationContract';
 
 // ── Diff row ────────────────────────────────────────────────────────────────
 
@@ -72,7 +73,7 @@ export const SceneAIEditModal: React.FC<SceneAIEditModalProps> = ({
       setResult(r);
       addInstructionPreset(instruction.trim());
     } catch (e: any) {
-      setError(e?.message || '알 수 없는 오류');
+      setError(normalizeGenerationError(e, { provider: 'Google' }).message);
     } finally {
       setLoading(false);
     }

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Scene, AIModel, StyleSheet, ProjectStats, CharacterReference } from '../../../types';
-import { generateSceneImage } from '../../../services/geminiService';
+import { runImageGeneration } from '../../../services/generationCommands';
+import { throwGenerationFailure } from '../../../services/generationContract';
 import { uploadFileToCloud } from '../../../services/storageService';
 import { saveMedia } from '../../../services/mediaCache';
 import {
@@ -94,14 +95,13 @@ export const useImageActions = (deps: ImageActionsDeps) => {
             return;
           }
           const imgModel = allModels.find(m => m.id === selectedImageModel);
-          const result = await generateSceneImage(
-            s.visual_prompt!,
-            videoStyle,
+          const result = throwGenerationFailure(await runImageGeneration({
+            prompt: s.visual_prompt!,
+            style: videoStyle,
             aspectRatio,
-            imgModel?.modelId,
-            imgModel?.provider,
-            characterProfile || undefined,
-            {
+            model: imgModel,
+            characterProfile: characterProfile || undefined,
+            options: {
               scene: s,
               styleSheet,
               negativePrompt: negativePrompt || s.negativePrompt,
@@ -109,8 +109,8 @@ export const useImageActions = (deps: ImageActionsDeps) => {
               qualityThreshold,
               referenceImage: characterReferenceImage,
               referenceImages: referenceImagesForScene(s),
-            }
-          );
+            },
+          }));
           if (result) {
             addStats(result.stats);
             const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
@@ -189,14 +189,13 @@ export const useImageActions = (deps: ImageActionsDeps) => {
     const fKey = `image-${idx}`;
     try {
       const imgModel = allModels.find(m => m.id === selectedImageModel);
-      const result = await generateSceneImage(
-        currentScene.visual_prompt!,
-        videoStyle,
+      const result = throwGenerationFailure(await runImageGeneration({
+        prompt: currentScene.visual_prompt!,
+        style: videoStyle,
         aspectRatio,
-        imgModel?.modelId,
-        imgModel?.provider,
-        characterProfile || undefined,
-        {
+        model: imgModel,
+        characterProfile: characterProfile || undefined,
+        options: {
           scene: currentScene,
           styleSheet,
           negativePrompt: negativePrompt || currentScene.negativePrompt,
@@ -205,8 +204,8 @@ export const useImageActions = (deps: ImageActionsDeps) => {
           extraHint: hint,
           referenceImage: characterReferenceImage,
           referenceImages: referenceImagesForScene(currentScene),
-        }
-      );
+        },
+      }));
       if (result) {
         addStats(result.stats);
         const previewUrl = `data:${result.mimeType};base64,${result.base64}`;
@@ -259,14 +258,13 @@ export const useImageActions = (deps: ImageActionsDeps) => {
         return;
       }
       const imgModel = allModels.find(m => m.id === selectedImageModel);
-      const result = await generateSceneImage(
-        currentScene.visual_prompt!,
-        videoStyle,
+      const result = throwGenerationFailure(await runImageGeneration({
+        prompt: currentScene.visual_prompt!,
+        style: videoStyle,
         aspectRatio,
-        imgModel?.modelId,
-        imgModel?.provider,
-        characterProfile || undefined,
-        {
+        model: imgModel,
+        characterProfile: characterProfile || undefined,
+        options: {
           scene: currentScene,
           styleSheet,
           negativePrompt: negativePrompt || currentScene.negativePrompt,
@@ -274,8 +272,8 @@ export const useImageActions = (deps: ImageActionsDeps) => {
           qualityThreshold,
           referenceImage: characterReferenceImage,
           referenceImages: referenceImagesForScene(currentScene),
-        }
-      );
+        },
+      }));
       if (result) {
         addStats(result.stats);
         const previewUrl = `data:${result.mimeType};base64,${result.base64}`;

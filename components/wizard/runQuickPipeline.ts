@@ -1,9 +1,10 @@
 import { WizardContextValue } from './WizardContext';
 import {
-  generateScript,
-  segmentScriptIntoScenes,
-  generateStyleSheet,
-} from '../../services/geminiService';
+  runSceneSegmentation,
+  runStyleSheetGeneration,
+  runTextGeneration,
+} from '../../services/generationCommands';
+import { throwGenerationFailure } from '../../services/generationContract';
 
 export type QuickPipelineStage =
   | 'script'
@@ -108,18 +109,31 @@ export const runQuickPipeline = async (
   let totalScenes = 0;
   try {
     emit({ stage: 'script', label: '스크립트 생성 중...', percent: 5 });
-    scriptText = await generateScript(topic, videoStyle, duration, targetSceneCount, { genre, platform, creativeBrief });
+    scriptText = throwGenerationFailure(await runTextGeneration({
+      topic,
+      style: videoStyle,
+      lengthSeconds: duration,
+      sceneCount: targetSceneCount,
+      genre,
+      platform,
+      creativeBrief,
+      textModel: ctx.selectedTextModel || undefined,
+    }));
     setScript(scriptText);
 
     emit({ stage: 'segment', label: '씬 분석 중...', percent: 18 });
-    const segScenes = await segmentScriptIntoScenes(
-      scriptText,
-      videoStyle,
-      aspectRatio,
-      characterProfile || undefined,
-      targetSceneCount,
-      { genre, platform, characterReferences, creativeBrief }
-    );
+    const segScenes = throwGenerationFailure(await runSceneSegmentation({
+      script: scriptText,
+      style: videoStyle,
+      ratio: aspectRatio,
+      characterProfile: characterProfile || undefined,
+      sceneCount: targetSceneCount,
+      genre,
+      platform,
+      characterReferences,
+      creativeBrief,
+      textModel: ctx.selectedTextModel || undefined,
+    }));
     setScenes(segScenes);
     scenesRef.current = segScenes;
     totalScenes = segScenes.length;
@@ -133,7 +147,13 @@ export const runQuickPipeline = async (
           percent: 25,
           totalScenes,
         });
-        const sheet = await generateStyleSheet(topic, scriptText, videoStyle, { genre });
+        const sheet = throwGenerationFailure(await runStyleSheetGeneration({
+          topic,
+          script: scriptText,
+          visualStyle: videoStyle,
+          genre,
+          textModel: ctx.selectedTextModel || undefined,
+        }));
         setStyleSheet(sheet);
       } catch (sheetErr) {
         console.warn('[QuickMode] Style sheet failed, continuing:', sheetErr);

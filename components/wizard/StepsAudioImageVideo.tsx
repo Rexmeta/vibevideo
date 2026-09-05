@@ -3,7 +3,8 @@ import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
 import { jobManager } from '../../services/jobManager';
 import { getModelsByType } from '../../services/modelService';
-import { generateStyleSheet } from '../../services/geminiService';
+import { runStyleSheetGeneration } from '../../services/generationCommands';
+import { throwGenerationFailure } from '../../services/generationContract';
 import { estimateCost, formatUsd, resolveApiModelId } from '../../services/pricing';
 import { CAPTION_PRESETS } from '../../services/captionService';
 import { TransitionType, MotionPreset, SeedSource } from '../../types';
@@ -35,6 +36,7 @@ export const StepsAudioImageVideo: React.FC = () => {
     setSelectedImageModel,
     selectedVideoModel,
     setSelectedVideoModel,
+    selectedTextModel,
     stats,
     setStats,
     statsRef,
@@ -294,7 +296,13 @@ export const StepsAudioImageVideo: React.FC = () => {
               onClick={async () => {
                 setGeneratingStyleSheet(true);
                 try {
-                  const sheet = await generateStyleSheet(topic, script, videoStyle, { genre });
+                  const sheet = throwGenerationFailure(await runStyleSheetGeneration({
+                    topic,
+                    script,
+                    visualStyle: videoStyle,
+                    genre,
+                    textModel: selectedTextModel || undefined,
+                  }));
                   setStyleSheet(sheet);
                 } catch (e: any) {
                   alert(`Style Sheet 재생성 실패: ${e?.message || ''}`);

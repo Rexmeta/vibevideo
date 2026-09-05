@@ -6,6 +6,7 @@ import { getGenre, getPlatform, type PlatformPreset } from "./presets";
 import { buildPrompt as buildModelPrompt } from "./promptAdapter";
 import { critiqueImage, buildRefineHint } from "./visionCritic";
 import type { QualityScore, PlatformId } from "../types";
+import { normalizeGenerationError } from './generationContract';
 
 const MISSING_API_KEY_MESSAGE = 'API 키가 설정되지 않았습니다. 관리 페이지에서 API 키를 설정해주세요.';
 
@@ -87,29 +88,11 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 1, label:
 }
 
 function normalizeGeminiError(e: any, label: string): Error {
-  const raw = String(e?.message || '') + ' ' + String(e?.status || '');
-  const lower = raw.toLowerCase();
   console.warn(`[${label}] raw error:`, e);
-
-  if (raw.includes('API 키가 설정되지 않았습니다') || lower.includes('api key') || lower.includes('api_key')) {
-    return e instanceof Error ? e : new Error(String(e?.message || raw));
-  }
-
-  let friendly = '';
-  if (raw.includes('503') || lower.includes('unavailable') || lower.includes('high demand') || lower.includes('overloaded')) {
-    friendly = 'Gemini 서버가 일시적으로 혼잡합니다. 잠시 후 다시 시도해 주세요.';
-  } else if (raw.includes('429') || lower.includes('resource_exhausted') || lower.includes('rate limit')) {
-    friendly = 'Gemini 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.';
-  } else if (raw.includes('시간 초과') || lower.includes('timeout') || lower.includes('deadline_exceeded')) {
-    friendly = 'Gemini 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요.';
-  } else if (raw.includes('500') || lower.includes('internal')) {
-    friendly = 'Gemini 서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
-  }
-
-  if (friendly) {
-    return new Error(friendly);
-  }
-  return e instanceof Error ? e : new Error(String(e?.message || raw || '알 수 없는 오류'));
+  const normalized = normalizeGenerationError(e, { provider: 'Google', operation: label });
+  const error = new Error(normalized.message);
+  Object.assign(error, normalized, { name: 'GenerationContractError' });
+  return error;
 }
 
 async function urlToBase64(url: string): Promise<string> {
@@ -622,7 +605,7 @@ export const generateStyleSheet = async (
   topic: string,
   script: string,
   visualStyle: string,
-  options: { genre?: GenreId } = {},
+  options: { genre?: GenreId; textModel?: string } = {},
 ): Promise<StyleSheet> => {
   const ai = new GoogleGenAI({ apiKey: requireApiKey() });
   const genre = getGenre(options.genre);
@@ -633,7 +616,7 @@ export const generateStyleSheet = async (
     const response = await withRetry(
       () => withTimeout(
         ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: options.textModel || 'gemini-2.5-flash',
           contents: `${sys}\n\n${user}`,
           config: {
             responseMimeType: 'application/json',

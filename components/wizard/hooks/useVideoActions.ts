@@ -1,6 +1,5 @@
 import React from 'react';
 import { Scene, AIModel, StyleSheet, ProjectStats } from '../../../types';
-import { generateSceneVideo } from '../../../services/geminiService';
 import { uploadFileToCloud } from '../../../services/storageService';
 import { saveMedia } from '../../../services/mediaCache';
 import { jobManager, JobState } from '../../../services/jobManager';

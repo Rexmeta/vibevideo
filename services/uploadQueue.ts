@@ -12,6 +12,8 @@
 // succeeds (so it can flip the persisted scene from blob URL to https).
 
 import { uploadFileToCloud, updateProjectFields } from './storageService';
+import { normalizeGenerationError } from './generationContract';
+import type { GenerationError } from '../types';
 
 const DB_NAME = 'vibe_upload_queue';
 const DB_VERSION = 1;
@@ -28,6 +30,7 @@ export interface UploadEntry {
   blob: Blob;
   attempts: number;
   lastError?: string;
+  generationError?: GenerationError;
   enqueuedAt: number;
   nextAttemptAt: number;
   status: UploadEntryStatus;
@@ -41,6 +44,7 @@ export interface UploadEvent {
   attempts: number;
   finalUrl?: string;
   error?: string;
+  generationError?: GenerationError;
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -213,6 +217,12 @@ class UploadQueue {
     const entries = await listEntries();
     for (const e of entries) {
       if (this.snapshot.has(e.id)) continue;
+      const normalized = e.generationError || normalizeGenerationError(e.lastError, {
+        provider: 'Firebase',
+        operation: e.id,
+        kind: 'upload',
+      });
+      e.generationError = normalized;
       this.snapshot.set(e.id, e);
       // Emit a synthetic 'failed' (pending-retry) event right away so
       // any subscriber (e.g. StudioDock badges) can surface "업로드
@@ -224,10 +234,13 @@ class UploadQueue {
         sceneIdx: e.sceneIdx,
         status: 'failed',
         attempts: e.attempts,
-        error: e.lastError,
+        error: e.lastError?.toLowerCase() === 'offline' ? e.lastError : normalized.message,
+        generationError: normalized,
       });
-      const wait = Math.max(0, e.nextAttemptAt - Date.now());
-      this.scheduleAttempt(e, wait);
+      if (normalized.retryable) {
+        const wait = Math.max(0, e.nextAttemptAt - Date.now());
+        this.scheduleAttempt(e, wait);
+      }
     }
   }
 
@@ -283,9 +296,18 @@ class UploadQueue {
         status: 'done', attempts: entry.attempts, finalUrl,
       });
     } catch (err: any) {
-      const msg = err?.message || String(err);
+      const rawMessage = err?.message || String(err);
+      const normalized = normalizeGenerationError(err, {
+        provider: 'Firebase',
+        operation: entry.id,
+        kind: 'upload',
+      });
+      const msg = rawMessage.toLowerCase() === 'offline' ? rawMessage : normalized.message;
       entry.status = 'failed';
+      // Persist only display-safe text. The structured error retains the stable
+      // code/retryability needed after a reload.
       entry.lastError = msg;
+      entry.generationError = normalized;
       entry.nextAttemptAt = Date.now() + computeBackoff(entry.attempts);
       this.snapshot.set(entry.id, entry);
       this.active.delete(entry.id);
@@ -295,7 +317,9 @@ class UploadQueue {
       try {
         const k = String(entry.sceneIdx).padStart(2, '0');
         await updateProjectFields(entry.projectId, {
-          [`saved_scenes_map.${k}.video_meta.uploadStatus`]: 'pending-upload',
+          [`saved_scenes_map.${k}.video_meta.uploadStatus`]: normalized.retryable
+            ? 'pending-upload'
+            : 'upload-failed',
           [`saved_scenes_map.${k}.video_meta.uploadAttempts`]: entry.attempts,
           [`saved_scenes_map.${k}.video_meta.uploadNextAttemptAt`]: entry.nextAttemptAt,
           [`saved_scenes_map.${k}.video_meta.uploadLastError`]: msg.slice(0, 500),
@@ -305,13 +329,13 @@ class UploadQueue {
       }
       this.emit({
         id: entry.id, projectId: entry.projectId, sceneIdx: entry.sceneIdx,
-        status: 'failed', attempts: entry.attempts, error: msg,
+        status: 'failed', attempts: entry.attempts, error: msg, generationError: normalized,
       });
       // Hard cap at 12 attempts (~hours of retry). After that we keep the
       // entry in IDB but stop scheduling — user can hit "지금 다시 업로드".
-      if (entry.attempts < 12) {
+      if (normalized.retryable && entry.attempts < 12) {
         this.scheduleAttempt(entry, computeBackoff(entry.attempts));
-      } else {
+      } else if (normalized.retryable) {
         console.warn(`[UploadQueue] gave up scheduling ${entry.id} after ${entry.attempts} attempts`);
       }
     }

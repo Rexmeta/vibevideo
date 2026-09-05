@@ -1,5 +1,6 @@
 import { Scene, CharacterReference, TransitionType, MotionPreset } from '../../../types';
 import { uploadFileToCloud } from '../../../services/storageService';
+import { normalizeGenerationError } from '../../../services/generationContract';
 
 export const CONCURRENCY = 3;
 
@@ -17,12 +18,8 @@ export const getGenerationErrorMessage = (
   error: unknown,
   fallback: string = '오류'
 ): string => {
-  if (error && typeof error === 'object' && 'message' in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string' && message.trim()) return message.trim();
-  }
-  if (typeof error === 'string' && error.trim()) return error.trim();
-  return fallback;
+  const normalized = normalizeGenerationError(error);
+  return normalized.message || fallback;
 };
 
 /**

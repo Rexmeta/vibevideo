@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { GENRES, PLATFORMS, applyPlatformDefaults } from '../../services/presets';
-import { generateSceneImage } from '../../services/geminiService';
+import { runImageGeneration } from '../../services/generationCommands';
+import { normalizeGenerationError, throwGenerationFailure } from '../../services/generationContract';
 import { uploadFileToCloud, updateProjectFields } from '../../services/storageService';
 import { useWizard } from './WizardContext';
 import { SaveContextPackModal } from '../SaveContextPackModal';
@@ -12,6 +13,10 @@ import {
 import type { CreativeBriefPurpose, CreativeBriefTone } from '../../types';
 
 export const Step1Setup: React.FC = () => {
+  const safeUploadError = (error: unknown) =>
+    normalizeGenerationError(error, { provider: 'Firebase', kind: 'upload' }).message;
+  const safeGenerationError = (error: unknown) =>
+    normalizeGenerationError(error, { provider: 'Google' }).message;
   const w = useWizard();
   const {
     genre,
@@ -426,7 +431,7 @@ export const Step1Setup: React.FC = () => {
                                 return next;
                               });
                               sync();
-                            } catch (err: any) { alert(`업로드 실패: ${err?.message || ''}`); }
+                            } catch (err: any) { alert(`업로드 실패: ${safeUploadError(err)}`); }
                             finally { setGeneratingCharRefIdx(null); e.target.value = ''; }
                           }}
                         />
@@ -674,7 +679,7 @@ export const Step1Setup: React.FC = () => {
                         setCharacterReferenceImage(url);
                         sync();
                       } catch (err: any) {
-                        alert(`참조 이미지 업로드 실패: ${err?.message || ''}`);
+                        alert(`참조 이미지 업로드 실패: ${safeUploadError(err)}`);
                       } finally {
                         setGeneratingReference(false);
                         e.target.value = '';
@@ -688,15 +693,14 @@ export const Step1Setup: React.FC = () => {
                     setGeneratingReference(true);
                     try {
                       const imgModel = allModels.find(m => m.id === selectedImageModel);
-                      const result = await generateSceneImage(
-                        `Full-body character reference portrait of: ${characterProfile}. Neutral studio background, even lighting, character centered and clearly visible. Use this as a model sheet for downstream scenes.`,
-                        videoStyle,
+                      const result = throwGenerationFailure(await runImageGeneration({
+                        prompt: `Full-body character reference portrait of: ${characterProfile}. Neutral studio background, even lighting, character centered and clearly visible. Use this as a model sheet for downstream scenes.`,
+                        style: videoStyle,
                         aspectRatio,
-                        imgModel?.modelId,
-                        imgModel?.provider,
-                        characterProfile || undefined,
-                        { styleSheet, visionCritic: false },
-                      );
+                        model: imgModel,
+                        characterProfile: characterProfile || undefined,
+                        options: { styleSheet, visionCritic: false },
+                      }));
                       if (result) {
                         const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
                         const storagePath = `users/${userId}/projects/${projectId}/character_ref.${ext}`;
@@ -708,7 +712,7 @@ export const Step1Setup: React.FC = () => {
                         sync();
                       }
                     } catch (err: any) {
-                      alert(`참조 이미지 생성 실패: ${err?.message || ''}`);
+                      alert(`참조 이미지 생성 실패: ${safeGenerationError(err)}`);
                     } finally {
                       setGeneratingReference(false);
                     }
@@ -823,7 +827,7 @@ export const Step1Setup: React.FC = () => {
                               setCharacterReferences(prev => prev.map((x, i) => i === idx ? { ...x, imageUrl: url } : x));
                               sync();
                             } catch (err: any) {
-                              alert(`업로드 실패: ${err?.message || ''}`);
+                              alert(`업로드 실패: ${safeUploadError(err)}`);
                             } finally {
                               setGeneratingCharRefIdx(null);
                               e.target.value = '';
@@ -837,15 +841,14 @@ export const Step1Setup: React.FC = () => {
                           setGeneratingCharRefIdx(idx);
                           try {
                             const imgModel = allModels.find(m => m.id === selectedImageModel);
-                            const result = await generateSceneImage(
-                              `Full-body character reference portrait of "${c.name}": ${c.description || ''}. Neutral studio background, even lighting, character centered and clearly visible. Use as a model sheet.`,
-                              videoStyle,
+                            const result = throwGenerationFailure(await runImageGeneration({
+                              prompt: `Full-body character reference portrait of "${c.name}": ${c.description || ''}. Neutral studio background, even lighting, character centered and clearly visible. Use as a model sheet.`,
+                              style: videoStyle,
                               aspectRatio,
-                              imgModel?.modelId,
-                              imgModel?.provider,
-                              c.description || c.name,
-                              { styleSheet, visionCritic: false },
-                            );
+                              model: imgModel,
+                              characterProfile: c.description || c.name,
+                              options: { styleSheet, visionCritic: false },
+                            }));
                             if (result) {
                               const ext = result.mimeType.includes('png') ? 'png' : 'jpg';
                               const safeName = (c.name || `cast${idx}`).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32) || `cast${idx}`;
@@ -858,7 +861,7 @@ export const Step1Setup: React.FC = () => {
                               sync();
                             }
                           } catch (err: any) {
-                            alert(`AI 생성 실패: ${err?.message || ''}`);
+                            alert(`AI 생성 실패: ${safeGenerationError(err)}`);
                           } finally {
                             setGeneratingCharRefIdx(null);
                           }

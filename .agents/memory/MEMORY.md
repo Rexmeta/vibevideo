@@ -1,1 +1,2 @@
 - [IndexedDB tests and fake timers](indexeddb-test-timers.md) — let fake IndexedDB transactions settle on real timers before controlling retry timers.
+- [Upload retryability persistence](upload-retryability-persistence.md) — persist safe error codes and retryability so restored jobs never show terminal failures as pending.

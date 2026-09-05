@@ -425,6 +425,51 @@ export interface VideoMeta {
 
 export type ModelType = 'image' | 'video' | 'audio' | 'text';
 
+// Provider-neutral application boundary for every AI generation flow.
+export type GenerationCapability = ModelType;
+export type GenerationCommandId = string;
+export type GenerationErrorCode =
+  | 'AUTH_MISSING'
+  | 'AUTH_REJECTED'
+  | 'RATE_LIMITED'
+  | 'INVALID_INPUT'
+  | 'PROVIDER_TRANSIENT'
+  | 'PROVIDER_TERMINAL'
+  | 'TIMEOUT'
+  | 'UPLOAD_FAILED'
+  | 'CANCELLED'
+  | 'UNKNOWN';
+
+export interface GenerationCommand<TInput = unknown> {
+  id: GenerationCommandId;
+  capability: GenerationCapability;
+  input: TInput;
+  provider?: string;
+  modelId?: string;
+}
+
+export interface GenerationProgressEvent {
+  commandId: GenerationCommandId;
+  capability: GenerationCapability;
+  status: 'queued' | 'running' | 'progress' | 'succeeded' | 'failed';
+  percent?: number;
+  message?: string;
+  completed?: number;
+  total?: number;
+}
+
+export interface GenerationError {
+  code: GenerationErrorCode;
+  message: string;
+  retryable: boolean;
+  provider?: string;
+  operation?: string;
+}
+
+export type GenerationResult<T> =
+  | { ok: true; commandId: GenerationCommandId; value: T }
+  | { ok: false; commandId: GenerationCommandId; error: GenerationError };
+
 export interface AIModel {
   id: string;
   name: string;

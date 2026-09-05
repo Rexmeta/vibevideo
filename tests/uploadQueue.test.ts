@@ -76,5 +76,41 @@ describe('durable upload retry characterization', () => {
     const { uploadQueue: settledLifecycle } = await import('../services/uploadQueue');
     await settledLifecycle.resumeAll();
     expect(settledLifecycle.pendingForProject('project-fixture')).toEqual([]);
+
+    // A terminal auth error is persisted safely and must stay terminal after
+    // another reload: no raw SDK details and no automatic retry timer.
+    uploadFileToCloud.mockRejectedValue(new Error('403 PERMISSION_DENIED sdk-details'));
+    await settledLifecycle.enqueue({
+      projectId: 'auth-project',
+      userId: 'user-fixture',
+      sceneIdx: 0,
+      destPath: 'video.mp4',
+      blob: new Blob(['video']),
+    });
+    await waitFor(() => {
+      expect(settledLifecycle.pendingForProject('auth-project')[0]?.status).toBe('failed');
+    });
+    expect(uploadFileToCloud).toHaveBeenCalledTimes(3);
+
+    vi.resetModules();
+    const { uploadQueue: terminalRestoredLifecycle } = await import('../services/uploadQueue');
+    const terminalEvents: any[] = [];
+    terminalRestoredLifecycle.subscribe(event => terminalEvents.push(event));
+    await terminalRestoredLifecycle.resumeAll();
+
+    expect(terminalEvents).toContainEqual(expect.objectContaining({
+      status: 'failed',
+      error: 'API 키가 거부되었습니다. 키와 권한을 확인해 주세요.',
+      generationError: expect.objectContaining({ code: 'AUTH_REJECTED', retryable: false }),
+    }));
+    expect(JSON.stringify(terminalEvents)).not.toContain('sdk-details');
+
+    expect((terminalRestoredLifecycle as any).timers.size).toBe(0);
+    expect(uploadFileToCloud).toHaveBeenCalledTimes(3);
+    expect(updateProjectFields).toHaveBeenCalledWith('auth-project', expect.objectContaining({
+      'saved_scenes_map.00.video_meta.uploadStatus': 'upload-failed',
+      'saved_scenes_map.00.video_meta.uploadLastError':
+        'API 키가 거부되었습니다. 키와 권한을 확인해 주세요.',
+    }));
   });
 });
