@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { jobManager, JobState } from '../services/jobManager';
-import { uploadQueue, UploadEntry } from '../services/uploadQueue';
+import {
+  jobOrchestrator,
+  type JobState,
+  type UploadEntry,
+} from '../services/jobOrchestrator';
 import { Icons } from './Icons';
 
 interface Props {
@@ -54,7 +57,7 @@ const statusBadge = (status: JobState['status']) => {
 };
 
 export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
-  const [jobs, setJobs] = useState<JobState[]>(jobManager.snapshot());
+  const [jobs, setJobs] = useState<JobState[]>(jobOrchestrator.snapshot());
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem('vibe_studio_dock_collapsed') === '1';
@@ -63,11 +66,11 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
     }
   });
   const [concurrency, setConcurrencyState] = useState<number>(
-    jobManager.getConcurrency()
+    jobOrchestrator.getConcurrency()
   );
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [resumingId, setResumingId] = useState<string | null>(null);
-  const [pendingUploads, setPendingUploads] = useState<UploadEntry[]>(uploadQueue.pending());
+  const [pendingUploads, setPendingUploads] = useState<UploadEntry[]>(jobOrchestrator.pendingUploads());
   // Tick once a second so elapsed timers refresh while a job is running.
   const [, setNow] = useState<number>(Date.now());
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -75,7 +78,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
   const lastStatusRef = useRef<Map<string, JobState['status']>>(new Map());
 
   useEffect(() => {
-    const unsub = jobManager.subscribe(next => {
+    const unsub = jobOrchestrator.subscribe(next => {
       // Detect status transitions to terminal states and emit a toast.
       const prev = lastStatusRef.current;
       const fresh: ToastMessage[] = [];
@@ -117,8 +120,8 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
       }
       setJobs(next);
     });
-    const unsubUp = uploadQueue.subscribe(() => {
-      setPendingUploads(uploadQueue.pending());
+    const unsubUp = jobOrchestrator.subscribeUploads(() => {
+      setPendingUploads(jobOrchestrator.pendingUploads());
     });
     return () => { unsub(); unsubUp(); };
   }, []);
@@ -141,7 +144,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
   const handleResume = async (job: JobState) => {
     setResumingId(job.id);
     try {
-      const newId = await jobManager.resumeInterrupted({
+      const newId = await jobOrchestrator.resume({
         projectId: job.projectId,
         userId: job.userId,
       });
@@ -199,7 +202,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
 
   const updateConcurrency = (n: number) => {
     setConcurrencyState(n);
-    jobManager.setConcurrency(n);
+    jobOrchestrator.setConcurrency(n);
   };
 
   const visibleJobs = jobs;
@@ -249,7 +252,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
         <div className="flex items-center gap-1">
           {hasFinished && (
             <button
-              onClick={() => jobManager.clearFinished()}
+              onClick={() => jobOrchestrator.clearFinished()}
               className="text-[10px] uppercase tracking-wider font-black text-gray-300 hover:text-white px-2 py-1 transition-colors"
               title="완료된 작업 비우기"
             >
@@ -397,7 +400,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
 
               {projectUploads.length > 0 && (
                 <button
-                  onClick={() => jobManager.retryUploadsNow(job.projectId)}
+                  onClick={() => jobOrchestrator.retryUploads(job.projectId)}
                   className="w-full mb-2 px-3 py-1.5 rounded-xl text-[11px] font-black bg-amber-500 text-white hover:bg-amber-600 transition-colors flex items-center justify-center gap-1.5"
                 >
                   <Icons.RotateCcw size={11} /> 지금 다시 업로드
@@ -410,7 +413,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
                     onClick={() => {
                       const target = job.scenes.find(s => s.status === 'long-wait');
                       if (target) {
-                        jobManager.continueLongWait({
+                        jobOrchestrator.continueLongWait({
                           projectId: job.projectId,
                           userId: job.userId,
                           sceneIdx: target.idx,
@@ -424,7 +427,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
                   <button
                     onClick={() => {
                       const target = job.scenes.find(s => s.status === 'long-wait');
-                      if (target) jobManager.abandonLongWait(job.projectId, target.idx);
+                      if (target) jobOrchestrator.abandonLongWait(job.projectId, target.idx);
                     }}
                     className="flex-1 px-3 py-1.5 rounded-xl text-[11px] font-black bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors flex items-center justify-center gap-1.5"
                   >
@@ -437,13 +440,13 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
                 {(job.status === 'running' || job.status === 'queued') && (
                   <>
                     <button
-                      onClick={() => jobManager.pause(job.id)}
+                      onClick={() => jobOrchestrator.pause(job.id)}
                       className="flex-1 px-3 py-1.5 rounded-xl text-[11px] font-black bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors flex items-center justify-center gap-1.5"
                     >
                       <Icons.Square size={11} /> 일시중지
                     </button>
                     <button
-                      onClick={() => jobManager.cancel(job.id)}
+                      onClick={() => jobOrchestrator.cancel(job.id)}
                       className="flex-1 px-3 py-1.5 rounded-xl text-[11px] font-black bg-red-50 text-red-600 hover:bg-red-100 transition-colors flex items-center justify-center gap-1.5"
                     >
                       <Icons.X size={11} /> 취소
@@ -452,7 +455,7 @@ export const StudioDock: React.FC<Props> = ({ onOpenProject }) => {
                 )}
                 {job.status === 'paused' && (
                   <button
-                    onClick={() => jobManager.resume(job.id)}
+                    onClick={() => jobOrchestrator.resumePaused(job.id)}
                     className="flex-1 px-3 py-1.5 rounded-xl text-[11px] font-black bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors flex items-center justify-center gap-1.5"
                   >
                     <Icons.Play size={11} /> 이어서

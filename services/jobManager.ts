@@ -92,6 +92,25 @@ export interface JobState {
 
 export type JobListener = (jobs: JobState[]) => void;
 
+export interface VideoBatchOptions {
+  projectId: string;
+  projectTitle: string;
+  userId: string;
+  scenes: Partial<Scene>[];
+  aspectRatio: '16:9' | '9:16' | '1:1' | '3:4';
+  model?: AIModel;
+  characterProfile?: string;
+  styleSheet?: StyleSheet;
+  negativePrompt?: string;
+  characterReferenceImage?: string;
+  contextPackId?: string;
+  contextPackName?: string;
+  onlyIndices?: number[];
+  onSceneUpdate?: (idx: number, updates: Partial<Scene>) => void;
+  onStatsDelta?: (delta: Partial<ProjectStats>) => void;
+  existingOperations?: Record<string, OperationRecord>;
+}
+
 const CONCURRENCY_KEY = 'vibe_job_concurrency';
 const PROCESSED_INTERRUPT_KEY = 'vibe_job_interrupt_marked';
 
@@ -351,28 +370,7 @@ class JobManager {
   }
 
   // ---------- Job lifecycle ----------
-  enqueueVideoBatch(opts: {
-    projectId: string;
-    projectTitle: string;
-    userId: string;
-    scenes: Partial<Scene>[];
-    aspectRatio: '16:9' | '9:16' | '1:1' | '3:4';
-    model?: AIModel;
-    characterProfile?: string;
-    styleSheet?: StyleSheet;
-    negativePrompt?: string;
-    characterReferenceImage?: string;
-    contextPackId?: string;
-    contextPackName?: string;
-
-    onlyIndices?: number[];
-    onSceneUpdate?: (idx: number, updates: Partial<Scene>) => void;
-    onStatsDelta?: (delta: Partial<ProjectStats>) => void;
-    // Pre-loaded Veo operations from a persisted generation_run, keyed
-    // by zero-padded scene index. Scenes with an entry here skip the
-    // submit phase and resume polling.
-    existingOperations?: Record<string, OperationRecord>;
-  }): string {
+  enqueueVideoBatch(opts: VideoBatchOptions): string {
     const id = `job-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
     const candidateIdxs: number[] = [];

@@ -2,7 +2,7 @@ import React from 'react';
 import { Scene, AIModel, StyleSheet, ProjectStats } from '../../../types';
 import { uploadFileToCloud } from '../../../services/storageService';
 import { saveMedia } from '../../../services/mediaCache';
-import { jobManager, JobState } from '../../../services/jobManager';
+import { jobOrchestrator, type JobState } from '../../../services/jobOrchestrator';
 import { isMediaUploaded, hasMedia, summarizeGenerationErrors } from './wizardHelpers';
 
 interface VideoActionsDeps {
@@ -140,77 +140,70 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
       `비디오 생성 큐에 등록되었습니다 — Studio Dock에서 진행 상황을 확인하세요. (${vidModelName} | ${genIdxs.length}개 씬)`
     );
 
-    const jobId = jobManager.enqueueVideoBatch({
-      projectId,
-      projectTitle: topic || '제목 없음',
-      userId,
-      scenes: sceneSnapshot,
-      aspectRatio,
-      model: vidModel,
-      characterProfile: characterProfile || undefined,
-      styleSheet,
-      negativePrompt: negativePrompt || undefined,
-      characterReferenceImage,
-      contextPackId: linkedContextPackId,
-      contextPackName: linkedContextPackName,
-      onlyIndices: genIdxs,
-      onSceneUpdate: (idx, updates) => {
-        if (updates.video_path && updates.video_path.startsWith('blob:')) {
-          trackBlobUrl(updates.video_path);
-        }
-        updateSceneAt(idx, updates);
-        setFailedScenes(prev => {
-          const n = new Map(prev);
-          n.delete(`video-${idx}`);
-          return n;
-        });
-        // Persist to the user's wizard sync after each scene.
-        sync();
+    const jobId = jobOrchestrator.batch({
+      id: `video-batch-${projectId}-${Date.now()}`,
+      capability: 'video',
+      provider: vidModel?.provider,
+      modelId: vidModel?.modelId,
+      input: {
+        projectId,
+        projectTitle: topic || '제목 없음',
+        userId,
+        scenes: sceneSnapshot,
+        aspectRatio,
+        model: vidModel,
+        characterProfile: characterProfile || undefined,
+        styleSheet,
+        negativePrompt: negativePrompt || undefined,
+        characterReferenceImage,
+        contextPackId: linkedContextPackId,
+        contextPackName: linkedContextPackName,
+        onlyIndices: genIdxs,
+        onSceneUpdate: (idx, updates) => {
+          if (updates.video_path && updates.video_path.startsWith('blob:')) {
+            trackBlobUrl(updates.video_path);
+          }
+          updateSceneAt(idx, updates);
+          setFailedScenes(prev => {
+            const n = new Map(prev);
+            n.delete(`video-${idx}`);
+            return n;
+          });
+          // Persist to the user's wizard sync after each scene.
+          sync();
+        },
+        onStatsDelta: delta => addStats(delta),
       },
-      onStatsDelta: delta => addStats(delta),
     });
 
     // Wait for the job to finish so the wizard's loading state matches the
     // dock's, then surface a summary alert. Aborting the wait if the user
     // navigates away is fine — the unmount cleanup just stops listening,
     // the manager keeps running.
-    await new Promise<void>(resolve => {
-      const unsub = jobManager.subscribe(jobs => {
-        const j = jobs.find(x => x.id === jobId);
-        if (!j) return;
-        // Mirror per-scene processing/failed badges.
-        const procSet = new Set<number>();
-        j.scenes.forEach(s => {
-          if (s.status === 'running') procSet.add(s.idx);
-        });
-        setProcessingSet(procSet);
-        const failedMap = new Map<string, string>();
-        j.scenes.forEach(s => {
-          if (s.status === 'failed' && s.error)
-            failedMap.set(`video-${s.idx}`, s.error);
-        });
-        setFailedScenes(prev => {
-          const next = new Map(prev);
-          // Only sync video-* entries; leave audio/image alone.
-          for (const k of Array.from(next.keys())) {
-            if (k.startsWith('video-')) next.delete(k);
-          }
-          failedMap.forEach((v, k) => next.set(k, v));
-          return next;
-        });
-        if (
-          j.status === 'completed' ||
-          j.status === 'failed' ||
-          j.status === 'cancelled' ||
-          j.status === 'long-wait'
-        ) {
-          unsub();
-          resolve();
+    await jobOrchestrator.waitForTerminal(jobId, j => {
+      // Mirror per-scene processing/failed badges.
+      const procSet = new Set<number>();
+      j.scenes.forEach(s => {
+        if (s.status === 'running') procSet.add(s.idx);
+      });
+      setProcessingSet(procSet);
+      const failedMap = new Map<string, string>();
+      j.scenes.forEach(s => {
+        if (s.status === 'failed' && s.error)
+          failedMap.set(`video-${s.idx}`, s.error);
+      });
+      setFailedScenes(prev => {
+        const next = new Map(prev);
+        // Only sync video-* entries; leave audio/image alone.
+        for (const k of Array.from(next.keys())) {
+          if (k.startsWith('video-')) next.delete(k);
         }
+        failedMap.forEach((v, k) => next.set(k, v));
+        return next;
       });
     });
 
-    const finalJob = jobManager.getJob(jobId);
+    const finalJob = jobOrchestrator.get(jobId);
     setProcessingSet(new Set());
     setProcessingType(null);
     setLoadingMessage('');
@@ -246,58 +239,51 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
       `비디오 생성 큐에 등록되었습니다 — Studio Dock에서 진행 상황을 확인하세요. (${vidModel?.name || ''} | 씬 ${idx + 1})`
     );
 
-    const jobId = jobManager.enqueueVideoBatch({
-      projectId,
-      projectTitle: topic || '제목 없음',
-      userId,
-      scenes: sceneSnapshot,
-      aspectRatio,
-      model: vidModel,
-      characterProfile: characterProfile || undefined,
-      styleSheet,
-      negativePrompt: negativePrompt || undefined,
-      characterReferenceImage,
-      contextPackId: linkedContextPackId,
-      contextPackName: linkedContextPackName,
-      onlyIndices: [idx],
-      onSceneUpdate: (sIdx, updates) => {
-        if (updates.video_path && updates.video_path.startsWith('blob:')) {
-          trackBlobUrl(updates.video_path);
-        }
-        updateSceneAt(sIdx, updates);
-        setFailedScenes(prev => {
-          const n = new Map(prev);
-          n.delete(`video-${sIdx}`);
-          return n;
-        });
-        sync();
+    const jobId = jobOrchestrator.submit({
+      id: `video-scene-${projectId}-${idx}-${Date.now()}`,
+      capability: 'video',
+      provider: vidModel?.provider,
+      modelId: vidModel?.modelId,
+      input: {
+        projectId,
+        projectTitle: topic || '제목 없음',
+        userId,
+        scenes: sceneSnapshot,
+        aspectRatio,
+        model: vidModel,
+        characterProfile: characterProfile || undefined,
+        styleSheet,
+        negativePrompt: negativePrompt || undefined,
+        characterReferenceImage,
+        contextPackId: linkedContextPackId,
+        contextPackName: linkedContextPackName,
+        onlyIndices: [idx],
+        onSceneUpdate: (sIdx, updates) => {
+          if (updates.video_path && updates.video_path.startsWith('blob:')) {
+            trackBlobUrl(updates.video_path);
+          }
+          updateSceneAt(sIdx, updates);
+          setFailedScenes(prev => {
+            const n = new Map(prev);
+            n.delete(`video-${sIdx}`);
+            return n;
+          });
+          sync();
+        },
+        onStatsDelta: delta => addStats(delta),
       },
-      onStatsDelta: delta => addStats(delta),
     });
 
-    await new Promise<void>(resolve => {
-      const unsub = jobManager.subscribe(jobs => {
-        const j = jobs.find(x => x.id === jobId);
-        if (!j) return;
-        const failedMap = new Map<string, string>();
-        j.scenes.forEach(s => {
-          if (s.status === 'failed' && s.error)
-            failedMap.set(`video-${s.idx}`, s.error);
-        });
-        setFailedScenes(prev => {
-          const next = new Map(prev);
-          if (failedMap.has(fKey)) next.set(fKey, failedMap.get(fKey)!);
-          return next;
-        });
-        if (
-          j.status === 'completed' ||
-          j.status === 'failed' ||
-          j.status === 'cancelled' ||
-          j.status === 'long-wait'
-        ) {
-          unsub();
-          resolve();
-        }
+    await jobOrchestrator.waitForTerminal(jobId, j => {
+      const failedMap = new Map<string, string>();
+      j.scenes.forEach(s => {
+        if (s.status === 'failed' && s.error)
+          failedMap.set(`video-${s.idx}`, s.error);
+      });
+      setFailedScenes(prev => {
+        const next = new Map(prev);
+        if (failedMap.has(fKey)) next.set(fKey, failedMap.get(fKey)!);
+        return next;
       });
     });
 

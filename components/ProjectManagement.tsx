@@ -20,7 +20,7 @@ import { Icons } from './Icons';
 import { clearStoredMode, cleanupOrphanedModePrefs } from './wizard/ModeGate';
 import { NewProjectModal } from './NewProjectModal';
 import { YouTubeImportModal } from './YouTubeImportModal';
-import { jobManager } from '../services/jobManager';
+import { jobOrchestrator } from '../services/jobOrchestrator';
 import { isCloudSyncEnabled, CLOUD_SYNC_CHANGE_EVENT } from '../services/cloudSyncSettings';
 import type { YoutubeAnalysis, OptimizationTip } from '../types';
 
@@ -651,7 +651,7 @@ export const ProjectManagement: React.FC<ProjectManagementProps> = ({ userId, on
                             onClick={async (e) => {
                           e.stopPropagation();
                           try {
-                            const id = await jobManager.resumeInterrupted({
+                            const id = await jobOrchestrator.resume({
                               projectId: project.id,
                               userId,
                             });

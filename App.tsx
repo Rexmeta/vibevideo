@@ -21,8 +21,7 @@ import { onAuthStateChanged, User } from 'firebase/auth';
 import { isAdminUser } from './services/modelService';
 import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from './services/apiKeyService';
 import { isCloudSyncEnabled } from './services/cloudSyncSettings';
-import { jobManager } from './services/jobManager';
-import { uploadQueue } from './services/uploadQueue';
+import { jobOrchestrator } from './services/jobOrchestrator';
 import { SAMPLE_PROJECT_ID } from './services/sampleProject';
 
 const AISTUDIO_CHECK_TIMEOUT_MS = 1500;
@@ -102,6 +101,7 @@ const App: React.FC = () => {
       setCurrentUser(user);
       setAuthLoading(false);
       if (!user) {
+        jobOrchestrator.resetRecovery();
         // Task #95: Sample sessions are anonymous-friendly (no cloud
         // calls), so don't bounce signed-out users out of the wizard
         // when the active project is the bundled sample.
@@ -124,25 +124,9 @@ const App: React.FC = () => {
         // auto-resume Veo polling for projects with in-flight ops BEFORE
         // hydrating phantom 'interrupted' cards, so resumed jobs claim
         // their slots and aren't masked by stale UI entries.
-        uploadQueue.resumeAll().catch(err =>
-          console.warn('[App] uploadQueue.resumeAll failed:', err)
+        jobOrchestrator.recover(user.uid, isCloudSyncEnabled()).catch(err =>
+          console.warn('[App] job recovery failed:', err)
         );
-        if (isCloudSyncEnabled()) {
-          jobManager
-            .autoResumePendingOperations(user.uid)
-            .catch(err => console.warn('[App] autoResumePendingOperations failed:', err))
-            .finally(() => {
-              // Then hydrate phantom cards for any *other* interrupted
-              // projects (those without persisted operations).
-              jobManager.loadInterruptedFromProjects(user.uid).catch(err =>
-                console.warn('[App] loadInterruptedFromProjects failed:', err)
-              );
-            });
-        } else {
-          jobManager.loadInterruptedFromProjects(user.uid).catch(err =>
-            console.warn('[App] loadInterruptedFromProjects failed:', err)
-          );
-        }
       }
     });
     return () => unsubscribe();

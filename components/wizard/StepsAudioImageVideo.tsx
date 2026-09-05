@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Icons } from '../Icons';
 import { useWizard } from './WizardContext';
-import { jobManager } from '../../services/jobManager';
+import { jobOrchestrator } from '../../services/jobOrchestrator';
 import { getModelsByType } from '../../services/modelService';
 import { runStyleSheetGeneration } from '../../services/generationCommands';
 import { throwGenerationFailure } from '../../services/generationContract';
@@ -489,7 +489,7 @@ export const StepsAudioImageVideo: React.FC = () => {
                       </span>
                       <button
                         type="button"
-                        onClick={() => jobManager.retryUploadsNow(w.projectId)}
+                        onClick={() => jobOrchestrator.retryUploads(w.projectId)}
                         className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-600 text-white hover:bg-amber-700 transition-colors"
                         title="지금 업로드 재시도"
                       >
@@ -505,7 +505,7 @@ export const StepsAudioImageVideo: React.FC = () => {
                       <button
                         type="button"
                         onClick={() =>
-                          jobManager.continueLongWait({
+                          jobOrchestrator.continueLongWait({
                             projectId: w.projectId,
                             userId: w.userId,
                             sceneIdx: i,
@@ -518,7 +518,7 @@ export const StepsAudioImageVideo: React.FC = () => {
                       </button>
                       <button
                         type="button"
-                        onClick={() => jobManager.abandonLongWait(w.projectId, i)}
+                        onClick={() => jobOrchestrator.abandonLongWait(w.projectId, i)}
                         className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
                         title="이 씬의 추적을 중단"
                       >

@@ -4,7 +4,7 @@ import { SAMPLE_PROJECT_ID, isSampleProjectId, buildSampleProject } from '../../
 import { getModels, getModelsByType } from '../../services/modelService';
 import { DEFAULT_CAPTION_STYLE } from '../../services/captionService';
 import { listPacks } from '../../services/contextPackService';
-import { jobManager } from '../../services/jobManager';
+import { jobOrchestrator } from '../../services/jobOrchestrator';
 import { hasAnyGoogleApiKey, API_KEY_CHANGE_EVENT } from '../../services/apiKeyService';
 import { ApiKeyRequiredModal } from '../ApiKeyRequiredModal';
 import {
@@ -747,14 +747,14 @@ export const WizardProvider: React.FC<ProviderProps> = ({
   // just the Studio Dock.
   useEffect(() => {
     if (!projectId) return;
-    const existing = jobManager.findByProject(projectId);
+    const existing = jobOrchestrator.findByProject(projectId);
     if (
       existing &&
       (existing.status === 'running' ||
         existing.status === 'queued' ||
         existing.status === 'paused')
     ) {
-      jobManager.rebindCallbacks(existing.id, {
+      jobOrchestrator.bind(existing.id, {
         onSceneUpdate: (idx, updates) => {
           if (updates.video_path && updates.video_path.startsWith('blob:')) {
             trackBlobUrl(updates.video_path);
