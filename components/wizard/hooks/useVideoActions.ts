@@ -140,7 +140,7 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
       `비디오 생성 큐에 등록되었습니다 — Studio Dock에서 진행 상황을 확인하세요. (${vidModelName} | ${genIdxs.length}개 씬)`
     );
 
-    const jobId = jobOrchestrator.batch({
+    const submission = await jobOrchestrator.submitVideoGeneration({
       id: `video-batch-${projectId}-${Date.now()}`,
       capability: 'video',
       provider: vidModel?.provider,
@@ -175,6 +175,7 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
         onStatsDelta: delta => addStats(delta),
       },
     });
+    const jobId = submission.runtimeJobId;
 
     // Wait for the job to finish so the wizard's loading state matches the
     // dock's, then surface a summary alert. Aborting the wait if the user
@@ -239,7 +240,11 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
       `비디오 생성 큐에 등록되었습니다 — Studio Dock에서 진행 상황을 확인하세요. (${vidModel?.name || ''} | 씬 ${idx + 1})`
     );
 
-    const jobId = jobOrchestrator.submit({
+    const previousJob = jobOrchestrator.findGenerationJob(projectId, idx);
+    const explicitRegeneration =
+      hasMedia(sceneSnapshot[idx]?.video_path) ||
+      (previousJob?.status === 'failed' && previousJob.error?.retryable === false);
+    const submission = await jobOrchestrator.submitVideoGeneration({
       id: `video-scene-${projectId}-${idx}-${Date.now()}`,
       capability: 'video',
       provider: vidModel?.provider,
@@ -272,7 +277,8 @@ export const useVideoActions = (deps: VideoActionsDeps) => {
         },
         onStatsDelta: delta => addStats(delta),
       },
-    });
+    }, { explicitRegeneration });
+    const jobId = submission.runtimeJobId;
 
     await jobOrchestrator.waitForTerminal(jobId, j => {
       const failedMap = new Map<string, string>();

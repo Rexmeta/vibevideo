@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     pending: vi.fn(() => []),
     subscribeUploads: vi.fn(() => () => {}),
     resumeAll: vi.fn(),
+    resumeInterrupted: vi.fn(),
     autoResumePendingOperations: vi.fn(),
     loadInterruptedFromProjects: vi.fn(),
   };
@@ -28,7 +29,7 @@ vi.mock('../services/jobManager', () => ({
     getJob: mocks.getJob,
     findByProject: vi.fn(),
     rebindCallbacks: vi.fn(),
-    resumeInterrupted: vi.fn(),
+    resumeInterrupted: mocks.resumeInterrupted,
     resume: vi.fn(),
     cancel: vi.fn(),
     pause: vi.fn(),
@@ -67,11 +68,12 @@ describe('browser job orchestrator lifecycle', () => {
     mocks.listeners.clear();
     mocks.getJob.mockReturnValue(undefined);
     mocks.resumeAll.mockResolvedValue(undefined);
+    mocks.resumeInterrupted.mockResolvedValue(null);
     mocks.autoResumePendingOperations.mockResolvedValue(undefined);
     mocks.loadInterruptedFromProjects.mockResolvedValue(undefined);
   });
 
-  it('routes single and batch commands through the same browser lifecycle', () => {
+  it('routes equivalent single and batch commands through one browser lifecycle', () => {
     const orchestrator = new BrowserJobOrchestrator();
     const singleInput = { ...input, onlyIndices: [0] };
 
@@ -85,8 +87,345 @@ describe('browser job orchestrator lifecycle', () => {
       capability: 'video',
       input,
     })).toBe('job-1');
-    expect(mocks.enqueueVideoBatch).toHaveBeenNthCalledWith(1, singleInput);
-    expect(mocks.enqueueVideoBatch).toHaveBeenNthCalledWith(2, input);
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledOnce();
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledWith(singleInput);
+  });
+
+  it('atomically deduplicates concurrent submissions with the same key', async () => {
+    const orchestrator = new BrowserJobOrchestrator();
+    const command = {
+      id: 'command-concurrent',
+      capability: 'video' as const,
+      provider: 'Google',
+      modelId: 'veo',
+      input: { ...input, onlyIndices: [0] },
+    };
+
+    const [first, second] = await Promise.all([
+      orchestrator.submitVideoGeneration(command),
+      orchestrator.submitVideoGeneration({ ...command, id: 'command-concurrent-2' }),
+    ]);
+
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledOnce();
+    expect(second.runtimeJobId).toBe(first.runtimeJobId);
+    expect(second.generationJobs[0].jobId).toBe(first.generationJobs[0].jobId);
+    expect(orchestrator.generationSnapshot()).toHaveLength(1);
+  });
+
+  it('keeps completed generation identity after runtime jobs are cleared', async () => {
+    const orchestrator = new BrowserJobOrchestrator();
+    const command = {
+      id: 'command-completed',
+      capability: 'video' as const,
+      input: { ...input, onlyIndices: [0] },
+    };
+    const first = await orchestrator.submitVideoGeneration(command);
+    mocks.listeners.forEach(listener => listener([{
+      id: first.runtimeJobId,
+      status: 'completed',
+      scenes: [{ idx: 0, status: 'done' }],
+      startedAt: 1,
+      updatedAt: 2,
+      endedAt: 2,
+    }]));
+    orchestrator.clearFinished();
+    const duplicate = await orchestrator.submitVideoGeneration({
+      ...command,
+      id: 'command-after-clear',
+    });
+
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledOnce();
+    expect(duplicate.generationJobs[0]).toMatchObject({
+      jobId: first.generationJobs[0].jobId,
+      status: 'completed',
+    });
+    await expect(orchestrator.waitForTerminal(duplicate.runtimeJobId)).resolves.toMatchObject({
+      status: 'completed',
+    });
+  });
+
+  it('creates a new intent and job for explicit regeneration', async () => {
+    mocks.enqueueVideoBatch
+      .mockReturnValueOnce('runtime-1')
+      .mockReturnValueOnce('runtime-2');
+    const orchestrator = new BrowserJobOrchestrator();
+    const command = {
+      id: 'command-original',
+      capability: 'video' as const,
+      input: {
+        ...input,
+        scenes: [{ id: 'scene-1', video_path: 'https://cdn.example.com/old.mp4' }],
+        onlyIndices: [0],
+      },
+    };
+    const original = await orchestrator.submitVideoGeneration(command);
+    const regenerated = await orchestrator.submitVideoGeneration(
+      { ...command, id: 'command-regenerate' },
+      { explicitRegeneration: true },
+    );
+
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledTimes(2);
+    expect(regenerated.generationJobs[0].jobId).not.toBe(original.generationJobs[0].jobId);
+    expect(regenerated.generationJobs[0].intentId).not.toBe(original.generationJobs[0].intentId);
+    expect(mocks.enqueueVideoBatch).toHaveBeenLastCalledWith(expect.objectContaining({
+      scenes: [expect.objectContaining({ video_path: undefined })],
+    }));
+  });
+
+  it('submits only missing scene identities when a batch partially overlaps', async () => {
+    mocks.enqueueVideoBatch
+      .mockReturnValueOnce('runtime-scene-0')
+      .mockReturnValueOnce('runtime-scene-1');
+    const orchestrator = new BrowserJobOrchestrator();
+    const scenes = [
+      { id: 'scene-1', visual_prompt: 'one' },
+      { id: 'scene-2', visual_prompt: 'two' },
+    ];
+    await orchestrator.submitVideoGeneration({
+      id: 'command-single-first',
+      capability: 'video',
+      input: { ...input, scenes, onlyIndices: [0] },
+    });
+    const batch = await orchestrator.submitVideoGeneration({
+      id: 'command-overlapping-batch',
+      capability: 'video',
+      input: { ...input, scenes, onlyIndices: [0, 1] },
+    });
+
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledTimes(2);
+    expect(mocks.enqueueVideoBatch).toHaveBeenLastCalledWith(expect.objectContaining({
+      onlyIndices: [1],
+    }));
+    expect(batch.generationJobs).toHaveLength(2);
+    expect(new Set(batch.generationJobs.map(job => job.jobId)).size).toBe(2);
+    expect(batch.runtimeJobId).toBe('runtime-scene-1');
+  });
+
+  it('links resumed runtime work into the generation job domain view', async () => {
+    const resumedRuntime = {
+      id: 'runtime-resumed',
+      projectId: 'project-1',
+      projectTitle: 'Project',
+      userId: 'user-1',
+      stage: 'video',
+      status: 'running',
+      total: 1,
+      completed: 0,
+      failed: 0,
+      modelLabel: 'Veo',
+      modelId: 'veo',
+      provider: 'Google',
+      scenes: [{ idx: 0, status: 'running', operationName: 'operations/1' }],
+      startedAt: 1,
+      updatedAt: 2,
+    };
+    mocks.resumeInterrupted.mockResolvedValueOnce('runtime-resumed');
+    mocks.getJob.mockReturnValueOnce(resumedRuntime);
+    const orchestrator = new BrowserJobOrchestrator();
+
+    await expect(orchestrator.resume({
+      projectId: 'project-1',
+      userId: 'user-1',
+    })).resolves.toBe('runtime-resumed');
+
+    expect(orchestrator.findGenerationJob('project-1', 0)).toMatchObject({
+      runtimeJobId: 'runtime-resumed',
+      status: 'provider_pending',
+      providerOperationId: 'operations/1',
+    });
+  });
+
+  it('relinks an existing generation identity to its resumed runtime', async () => {
+    mocks.enqueueVideoBatch.mockReturnValueOnce('runtime-original');
+    const orchestrator = new BrowserJobOrchestrator();
+    const command = {
+      id: 'command-original',
+      capability: 'video' as const,
+      input: { ...input, onlyIndices: [0] },
+    };
+    const original = await orchestrator.submitVideoGeneration(command);
+    const resumedRuntime = {
+      id: 'runtime-resumed',
+      projectId: 'project-1',
+      projectTitle: 'Project',
+      userId: 'user-1',
+      stage: 'video',
+      status: 'running',
+      total: 1,
+      completed: 0,
+      failed: 0,
+      modelLabel: 'Veo',
+      scenes: [{ idx: 0, status: 'running', operationName: 'operations/1' }],
+      startedAt: 2,
+      updatedAt: 3,
+    };
+    mocks.resumeInterrupted.mockResolvedValueOnce('runtime-resumed');
+    mocks.getJob.mockReturnValueOnce(resumedRuntime);
+
+    await orchestrator.resume({ projectId: 'project-1', userId: 'user-1' });
+    const duplicate = await orchestrator.submitVideoGeneration({
+      ...command,
+      id: 'command-after-resume',
+    });
+
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledOnce();
+    expect(duplicate.generationJobs[0].jobId).toBe(original.generationJobs[0].jobId);
+    expect(duplicate.runtimeJobId).toBe('runtime-resumed');
+  });
+
+  it('conservatively locks a recovered scene when original inputs are unavailable', async () => {
+    const recoveredRuntime = {
+      id: 'runtime-after-reload',
+      projectId: 'project-1',
+      projectTitle: 'Project',
+      userId: 'user-1',
+      stage: 'video',
+      status: 'running',
+      total: 1,
+      completed: 0,
+      failed: 0,
+      modelLabel: 'Veo',
+      modelId: 'veo',
+      provider: 'Google',
+      scenes: [{ idx: 0, status: 'running', operationName: 'operations/recovered' }],
+      startedAt: 1,
+      updatedAt: 2,
+    };
+    mocks.snapshot.mockReturnValue([recoveredRuntime]);
+    const orchestrator = new BrowserJobOrchestrator();
+    await orchestrator.recover('user-1', false);
+
+    const duplicate = await orchestrator.submitVideoGeneration({
+      id: 'command-after-reload',
+      capability: 'video',
+      provider: 'Google',
+      modelId: 'veo',
+      input: {
+        ...input,
+        aspectRatio: '9:16',
+        scenes: [{ id: 'scene-1', visual_prompt: 'persisted prompt' }],
+        onlyIndices: [0],
+      },
+    });
+
+    expect(mocks.enqueueVideoBatch).not.toHaveBeenCalled();
+    expect(duplicate.runtimeJobId).toBe('runtime-after-reload');
+  });
+
+  it('releases a conservative recovery lock after recovered work is terminal', async () => {
+    const recoveredRuntime = {
+      id: 'runtime-recovered-terminal',
+      projectId: 'project-1',
+      projectTitle: 'Project',
+      userId: 'user-1',
+      stage: 'video',
+      status: 'running',
+      total: 1,
+      completed: 0,
+      failed: 0,
+      modelLabel: 'Veo',
+      scenes: [{ idx: 0, status: 'running', operationName: 'operations/recovered' }],
+      startedAt: 1,
+      updatedAt: 2,
+    };
+    mocks.snapshot.mockReturnValue([recoveredRuntime]);
+    const orchestrator = new BrowserJobOrchestrator();
+    await orchestrator.recover('user-1', false);
+    mocks.listeners.forEach(listener => listener([{
+      ...recoveredRuntime,
+      status: 'completed',
+      completed: 1,
+      scenes: [{ idx: 0, status: 'done' }],
+      updatedAt: 3,
+      endedAt: 3,
+    }]));
+
+    const next = await orchestrator.submitVideoGeneration({
+      id: 'command-new-input',
+      capability: 'video',
+      input: {
+        ...input,
+        scenes: [{ id: 'scene-1', visual_prompt: 'new prompt' }],
+        onlyIndices: [0],
+      },
+    });
+
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledOnce();
+    expect(next.runtimeJobId).toBe('job-1');
+  });
+
+  it('retries a retryable failure inside the same generation job', async () => {
+    mocks.enqueueVideoBatch
+      .mockReturnValueOnce('runtime-1')
+      .mockReturnValueOnce('runtime-2');
+    const orchestrator = new BrowserJobOrchestrator();
+    const command = {
+      id: 'command-attempt-1',
+      capability: 'video' as const,
+      input: { ...input, onlyIndices: [0] },
+    };
+    const first = await orchestrator.submitVideoGeneration(command);
+    mocks.listeners.forEach(listener => listener([{
+      id: first.runtimeJobId,
+      status: 'failed',
+      scenes: [{
+        idx: 0,
+        status: 'failed',
+        error: 'temporarily unavailable',
+        generationError: {
+          code: 'PROVIDER_TRANSIENT',
+          message: 'temporarily unavailable',
+          retryable: true,
+        },
+      }],
+      startedAt: 1,
+      updatedAt: 2,
+      endedAt: 2,
+    }]));
+
+    const retried = await orchestrator.submitVideoGeneration({
+      ...command,
+      id: 'command-attempt-2',
+    });
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledTimes(2);
+    expect(retried.generationJobs[0]).toMatchObject({
+      jobId: first.generationJobs[0].jobId,
+      attempts: 2,
+      runtimeJobId: 'runtime-2',
+    });
+  });
+
+  it('requires explicit regeneration after a terminal failure', async () => {
+    const orchestrator = new BrowserJobOrchestrator();
+    const command = {
+      id: 'command-terminal',
+      capability: 'video' as const,
+      input: { ...input, onlyIndices: [0] },
+    };
+    const first = await orchestrator.submitVideoGeneration(command);
+    mocks.listeners.forEach(listener => listener([{
+      id: first.runtimeJobId,
+      status: 'failed',
+      scenes: [{
+        idx: 0,
+        status: 'failed',
+        error: 'invalid input',
+        generationError: {
+          code: 'INVALID_INPUT',
+          message: 'invalid input',
+          retryable: false,
+        },
+      }],
+      startedAt: 1,
+      updatedAt: 2,
+      endedAt: 2,
+    }]));
+    const duplicate = await orchestrator.submitVideoGeneration({
+      ...command,
+      id: 'command-terminal-repeat',
+    });
+    expect(mocks.enqueueVideoBatch).toHaveBeenCalledOnce();
+    expect(duplicate.generationJobs[0].jobId).toBe(first.generationJobs[0].jobId);
   });
 
   it('replays uploads before operation resume and interrupted hydration', async () => {
