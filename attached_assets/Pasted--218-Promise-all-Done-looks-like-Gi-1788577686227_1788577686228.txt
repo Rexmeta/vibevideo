@@ -1,0 +1,313 @@
+네. **지금 올린 #218은 이전 버전보다 훨씬 좋아졌다.** 특히 `Promise.all` 동시 제출까지 Done looks like에 명시한 것이 중요하다.
+
+다만 현재 GitHub의 실제 구조와 대조하면, **이 이슈를 그대로 구현하기 전에 한 가지를 더 명확히 해야 한다.**
+
+현재 `jobOrchestrator.ts`의 `submit()`/`batch()`는 아직 단순히 `jobManager.enqueueVideoBatch()`를 호출한다. 즉, 현재는 idempotency 계층이 존재하지 않는다.
+또한 실제 단일/배치 생성 진입점도 매번 `Date.now()` 기반 command ID를 만들어 바로 `jobOrchestrator.submit/batch()`로 넘기고 있다.
+
+그래서 **#218의 설계는 맞지만 구현 위치를 정확히 고정해야 한다.**
+
+## 내가 보는 #218의 최종 구조
+
+```text
+useVideoActions
+      │
+      │ VideoGenerationRequest
+      ▼
+jobOrchestrator
+      │
+      ├── 1. normalize input
+      ├── 2. create fingerprint
+      ├── 3. create idempotencyKey
+      ├── 4. atomic registry check/register
+      │
+      ├──── existing Job → 기존 command/job 반환
+      │
+      └──── new Job
+               │
+               ▼
+        GenerationJob
+               │
+               ▼
+        JobManager
+               │
+               ▼
+     GenerationContract
+               │
+               ▼
+          Gemini/Veo
+```
+
+이 구조가 가장 중요하다.
+
+### 특히 `useVideoActions`에서 직접 중복 검사를 하지 않는 것
+
+현재 `handleSingleVideo()`와 `handleBatchVideos()`가 각각 생성 요청을 만들고 있기 때문에 여기에 idempotency 로직을 넣으면 나중에 다른 UI가 추가될 때 다시 중복 구현된다.
+
+**중복 방지는 `JobOrchestrator`가 소유해야 한다.**
+
+---
+
+# 한 가지 수정 권고
+
+현재 Step 3의:
+
+> 오케스트레이터의 비디오 제출 경계에 idempotency key별 동기 registry 또는 in-flight Promise lock
+
+이 표현은 좋다.
+
+그런데 구현에서는 **registry와 Promise lock을 구분해서 설계하는 것이 좋다.**
+
+### Registry
+
+```ts
+Map<string, GenerationJob>
+```
+
+이미 생성된 작업을 기억한다.
+
+### In-flight lock
+
+```ts
+Map<string, Promise<GenerationJob>>
+```
+
+아직 Job 생성/제출 과정에 있는 동시 요청을 묶는다.
+
+즉:
+
+```text
+Request A
+   ↓
+key = ABC
+   ↓
+registry 없음
+   ↓
+inFlight 없음
+   ↓
+lock 등록
+   ↓
+Job 생성
+   ↓
+JobManager 제출
+   ↓
+registry 등록
+   ↓
+lock 제거
+
+
+Request B
+   ↓
+key = ABC
+   ↓
+registry 확인
+   ↓
+Job A 반환
+```
+
+동시에 들어오면:
+
+```text
+A → key ABC → lock 생성
+B → key ABC → lock 발견 → A의 Promise 기다림
+```
+
+이렇게 된다.
+
+**이 부분이 #218의 핵심 기술 포인트다.**
+
+---
+
+# 그리고 더 중요한 문제: "완료된 Job"의 재사용
+
+Done looks에:
+
+> 활성 또는 완료된 동일 요청이면 기존 작업 반환
+
+이라는 의미가 들어가야 한다.
+
+현재 VibeVideo에서는 `JobManager`의 runtime job이 `clearFinished()` 등에 의해 제거될 수 있다. 그래서 `GenerationJob` registry가 단순히 runtime `Map`에만 있으면 완료 후 사라진 작업은 다시 생성될 수 있다.
+
+그렇다고 이번 #218에서 Firestore distributed idempotency를 만들 필요는 없다.
+
+따라서 이번 티켓의 범위를 이렇게 해석하는 것이 가장 안전하다.
+
+```text
+GenerationJob registry
+=
+현재 브라우저 실행 환경에서 유지되는
+generation identity/index
+```
+
+그리고 기존 영구 저장 구조를 건드리지 않는다.
+
+즉 **#218에서는 "브라우저 세션 수준 idempotency"가 정확한 목표**다.
+
+이렇게 하면 Out of scope의:
+
+> 여러 기기 사이의 영구적·트랜잭션 기반 중복 방지
+
+와도 정확히 맞는다.
+
+---
+
+# Retry / Regenerate도 아주 잘 정의됐다
+
+이 부분은 그대로 유지하는 것을 추천한다.
+
+```text
+Provider transient error
+        ↓
+same GenerationJob
+        ↓
+attempts++
+        ↓
+retry
+```
+
+반면:
+
+```text
+사용자 "다시 생성"
+        ↓
+new GenerationIntent
+        ↓
+new idempotencyKey
+        ↓
+new GenerationJob
+```
+
+이렇게 해야 한다.
+
+이 구분을 안 하면 나중에 과금 시스템에서 상당히 골치 아파진다.
+
+---
+
+# Batch 설계도 현재 VibeVideo와 잘 맞는다
+
+현재 배치는 하나의 `VideoJobCommand` 안에:
+
+```text
+onlyIndices: [1, 2, 3, 4]
+```
+
+형태로 들어간다.
+
+그런데 #218에서는 **domain-level에서는 씬마다 Job을 분리**하는 것이 맞다.
+
+즉 내부적으로:
+
+```text
+Batch Request
+ │
+ ├─ Scene 1 → GenerationJob A
+ ├─ Scene 2 → GenerationJob B
+ ├─ Scene 3 → GenerationJob C
+ └─ Scene 4 → GenerationJob D
+```
+
+로 보고,
+
+기존 JobManager의 batch 실행 방식은 그대로 사용할 수 있다.
+
+이렇게 해야:
+
+```text
+Scene 1 완료
+Scene 2 실패
+Scene 3 완료
+Scene 4 진행중
+
+→ Scene 2만 재생성
+```
+
+이 가능해진다.
+
+**다만 여기서 기존 JobManager의 batch job 자체를 GenerationJob으로 오해하면 안 된다.**
+
+이번 #218의 GenerationJob은 **domain identity**이고, 기존 JobManager job은 **runtime execution**이다.
+
+---
+
+# 내가 #218에 추가하고 싶은 테스트 하나
+
+현재 테스트 목록에 이것 하나를 추가하면 좋다.
+
+### "같은 key인데 첫 번째 요청이 실패한 경우"
+
+예:
+
+```text
+Request A
+→ GenerationJob A
+→ Provider 호출
+→ 실패
+
+Request B
+→ 같은 idempotencyKey
+```
+
+여기서 정책을 명확히 해야 한다.
+
+내 추천은:
+
+```text
+기술적 retry 가능한 실패
+→ 기존 Job A 재사용
+
+terminal failure + 사용자의 새 생성 요청
+→ explicit regenerate가 있어야 Job B
+
+자동 재제출
+→ Job A retry
+```
+
+즉 **실패했다고 동일 입력을 무조건 새 Job으로 만들면 안 된다.**
+
+이 테스트가 향후 과금/중복 생성 문제를 막는 데 상당히 중요하다.
+
+---
+
+# 결론
+
+나는 지금 작성한 #218을 **그대로 다음 개발 티켓으로 사용해도 된다고 본다.**
+
+다만 구현자가 반드시 기억해야 할 핵심은 5개다.
+
+| 항목                | 책임            |
+| ----------------- | ------------- |
+| `commandId`       | 실행 호출 식별      |
+| `intentId`        | 사용자의 생성 의도 식별 |
+| `idempotencyKey`  | 동일 요청 판별      |
+| `GenerationJob`   | 도메인 실행 상태     |
+| 기존 JobManager job | 실제 runtime 실행 |
+
+그리고 가장 중요한 invariant:
+
+```text
+같은 idempotencyKey
+        ↓
+GenerationJob 1개
+        ↓
+Provider invocation 1회
+```
+
+그리고:
+
+```text
+explicit regenerate
+        ↓
+새 intent
+        ↓
+새 key
+        ↓
+새 GenerationJob
+        ↓
+Provider invocation 추가 1회
+```
+
+이 두 가지가 통과하면 **#218은 성공**이다.
+
+현재 실제 코드상 `JobOrchestrator`가 이미 장기 실행 작업의 경계 역할을 하고 있고, 단일/배치 비디오 생성 모두 이 경계를 통과하고 있으므로, **이번 작업은 기존 구조를 크게 흔들지 않고 정확히 그 경계에 idempotency layer를 삽입하는 형태로 가는 것이 가장 안전하다.**
+
+**#218 다음은 바로 Provider Adapter로 가도 된다.** 단, #218 구현 후 실제 코드를 한 번 검증해서 `GenerationJob → JobManager → GenerationContract` 경계가 깨끗하게 잡혔는지 확인한 다음 넘어가는 것을 권한다.
