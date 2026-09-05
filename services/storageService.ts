@@ -30,6 +30,7 @@ import {
   DocumentSnapshot,
   QueryDocumentSnapshot
 } from "firebase/firestore";
+import type { Firestore } from "firebase/firestore";
 import { GenerationRun, Project, ProjectStatus, Scene } from "../types";
 import type { GenerationJob, GenerationJobStatus } from "./generationJob";
 import { normalizeLegacyProject, snapshotToLegacyProject, legacyProjectToSnapshot } from "./projectSnapshotMapper";
@@ -48,7 +49,24 @@ export interface GenerationJobClaim {
   acquired: boolean;
 }
 
-type GenerationJobPatch = Partial<
+export interface GenerationJobPersistence {
+  claimGenerationJob: (
+    proposed: GenerationJob,
+    ownerId: string,
+  ) => Promise<GenerationJobClaim>;
+  getGenerationJobRecord: (
+    projectId: string,
+    idempotencyKey: string,
+  ) => Promise<DurableGenerationJob | undefined>;
+  updateGenerationJobRecord: (
+    projectId: string,
+    idempotencyKey: string,
+    ownerId: string,
+    patch: GenerationJobPatch,
+  ) => Promise<DurableGenerationJob | undefined>;
+}
+
+export type GenerationJobPatch = Partial<
   Pick<DurableGenerationJob, 'status' | 'attempts' | 'commandId' | 'providerOperationId' |
     'result' | 'error' | 'startedAt' | 'completedAt' | 'failedAt' | 'leaseUntil'>
 >;
@@ -226,8 +244,26 @@ export const claimGenerationJob = async (
   ownerId: string,
 ): Promise<GenerationJobClaim> => {
   if (isCloudSyncEnabled() && db) {
-    const jobRef = doc(db, PROJECTS_COLLECTION, proposed.projectId, GENERATION_JOBS_COLLECTION, proposed.idempotencyKey);
-    const result = await runTransaction(db, async transaction => {
+    return createFirestoreGenerationJobPersistence(db).claimGenerationJob(proposed, ownerId);
+  }
+  return claimLocalGenerationJob(proposed, ownerId);
+};
+
+export const createFirestoreGenerationJobPersistence = (
+  firestore: Firestore,
+): GenerationJobPersistence => ({
+  claimGenerationJob: async (
+    proposed: GenerationJob,
+    ownerId: string,
+  ): Promise<GenerationJobClaim> => {
+    const jobRef = doc(
+      firestore,
+      PROJECTS_COLLECTION,
+      proposed.projectId,
+      GENERATION_JOBS_COLLECTION,
+      proposed.idempotencyKey,
+    );
+    const result = await runTransaction(firestore, async transaction => {
       const snapshot = await transaction.get(jobRef);
       const now = Date.now();
       const current = snapshot.exists() ? asDurableGenerationJob(snapshot.data() as Record<string, any>) : undefined;
@@ -253,23 +289,56 @@ export const claimGenerationJob = async (
       return { record: next, acquired: true };
     });
     return result as GenerationJobClaim;
-  }
-  return claimLocalGenerationJob(proposed, ownerId);
-};
+  },
+  getGenerationJobRecord: async (
+    projectId: string,
+    idempotencyKey: string,
+  ): Promise<DurableGenerationJob | undefined> => {
+    const snapshot = await getDoc(doc(
+      firestore,
+      PROJECTS_COLLECTION,
+      projectId,
+      GENERATION_JOBS_COLLECTION,
+      idempotencyKey,
+    ));
+    return snapshot.exists()
+      ? asDurableGenerationJob(snapshot.data() as Record<string, any>)
+      : undefined;
+  },
+  updateGenerationJobRecord: async (
+    projectId: string,
+    idempotencyKey: string,
+    ownerId: string,
+    patch: GenerationJobPatch,
+  ): Promise<DurableGenerationJob | undefined> => {
+    const jobRef = doc(
+      firestore,
+      PROJECTS_COLLECTION,
+      projectId,
+      GENERATION_JOBS_COLLECTION,
+      idempotencyKey,
+    );
+    return runTransaction(firestore, async transaction => {
+      const snapshot = await transaction.get(jobRef);
+      if (!snapshot.exists()) return undefined;
+      const current = asDurableGenerationJob(snapshot.data() as Record<string, any>);
+      if (current.ownerId !== ownerId) return undefined;
+      const next = { ...current, ...patch, updatedAt: Date.now() };
+      transaction.set(jobRef, removeUndefined(next));
+      return next;
+    }) as Promise<DurableGenerationJob | undefined>;
+  },
+});
 
 export const getGenerationJobRecord = async (
   projectId: string,
   idempotencyKey: string,
 ): Promise<DurableGenerationJob | undefined> => {
   if (isCloudSyncEnabled() && db) {
-    const snapshot = await getDoc(doc(
-      db,
-      PROJECTS_COLLECTION,
+    return createFirestoreGenerationJobPersistence(db).getGenerationJobRecord(
       projectId,
-      GENERATION_JOBS_COLLECTION,
       idempotencyKey,
-    ));
-    return snapshot.exists() ? asDurableGenerationJob(snapshot.data() as Record<string, any>) : undefined;
+    );
   }
   return readLocalGenerationJob(projectId, idempotencyKey);
 };
@@ -281,16 +350,12 @@ export const updateGenerationJobRecord = async (
   patch: GenerationJobPatch,
 ): Promise<DurableGenerationJob | undefined> => {
   if (isCloudSyncEnabled() && db) {
-    const jobRef = doc(db, PROJECTS_COLLECTION, projectId, GENERATION_JOBS_COLLECTION, idempotencyKey);
-    return runTransaction(db, async transaction => {
-      const snapshot = await transaction.get(jobRef);
-      if (!snapshot.exists()) return undefined;
-      const current = asDurableGenerationJob(snapshot.data() as Record<string, any>);
-      if (current.ownerId !== ownerId) return undefined;
-      const next = { ...current, ...patch, updatedAt: Date.now() };
-      transaction.set(jobRef, removeUndefined(next));
-      return next;
-    }) as Promise<DurableGenerationJob | undefined>;
+    return createFirestoreGenerationJobPersistence(db).updateGenerationJobRecord(
+      projectId,
+      idempotencyKey,
+      ownerId,
+      patch,
+    );
   }
   return updateLocalGenerationJob(projectId, idempotencyKey, ownerId, patch);
 };
